@@ -1,0 +1,48 @@
+steps:
+  # 1. Build the container image
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/agentic-frontend:$COMMIT_SHA', '.']
+
+  # 2. Push the image to Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/agentic-frontend:$COMMIT_SHA']
+
+  # 3. Run Database Migrations
+  # We use the image we JUST built because it already has python and your code.
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        gcloud run jobs deploy migrate-job-tmp \
+          --image gcr.io/$PROJECT_ID/agentic-frontend:$COMMIT_SHA \
+          --region asia-southeast1 \
+          --set-cloudsql-instances document-project-464509:asia-southeast1:agentic-platform \
+          --set-secrets "DATABASE_URL=django_settings:latest" \
+          --command "python" \
+          --args "manage.py,migrate,--noinput"
+        gcloud run jobs execute migrate-job-tmp --region asia-southeast1 --wait
+        gcloud run jobs delete migrate-job-tmp --region asia-southeast1 --quiet
+
+  # 4. Deploy to Cloud Run
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'agentic-frontend'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/agentic-frontend:$COMMIT_SHA'
+      - '--region'
+      - 'asia-southeast1'
+      - '--set-cloudsql-instances'
+      - 'document-project-464509:asia-southeast1:agentic-platform'
+      - '--set-secrets'
+      - 'DATABASE_URL=django_settings:latest'
+      - '--allow-unauthenticated'
+
+images:
+  - 'gcr.io/$PROJECT_ID/agentic-frontend:$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -18,9 +18,8 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of your Django project code
-COPY . .
-RUN python manage.py collectstatic --noinput
+# To this (adds a dummy database variable just for this command):
+RUN DATABASE_URL=sqlite:///:memory: python manage.py collectstatic --noinput
 
 # Run gunicorn on the port Cloud Run expects (8080)
 # Replace 'agentic_platform' with your actual project folder name

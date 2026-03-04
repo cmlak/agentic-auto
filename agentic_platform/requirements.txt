@@ -1,5 +1,0 @@
-django>=5.0
-gunicorn
-psycopg2-binary
-django-environ
-whitenoise==6.7.0

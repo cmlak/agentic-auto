@@ -15,7 +15,7 @@ import os
 from pathlib import Path
 
 # Initialize environ
-env = environ.Env(DEBUG=(bool, False))
+env = environ.Env(DEBUG=(bool, True))
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # 1. Load local .env file if it exists (for local dev)
@@ -116,24 +116,48 @@ AUTH_PASSWORD_VALIDATORS = [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Bangkok'
 
 USE_I18N = True
 
 USE_TZ = True
 
-
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/6.0/howto/static-files/
 
-# 4. Static Files (Required for Cloud Run deployment)
+# 4. Static Files (Handled by WhiteNoise)
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
-STORAGES = {
-    "default": {
-        "BACKEND": "django.core.files.storage.FileSystemStorage",
-    },
-    "staticfiles": {
-        "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
-    },
-}
+
+# Dynamic Media Files (PDFs, JPEGs) 
+# Logic: If DEBUG is False (Cloud), use Google Cloud Storage. 
+# If DEBUG is True (Local), use local hard drive.
+
+if not DEBUG:
+    # CLOUD SETTINGS
+    GS_BUCKET_NAME = 'agentic-media-files' # Replace with your actual bucket name
+    STORAGES = {
+        "default": {
+            "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+        },
+    }
+    GS_DEFAULT_ACL = 'publicRead'
+else:
+    # LOCAL SETTINGS
+    MEDIA_URL = '/media/'
+    MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+    STORAGES = {
+        "default": {
+            "BACKEND": "django.core.files.storage.FileSystemStorage",
+        },
+        "staticfiles": {
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",
+        },
+    }
+
+# Others
+
+DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'

@@ -94,10 +94,9 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 if not DEBUG:
-    # --- PRODUCTION (Cloud Run) ---
+    # CLOUD SETTINGS
     GS_BUCKET_NAME = 'agentic-media-files' 
     
-    # Use GCS for both User Uploads and Static Assets
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
@@ -107,8 +106,8 @@ if not DEBUG:
         },
     }
     
-    # Optional: Makes the files viewable by the public if needed
-    GS_DEFAULT_ACL = 'publicRead'
+    # CHANGE THIS TO NONE
+    GS_DEFAULT_ACL = None  
     
     # Cloud Run specific security settings
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

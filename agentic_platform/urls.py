@@ -7,6 +7,7 @@ from django.conf.urls.static import static
 
 urlpatterns = [
     path('admin/', admin.site.urls),
+    path('', lambda request: redirect('admin/', permanent=False)),
 ]
 
 if settings.DEBUG:

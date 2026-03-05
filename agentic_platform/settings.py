@@ -94,8 +94,11 @@ STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 if not DEBUG:
-    # CLOUD SETTINGS
-    GS_BUCKET_NAME = 'agentic-media-files' 
+    # --- PRODUCTION SETTINGS ---
+    GS_BUCKET_NAME = 'agentic-media-files'
+    
+    # ADD THIS LINE: It stops Django from trying to sign URLs
+    GS_QUERYSTRING_AUTH = False 
     
     STORAGES = {
         "default": {
@@ -106,8 +109,7 @@ if not DEBUG:
         },
     }
     
-    # CHANGE THIS TO NONE
-    GS_DEFAULT_ACL = None  
+    GS_DEFAULT_ACL = None
     
     # Cloud Run specific security settings
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')

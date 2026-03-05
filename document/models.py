@@ -3,22 +3,26 @@ from django.db import models
 from django.utils import timezone
 
 def generate_upload_path(instance, filename):
-    # 1. Get the extension and base name
+    # 1. Clean the filename
+    # If the user uploads "test.pdf", ext = "pdf", base_name = "test"
     ext = filename.split('.')[-1]
-    name = ".".join(filename.split('.')[:-1]) # Handles names like "my.test.file.pdf"
+    base_name = os.path.splitext(filename)[0]
     
-    # 2. Get the current time in Asia/Bangkok (based on settings.TIME_ZONE)
+    # 2. Get current time in Bangkok
+    # timezone.localtime() uses the TIME_ZONE defined in settings.py (Asia/Bangkok)
     local_now = timezone.localtime(timezone.now())
     
-    # 3. Format the timestamp: YearMonthDay-HourMinuteSecond
-    # Example: 20260305-173005 (5:30 PM Bangkok time)
-    timestamp_str = local_now.strftime("%Y%m%d-%H%M%S")
+    # 3. Formats
+    # Folder format: 2026-03-05
+    # Timestamp format: 173005
     date_folder = local_now.strftime("%Y%m%d")
+    timestamp_str = local_now.strftime("%H%M%S")
     
-    # 4. Create the new filename
-    new_filename = f"{name}_{timestamp_str}.{ext}"
+    # 4. Create the final filename: name_date_time.ext
+    # This prevents the "Double Year" issue
+    new_filename = f"{base_name}_{date_folder}-{timestamp_str}.{ext}"
     
-    # 5. Save into a subfolder named by the date
+    # 5. Result: uploads/20260305/original_name_20260305-173005.pdf
     return os.path.join('uploads', date_folder, new_filename)
 
 class Document(models.Model):

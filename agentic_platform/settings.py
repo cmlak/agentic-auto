@@ -103,3 +103,14 @@ else:
     }
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
+
+# Internationalization
+LANGUAGE_CODE = 'en-us'
+
+# This is the "Magic" line for Bangkok/Phnom Penh time
+TIME_ZONE = 'Asia/Bangkok' 
+
+USE_I18N = True
+
+# Must be True so Django converts UTC from the server to your local TIME_ZONE
+USE_TZ = True

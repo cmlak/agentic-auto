@@ -11,11 +11,10 @@ env_file = os.path.join(BASE_DIR, ".env")
 if os.path.isfile(env_file):
     env.read_env(env_file)
 
-# --- CRITICAL FIX: Robust Boolean for DEBUG ---
-# Cloud Run env vars are strings. env.bool ensures "False" (string) becomes False (bool).
+# --- CRITICAL: Robust Boolean for DEBUG ---
 DEBUG = env.bool("DEBUG", default=True)
 
-SECRET_KEY = env("SECRET_KEY", default='your-fallback-insecure-key')
+SECRET_KEY = env("SECRET_KEY", default='insecure-fallback-key-123')
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
@@ -31,7 +30,6 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
-    # WhiteNoise is kept for local dev; STORAGES handles prod
     'whitenoise.middleware.WhiteNoiseMiddleware', 
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
@@ -43,12 +41,11 @@ MIDDLEWARE = [
 
 ROOT_URLCONF = 'agentic_platform.urls'
 
-# --- CRITICAL FIX: Template Directory ---
+# --- TEMPLATE FIX ---
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        # This ensures Django looks in the folder 'templates' at the root
-        'DIRS': [BASE_DIR / 'templates'],
+        'DIRS': [os.path.join(BASE_DIR, 'templates')],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -77,15 +74,9 @@ if os.getenv('DATABASE_URL', '').startswith('postgres://'):
     if os.getenv('CLOUD_SQL_CONNECTION_NAME'):
         DATABASES['default']['HOST'] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 
-# Internationalization
-LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Asia/Bangkok'
-USE_I18N = True
-USE_TZ = True
-
 # 4. Storage & Static Files
 STATIC_URL = 'static/'
-STATIC_ROOT = BASE_DIR / 'staticfiles'
+STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
 if not DEBUG:
     # --- PRODUCTION (Cloud Run + GCS) ---
@@ -103,10 +94,7 @@ if not DEBUG:
     }
     
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    # Specific URL prevents CSRF errors on Admin login
-    CSRF_TRUSTED_ORIGINS = [
-        "https://agentic-platform-521063372903.asia-southeast1.run.app",
-    ]
+    CSRF_TRUSTED_ORIGINS = ["https://*.a.run.app"]
 else:
     # --- LOCAL DEVELOPMENT ---
     STORAGES = {

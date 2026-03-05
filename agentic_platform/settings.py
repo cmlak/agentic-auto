@@ -93,22 +93,26 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
 
+# settings.py
+
 if not DEBUG:
     # --- PRODUCTION SETTINGS ---
     GS_BUCKET_NAME = 'agentic-media-files'
     
-    # ADD THIS LINE: It stops Django from trying to sign URLs
+    # REQUIRED FIX: Disable signing URLs to avoid the "private key" error
     GS_QUERYSTRING_AUTH = False 
-    
+
     STORAGES = {
         "default": {
             "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
         },
         "staticfiles": {
+            # Since you're using GCS for static files, 
+            # you don't actually need WhiteNoise in production.
             "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
         },
     }
-    
+
     GS_DEFAULT_ACL = None
     
     # Cloud Run specific security settings

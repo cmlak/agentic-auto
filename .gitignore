@@ -2,16 +2,17 @@
 venv/
 env/
 
-# Python cache
+# Security and Binaries
+.env
+proxy-key.json
+*.exe
 __pycache__/
 *.pyc
 
 # Local Database
 db.sqlite3
 
-# Environment variables
-.env
-
 staticfiles/
 media/
 db.sqlite3
+

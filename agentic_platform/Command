@@ -1,0 +1,5 @@
+git fetch origin
+
+git reset --hard origin/main
+
+.\cloud-sql-proxy.exe --credentials-file "proxy-key.json" document-project-464509:asia-southeast1:agentic-platform

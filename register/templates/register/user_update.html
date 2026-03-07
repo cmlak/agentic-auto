@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+{% extends 'base_1.html' %}
+{% load static %}
+
+{% block content %}
+<body>
+    <div class="container">
+        <div class="row">
+            <div class="col-12 col-md-6 offset-md-3">
+                <form action="{% url 'register:registration_update' %}" method="post">
+                    {% csrf_token %}
+                    <h1 style="text-align:center;">Update Profile</h1>
+                    <hr>
+                    <div class="form-group">
+                        <label for="firstname"><b>First Name</b></label>
+                        <input type="text" class="form-control" placeholder="Enter First Name: " name="firstname" value="{{ user.first_name }}" required>
+                        <label for="lastname"><b>Last Name</b></label>
+                        <input type="text" class="form-control" placeholder="Enter Last Name: " name="lastname" value="{{ user.last_name }}" required>
+                        <label for="psw"><b>New Password</b></label>
+                        <input type="password" class="form-control" placeholder="Enter New Password: " name="psw">
+                        <label for="email"><b>Email Adress</b></label>
+                        <input type="email" class="form-control" placeholder="Enter New Email Adress: " name="email" value="{{ user.email }}" required>
+                        <label for="department"><b>Department</b></label>
+                        <input type="text" class="form-control" placeholder="Enter New Department: " name="department" value="{{ profile.department }}" required>
+                        <button class="btn btn-primary" type="submit">Update</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</body>
+{% endblock content %}

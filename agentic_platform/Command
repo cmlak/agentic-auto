@@ -2,4 +2,8 @@ git fetch origin
 
 git reset --hard origin/main
 
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope Process
+
 .\cloud-sql-proxy.exe --credentials-file "proxy-key.json" document-project-464509:asia-southeast1:agentic-platform
+
+python -m pip install django-crispy-forms crispy-bootstrap5

@@ -31,6 +31,9 @@ INSTALLED_APPS = [
     'django.contrib.staticfiles',
     'document',
     'storages',  
+    'register',
+    'crispy_forms',
+    'crispy_bootstrap4',
 ]
 
 MIDDLEWARE = [
@@ -50,7 +53,13 @@ ROOT_URLCONF = 'agentic_platform.urls'
 TEMPLATES = [
     {
         'BACKEND': 'django.template.backends.django.DjangoTemplates',
-        'DIRS': [os.path.join(BASE_DIR, 'templates')],
+        'DIRS': [
+            # Path 1: Your main project templates
+            os.path.join(BASE_DIR, 'templates'), 
+            
+            # Path 2: Your explicit app templates (Optional, but safe to keep)
+            os.path.join(BASE_DIR, 'register', 'templates', 'register'),
+        ],
         'APP_DIRS': True,
         'OPTIONS': {
             'context_processors': [
@@ -58,6 +67,7 @@ TEMPLATES = [
                 'django.template.context_processors.request',
                 'django.contrib.auth.context_processors.auth',
                 'django.contrib.messages.context_processors.messages',
+                'register.context_processors.user_info',
             ],
         },
     },
@@ -81,6 +91,10 @@ if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
 # 4. Storage & Static Files
 STATIC_URL = 'static/'
 STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')
+
+# --- ADD THESE TWO LINES FOR USER UPLOADS ---
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 if not DEBUG:
     # --- PRODUCTION (Cloud Run + GCS) ---
@@ -120,3 +134,6 @@ USE_I18N = True
 
 # Must be True so Django converts UTC from the server to your local TIME_ZONE
 USE_TZ = True
+
+CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
+CRISPY_TEMPLATE_PACK = "bootstrap5"

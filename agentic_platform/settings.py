@@ -2,19 +2,24 @@ import os
 import environ
 from pathlib import Path
 
-# Initialize environ
-env = environ.Env()
+# Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-# 1. Load local .env file
-env_file = os.path.join(BASE_DIR, ".env")
-if os.path.isfile(env_file):
-    env.read_env(env_file)
+# Initialize environment variables
+env = environ.Env(
+    # set casting, default value
+    DEBUG=(bool, False)
+)
 
-# --- CRITICAL: Robust Boolean for DEBUG ---
-DEBUG = env.bool("DEBUG", default=True)
+# Take environment variables from .env file
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 
-SECRET_KEY = env("SECRET_KEY", default='insecure-fallback-key-123')
+# SECURITY WARNING: keep the secret key used in production secret!
+SECRET_KEY = env('SECRET_KEY')
+
+# SECURITY WARNING: don't run with debug turned on in production!
+DEBUG = env('DEBUG')
+
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
@@ -61,6 +66,7 @@ TEMPLATES = [
 WSGI_APPLICATION = 'agentic_platform.wsgi.application'
 
 # 3. Database Configuration
+# This single block now handles SQLite locally, Cloud Shell Proxy, AND Cloud Run
 DATABASES = {
     'default': env.db(
         'DATABASE_URL', 
@@ -68,11 +74,9 @@ DATABASES = {
     )
 }
 
-# Cloud SQL logic
-if os.getenv('DATABASE_URL', '').startswith('postgres://'):
+# Apply connection pooling only if the detected database is PostgreSQL
+if DATABASES['default']['ENGINE'] == 'django.db.backends.postgresql':
     DATABASES['default']['CONN_MAX_AGE'] = 600
-    if os.getenv('CLOUD_SQL_CONNECTION_NAME'):
-        DATABASES['default']['HOST'] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 
 # 4. Storage & Static Files
 STATIC_URL = 'static/'

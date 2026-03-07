@@ -9,9 +9,6 @@ __pycache__/
 # Local Database
 db.sqlite3
 
-# Environment variables
-.env
-
 staticfiles/
 media/
 db.sqlite3

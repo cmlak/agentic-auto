@@ -22,7 +22,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Run collectstatic with a dummy database variable
-RUN DATABASE_URL=sqlite:///:memory: python manage.py collectstatic --noinput
+RUN SECRET_KEY="dummy-key-for-build" DATABASE_URL=sqlite:///:memory: python manage.py collectstatic --noinput
 
 # Run gunicorn on the port Cloud Run expects (8080)
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 agentic_platform.wsgi:application

@@ -1,0 +1,39 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Success!</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; text-align: center; }
+        .container { max-width: 600px; margin: auto; padding: 30px; border: 1px solid #c3e6cb; border-radius: 8px; background-color: #d4edda; color: #155724; }
+        .btn { 
+            display: inline-block; 
+            margin-top: 20px; 
+            padding: 12px 20px; 
+            background-color: #28a745; 
+            color: white; 
+            text-decoration: none; 
+            border-radius: 5px; 
+            font-weight: bold;
+            transition: background-color 0.3s;
+        }
+        .btn:hover { background-color: #218838; }
+        .link-back { display: block; margin-top: 25px; text-decoration: none; color: #0056b3; }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>Upload Successful!</h2>
+    <p>Your vendor and tax data have been processed and saved to the database.</p>
+    
+    {% if has_file %}
+        <a href="{% url 'download_vendor_csv' %}" class="btn">⬇️ Download Updated Vendor CSV</a>
+    {% endif %}
+
+    <a href="{% url 'upload_tax_vendor' %}" class="link-back">← Upload another file</a>
+</div>
+
+</body>
+</html>

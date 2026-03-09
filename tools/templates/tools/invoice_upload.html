@@ -1,0 +1,102 @@
+{% extends 'base_1.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+<head>
+    {% block title %}
+        Invoice AI Processing
+    {% endblock %}
+</head>
+
+{% block content %}
+<div class="container mt-4 mb-5 position-relative">
+    
+    <div id="loading-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 1000; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
+        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h4 id="loading-text" class="text-primary mb-3">Uploading PDF...</h4>
+        <div class="progress w-50" style="height: 25px;">
+            <div id="loading-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 10%;"></div>
+        </div>
+        <p class="text-muted mt-3 text-sm">Gemini AI is parsing your documents. This may take up to a minute.</p>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-3">
+            <h2>Process Invoices with AI</h2>
+            <p class="text-muted">Upload a PDF batch. The AI will extract the data for your review.</p>
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    {% if report_ready %}
+    <div class="row d-flex justify-content-center mb-4">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center p-4 border border-success rounded bg-light shadow-sm">
+            <h4 class="text-success mb-3">🎉 Processing Complete!</h4>
+            <p>Your invoices have been parsed and saved. You can download the extracted data below.</p>
+            <a href="{% url 'download_invoice_report' %}" class="btn btn-success btn-lg shadow-sm mt-2">
+                ⬇️ Download Excel Report (.xlsx)
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 shadow-sm p-5 bg-white rounded border">
+            <form id="upload-form" method="post" enctype="multipart/form-data">
+                {% csrf_token %}
+                
+                <h4 class="mb-4 text-primary border-bottom pb-2">Batch Upload</h4>
+                
+                <div class="mb-4">
+                    {{ form|crispy }}
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary btn-lg shadow-sm" type="submit">
+                        Start AI Extraction
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.getElementById('upload-form').addEventListener('submit', function() {
+        // Show the overlay
+        document.getElementById('loading-overlay').style.display = 'flex';
+        
+        let bar = document.getElementById('loading-bar');
+        let text = document.getElementById('loading-text');
+        
+        // Simulate stages while waiting for the server response
+        let stages = [
+            { width: '25%', msg: "Triage: Identifying document types..." },
+            { width: '50%', msg: "Audit: Extracting financial data..." },
+            { width: '75%', msg: "Validating vendors and currencies..." },
+            { width: '90%', msg: "Finalizing AI Output..." }
+        ];
+
+        let i = 0;
+        setInterval(() => {
+            if (i < stages.length) {
+                bar.style.width = stages[i].width;
+                text.innerText = stages[i].msg;
+                i++;
+            }
+        }, 8000); // Advances stage every 8 seconds
+    });
+</script>
+{% endblock %}

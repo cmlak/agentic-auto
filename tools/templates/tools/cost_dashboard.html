@@ -1,0 +1,90 @@
+{% extends 'base_1.html' %}
+{% load static %}
+
+<head>
+    {% block title %} AI Cost Dashboard {% endblock %}
+</head>
+
+{% block content %}
+<div class="container mt-5 mb-5">
+    
+    <div class="d-flex justify-content-between align-items-center border-bottom pb-3 mb-4">
+        <h2>📊 Gemini AI Cost Dashboard</h2>
+        <span class="badge bg-danger fs-6 shadow-sm">Restricted Access</span>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-md-3">
+            <div class="card bg-primary text-white shadow-sm h-100">
+                <div class="card-body text-center">
+                    <h5 class="card-title">Lifetime Cost</h5>
+                    <h3 class="fw-bold">${{ totals.grand_total|default:"0.00"|floatformat:4 }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-success text-white shadow-sm h-100">
+                <div class="card-body text-center">
+                    <h5 class="card-title">Pro Model Cost</h5>
+                    <h3 class="fw-bold">${{ totals.total_pro|default:"0.00"|floatformat:4 }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-info text-white shadow-sm h-100">
+                <div class="card-body text-center">
+                    <h5 class="card-title">Flash Model Cost</h5>
+                    <h3 class="fw-bold">${{ totals.total_flash|default:"0.00"|floatformat:4 }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-3">
+            <div class="card bg-secondary text-white shadow-sm h-100">
+                <div class="card-body text-center">
+                    <h5 class="card-title">Total Pages Processed</h5>
+                    <h3 class="fw-bold">{{ totals.total_pages|default:"0" }}</h3>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-dark text-white">
+            <h5 class="mb-0">Processing History</h5>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped mb-0 align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Date & Time</th>
+                            <th>File Name</th>
+                            <th class="text-center">Pages</th>
+                            <th class="text-end">Flash Cost</th>
+                            <th class="text-end">Pro Cost</th>
+                            <th class="text-end fw-bold">Total Job Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log in cost_logs %}
+                            <tr>
+                                <td>{{ log.date|date:"M d, Y H:i" }}</td>
+                                <td>{{ log.file_name }}</td>
+                                <td class="text-center">{{ log.total_pages }}</td>
+                                <td class="text-end text-muted">${{ log.flash_cost|floatformat:4 }}</td>
+                                <td class="text-end text-muted">${{ log.pro_cost|floatformat:4 }}</td>
+                                <td class="text-end fw-bold text-success">${{ log.total_cost|floatformat:4 }}</td>
+                            </tr>
+                        {% empty %}
+                            <tr>
+                                <td colspan="6" class="text-center py-4 text-muted">No AI processing jobs have been logged yet.</td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

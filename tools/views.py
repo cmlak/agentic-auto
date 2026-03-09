@@ -1,181 +1,173 @@
 import os
-import re
-import difflib
+import tempfile
 import pandas as pd
-from datetime import datetime
-
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.contrib import messages
 from django.http import HttpResponse
+from django.contrib.admin.views.decorators import staff_member_required
+from django.db.models import Sum
 
-from .forms import VendorTaxUploadForm
-from .models import Purchase
-
-# ====================================================================
-# --- HELPER FUNCTIONS ---
-# ====================================================================
-
-def normalize_name(name):
-    """Normalizes vendor names for accurate matching."""
-    if pd.isna(name):
-        return ""
-    name_str = str(name).lower().replace('&', ' and ')
-    return re.sub(r'[\W_]+', ' ', name_str).strip()
+# Import only the necessary forms, processors, and models
+from .forms import BatchUploadForm, PurchaseFormSet
+from .processors import GeminiInvoiceProcessor
+from .models import Purchase, AICostLog, Vendor
 
 # ====================================================================
-# --- MAIN UPLOAD & PROCESS VIEW ---
+# --- 1. AI INVOICE PROCESSING (UPLOAD -> REVIEW -> SAVE) ---
 # ====================================================================
 
-def process_vendor_tax_upload(request):
+def invoice_ai_upload_view(request):
+    """Step 1: Upload PDF, process via AI (Vendor matching done in processor), and store results."""
+    formset = PurchaseFormSet()
+
     if request.method == 'POST':
-        form = VendorTaxUploadForm(request.POST, request.FILES)
+        form = BatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
+            uploaded_pdf = form.cleaned_data['invoice_pdf']
+            file_name = uploaded_pdf.name
+            
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_pdf:
+                for chunk in uploaded_pdf.chunks():
+                    tmp_pdf.write(chunk)
+                tmp_pdf_path = tmp_pdf.name
+
             try:
-                # 1. Read uploaded files directly into pandas dataframes
-                vendor_file = request.FILES['vendor_file']
-                tax_file = request.FILES['tax_file']
+                api_key = os.getenv("GEMINI_API_KEY_2") 
+                processor = GeminiInvoiceProcessor(api_key=api_key)
                 
-                df_vendor = pd.read_csv(vendor_file)
-                df_tax = pd.read_csv(tax_file)
-
-                # 2. Determine Next Vendor ID Sequence
-                max_id = 0
-                for vid in df_vendor['id'].dropna():
-                    match = re.match(r'V(\d+)', str(vid))
-                    if match:
-                        max_id = max(max_id, int(match.group(1)))
+                # The processor handles extraction AND vendor matching internally
+                extracted_data, total_pages, costs = processor.process(tmp_pdf_path)
                 
-                current_id_seq = max_id + 1
-                current_no_seq = 1
-                if 'no' in df_vendor.columns:
-                    max_no = pd.to_numeric(df_vendor['no'], errors='coerce').max()
-                    if pd.notna(max_no):
-                        current_no_seq = int(max_no) + 1
-
-                # 3. Create Lookup for Existing Vendors
-                existing_vendors_normalized = set(df_vendor['name'].apply(normalize_name))
-                new_vendors = []
-
-                # 4. Iterate Tax Data to Find New Vendors
-                if 'name' in df_tax.columns and 'local_purchase_vat_usd' in df_tax.columns:
-                    for index, row in df_tax.iterrows():
-                        vat_val = pd.to_numeric(row.get('local_purchase_vat_usd', 0), errors='coerce')
-                        vat_val = 0.0 if pd.isna(vat_val) else float(vat_val)
-                        
-                        raw_name = str(row['name']).strip()
-                        name_normalized = normalize_name(raw_name)
-
-                        # If VAT is not 0 AND Name is valid AND Name not in existing list
-                        if vat_val != 0 and raw_name.lower() != 'nan' and name_normalized and name_normalized not in existing_vendors_normalized:
-                            new_id = f"V{current_id_seq:03d}"
-                            new_vendors.append({'no': current_no_seq, 'id': new_id, 'name': raw_name})
-                            existing_vendors_normalized.add(name_normalized)
-                            current_id_seq += 1
-                            current_no_seq += 1
-
-                # 5. Combine Existing and New Vendors
-                if new_vendors:
-                    df_new = pd.DataFrame(new_vendors)
-                    df_final = pd.concat([df_vendor, df_new], ignore_index=True)
-                    messages.success(request, f"Added {len(new_vendors)} new vendors to the system.")
-                else:
-                    df_final = df_vendor
-                    messages.info(request, "No new vendors met the criteria.")
-
-                # 6. Map IDs to Tax Data
-                vendor_lookup = {normalize_name(row['name']): str(row['id']) for _, row in df_final.iterrows() if pd.notna(row['name'])}
+                # Store fully enriched data in session
+                request.session['extracted_invoices'] = extracted_data
+                request.session['ai_metadata'] = {
+                    'file_name': file_name,
+                    'total_pages': total_pages,
+                    'costs': costs
+                }
                 
-                def get_matched_vendor_id(raw_name):
-                    target = normalize_name(raw_name)
-                    if not target: return 'V005'
-                    
-                    # Exact Match
-                    if target in vendor_lookup: return vendor_lookup[target]
-                    
-                    # Fuzzy Match
-                    best_id, best_coverage = 'V005', 0.0
-                    for v_name, v_id in vendor_lookup.items():
-                        if not v_name or v_name[0] != target[0]: continue
-                        matcher = difflib.SequenceMatcher(None, target, v_name)
-                        match = matcher.find_longest_match(0, len(target), 0, len(v_name))
-                        if match.a == 0 and match.b == 0:
-                            coverage = match.size / len(target)
-                            if coverage >= 0.6 and coverage > best_coverage:
-                                best_coverage = coverage
-                                best_id = v_id
-                    return best_id
-
-                df_tax['vendor_id'] = df_tax['name'].apply(get_matched_vendor_id)
-
-                # 7. Save mapped tax records to Django Database
-                purchase_objects = []
-                for _, row in df_tax.iterrows():
-                    # Handle date safely with a fallback
-                    try:
-                        parsed_date = pd.to_datetime(row.get('date')).date()
-                    except:
-                        parsed_date = datetime.now().date() 
-
-                    purchase = Purchase(
-                        date=parsed_date,
-                        invoice_no=str(row.get('invoice_no', '')),
-                        vattin=str(row.get('vattin', '')),
-                        vendor_id=row.get('vendor_id', ''),
-                        account_id=row.get('account_id') if pd.notna(row.get('account_id')) else None,
-                        description=str(row.get('description', '')),
-                        non_vat_non_tax_payer_usd=row.get('non_vat_non_tax_payer_usd') if pd.notna(row.get('non_vat_non_tax_payer_usd')) else None,
-                        non_vat_tax_payer_usd=row.get('non_vat_tax_payer_usd') if pd.notna(row.get('non_vat_tax_payer_usd')) else None,
-                        local_purchase_usd=row.get('local_purchase_usd') if pd.notna(row.get('local_purchase_usd')) else None,
-                        local_purchase_vat_usd=row.get('local_purchase_vat_usd') if pd.notna(row.get('local_purchase_vat_usd')) else None,
-                        total_usd=row.get('total_usd') if pd.notna(row.get('total_usd')) else None,
-                        page=row.get('page') if pd.notna(row.get('page')) else None,
-                    )
-                    purchase_objects.append(purchase)
+                return redirect('tools:review_invoices')
                 
-                # Save individually to trigger the custom save() method (Excel formatting protection)
-                for p in purchase_objects:
-                    p.save()
-
-                # 8. Save updated vendor file temporarily for user download
-                media_dir = os.path.join(settings.BASE_DIR, 'media')
-                os.makedirs(media_dir, exist_ok=True)
-                output_file_path = os.path.join(media_dir, 'vendor_updated.csv')
-                
-                # Save to CSV with BOM for Excel compatibility
-                df_final.to_csv(output_file_path, index=False, encoding='utf-8-sig')
-                
-                # Store the file path in the user's session
-                request.session['vendor_file_path'] = output_file_path
-
-                messages.success(request, f"Successfully processed and saved {len(purchase_objects)} purchase records to the database.")
-                return redirect('tools:upload_success') 
-
             except Exception as e:
-                messages.error(request, f"An error occurred while processing the files: {str(e)}")
+                messages.error(request, f"AI Error: {str(e)}")
+            finally:
+                if os.path.exists(tmp_pdf_path):
+                    os.remove(tmp_pdf_path)
     else:
-        form = VendorTaxUploadForm()
+        form = BatchUploadForm()
 
-    return render(request, 'upload.html', {'form': form})
+    report_ready = 'invoice_report_path' in request.session
 
+    return render(request, 'invoice_upload.html', {'form': form, 'report_ready': report_ready, 'formset': formset})
+
+
+def review_invoices(request):
+    extracted_data = request.session.get('extracted_invoices', [])
+    metadata = request.session.get('ai_metadata', {})
+
+    if not extracted_data and request.method == 'GET':
+        return redirect('tools:invoice_upload')
+
+    # Build Dynamic Choices for the Dropdown (DB Vendors + New Candidates)
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
+    temp_vendors = []
+    for item in extracted_data:
+        if item.get('is_new_vendor'):
+            temp_vendors.append((item['temp_id'], f"✨ NEW: {item['company']} ({item['temp_vid']})"))
+    
+    # Remove duplicates from temp list
+    temp_vendors = list(dict.fromkeys(temp_vendors))
+    dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
+
+    if request.method == 'POST':
+        # Pass the choices to the POST formset too
+        formset = PurchaseFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices})
+        
+        if formset.is_valid():
+            saved_instances = []
+            
+            for form in formset:
+                if form.cleaned_data and not form.cleaned_data.get('DELETE'):
+                    purchase_instance = form.save(commit=False) 
+                    
+                    vc = form.cleaned_data.get('vendor_choice')
+                    raw_name = form.cleaned_data.get('company', 'Unknown Vendor')
+                    
+                    if str(vc).startswith('TEMP_'):
+                        # User confirmed a temporary vendor! Create it in the DB.
+                        new_vid = vc.replace('TEMP_', '')
+                        # Check if we already created it in a previous row to avoid duplicates
+                        new_vendor, created = Vendor.objects.get_or_create(
+                            vendor_id=new_vid,
+                            defaults={'name': raw_name}
+                        )
+                        purchase_instance.vendor = new_vendor
+                    elif vc:
+                        # Existing DB Vendor
+                        try:
+                            # Assign the full vendor object, not just the ID
+                            purchase_instance.vendor = Vendor.objects.get(id=int(vc))
+                        except (ValueError, Vendor.DoesNotExist):
+                            # Handle cases where vc is empty or not a valid ID
+                            pass
+                            
+                    purchase_instance.save()
+                    saved_instances.append(purchase_instance)
+            
+            # ... (Keep your Cost Logging and Excel Generation here) ...
+            
+            request.session.pop('extracted_invoices', None)
+            request.session.pop('ai_metadata', None)
+            messages.success(request, f"Successfully saved {len(saved_instances)} invoices to the database!")
+            return redirect('tools:invoice_upload') 
+
+    else:
+        formset = PurchaseFormSet(initial=extracted_data, form_kwargs={'dynamic_choices': dynamic_choices})
+
+    return render(request, 'invoice_review.html', {
+        'formset': formset,
+        'metadata': metadata
+    })
+    
 # ====================================================================
-# --- SUCCESS & DOWNLOAD VIEWS ---
+# --- 2. REPORT DOWNLOAD ---
 # ====================================================================
 
-def upload_success(request):
-    """Renders the success page and checks if the download file is available."""
-    has_file = 'vendor_file_path' in request.session
-    return render(request, 'success.html', {'has_file': has_file})
-
-def download_vendor_csv(request):
-    """Serves the updated vendor CSV file to the user."""
-    file_path = request.session.get('vendor_file_path')
+def download_invoice_report(request):
+    """Serves the generated Excel report to the user."""
+    file_path = request.session.get('invoice_report_path')
     
     if file_path and os.path.exists(file_path):
         with open(file_path, 'rb') as fh:
-            response = HttpResponse(fh.read(), content_type="text/csv")
-            response['Content-Disposition'] = 'attachment; filename="vendor_updated.csv"'
+            response = HttpResponse(fh.read(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            response['Content-Disposition'] = 'attachment; filename="invoice_process_report.xlsx"'
             return response
     else:
-        messages.error(request, "The download file has expired or could not be found.")
-        return redirect('tools:upload_tax_vendor')
+        messages.error(request, "The report file has expired or could not be found.")
+        return redirect('tools:invoice_upload')
+
+
+# ====================================================================
+# --- 3. MANAGEMENT DASHBOARD ---
+# ====================================================================
+
+@staff_member_required
+def ai_cost_dashboard(request):
+    """
+    Restricted view for authorized personnel to track Gemini API expenses.
+    Requires the user to have 'is_staff = True' in the database.
+    """
+    cost_logs = AICostLog.objects.all().order_by('-date')
+    
+    totals = AICostLog.objects.aggregate(
+        total_flash=Sum('flash_cost'),
+        total_pro=Sum('pro_cost'),
+        grand_total=Sum('total_cost'),
+        total_pages=Sum('total_pages')
+    )
+    
+    return render(request, 'cost_dashboard.html', {
+        'cost_logs': cost_logs,
+        'totals': totals
+    })

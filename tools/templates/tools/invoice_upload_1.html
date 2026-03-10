@@ -40,6 +40,18 @@
         </div>
     </div>
 
+    {% if report_ready %}
+    <div class="row d-flex justify-content-center mb-4">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center p-4 border border-success rounded bg-light shadow-sm">
+            <h4 class="text-success mb-3">🎉 Processing Complete!</h4>
+            <p>Your invoices have been parsed and saved. You can download the extracted data below.</p>
+            <a href="{% url 'tools:download_invoice_report' %}" class="btn btn-success btn-lg shadow-sm mt-2">
+                ⬇️ Download Excel Report (.xlsx)
+            </a>
+        </div>
+    </div>
+    {% endif %}
+
     <div class="row d-flex justify-content-center">
         <div class="col-sm-12 col-md-8 col-lg-6 shadow-sm p-5 bg-white rounded border">
             <form id="upload-form" method="post" enctype="multipart/form-data">

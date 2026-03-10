@@ -1,0 +1,48 @@
+{% extends 'base_1.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+{% block title %}Cash AI Processing{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5 position-relative">
+    <div id="loading-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 1000; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
+        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h4 id="loading-text" class="text-primary mb-3">Reading Excel file...</h4>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-3">
+            <h2>Process ABA Bank Statements</h2>
+            <p class="text-muted">Upload native PDFs. Gemini 2.5 Flash will extract structured transactions.</p>
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }}">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 shadow-sm p-5 bg-white rounded border">
+            <form id="upload-form" method="post" enctype="multipart/form-data">
+                {% csrf_token %}
+                <h4 class="mb-4 text-primary border-bottom pb-2">Upload Cash Statement</h4>
+                <div class="mb-4">{{ form|crispy }}</div>
+                <button class="btn btn-primary w-100 btn-lg shadow-sm" type="submit">Start Extraction</button>
+            </form>
+        </div>
+    </div>
+</div>
+<script>
+    document.getElementById('upload-form').addEventListener('submit', function() {
+        document.getElementById('loading-overlay').style.display = 'flex';
+        document.getElementById('loading-text').innerText = "Gemini Flash is parsing transactions...";
+    });
+</script>
+{% endblock %}

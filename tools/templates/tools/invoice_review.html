@@ -12,54 +12,20 @@
             <p class="text-muted">
                 AI has extracted the data. Non-Tax invoices default to <strong>V001 - General Vendor</strong>. 
                 New Tax vendors are flagged with <strong>✨ NEW</strong> in the dropdown.
+                <br>
+                <strong>File:</strong> {{ metadata.file_name }} | <strong>Pages Processed:</strong> {{ metadata.total_pages }}
             </p>
         </div>
     </div>
 
-    <form method="post">
+    <form id="review-form" method="post">
         {% csrf_token %}
         {{ formset.management_form }}
 
-        <div class="table-responsive shadow-sm border rounded mb-3">
-            <table class="table table-hover table-striped align-middle mb-0" style="min-width: 1800px;">
-                <thead class="table-dark text-nowrap">
-                    <tr>
-                        <th style="width: 6%;">Date</th>
-                        <th style="width: 7%;">Invoice No</th>
-                        <th style="width: 10%;">Vendor Name (Raw)</th>
-                        <th style="width: 10%;">Matched Vendor DB</th>
-                        <th style="width: 7%;">VAT TIN</th>
-                        <th style="width: 24%;">Description</th>
-                        <th style="width: 6%;" class="bg-secondary">Non-VAT (No TIN)</th>
-                        <th style="width: 6%;" class="bg-secondary">Non-VAT (Invalid)</th>
-                        <th style="width: 6%;" class="bg-secondary">Subtotal (Valid)</th>
-                        <th style="width: 5%;" class="bg-secondary border-end border-warning">VAT 10%</th>
-                        <th style="width: 6%;">Total (USD)</th>
-                        <th style="width: 4%;">Page</th>
-                        <th style="width: 3%;" class="text-center">Del</th>
-                    </tr>
-                </thead>
-                <tbody id="invoice-formset-body">
-                    {% for form in formset %}
-                        <tr class="invoice-form-row">
-                            {% for hidden in form.hidden_fields %}{{ hidden }}{% endfor %}
-                            <td class="p-1">{{ form.date|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.invoice_no|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.company|as_crispy_field }}</td>
-                            <td class="p-1 border-end border-2 border-warning">{{ form.vendor_choice|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.vattin|as_crispy_field }}</td>
-                            <td class="p-1 border-end border-2 border-secondary">{{ form.description|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.non_vat_non_tax_payer_usd|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.non_vat_tax_payer_usd|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.local_purchase_usd|as_crispy_field }}</td>
-                            <td class="p-1 border-end border-2 border-warning">{{ form.local_purchase_vat_usd|as_crispy_field }}</td>
-                            <td class="p-1 fw-bold">{{ form.total_usd|as_crispy_field }}</td>
-                            <td class="p-1">{{ form.page|as_crispy_field }}</td>
-                            <td class="p-1 text-center bg-light">{{ form.DELETE|as_crispy_field }}</td>
-                        </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+        <div id="invoice-formset-body" class="shadow-sm border rounded p-4 bg-white mb-3">
+            {% for form in formset %}
+                {% crispy form %}
+            {% endfor %}
         </div>
 
         <div class="d-flex justify-content-end mb-4">
@@ -74,50 +40,113 @@
         </div>
     </form>
 
-    <table style="display: none;">
-        <tbody id="empty-form-template">
-            <tr class="invoice-form-row bg-light border-start border-success border-4">
-                {% for hidden in formset.empty_form.hidden_fields %}{{ hidden }}{% endfor %}
-                <td class="p-1">{{ formset.empty_form.date|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.invoice_no|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.company|as_crispy_field }}</td>
-                <td class="p-1 border-end border-2 border-warning">{{ formset.empty_form.vendor_choice|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.vattin|as_crispy_field }}</td>
-                <td class="p-1 border-end border-2 border-secondary">{{ formset.empty_form.description|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.non_vat_non_tax_payer_usd|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.non_vat_tax_payer_usd|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.local_purchase_usd|as_crispy_field }}</td>
-                <td class="p-1 border-end border-2 border-warning">{{ formset.empty_form.local_purchase_vat_usd|as_crispy_field }}</td>
-                <td class="p-1 fw-bold">{{ formset.empty_form.total_usd|as_crispy_field }}</td>
-                <td class="p-1">{{ formset.empty_form.page|as_crispy_field }}</td>
-                <td class="p-1 text-center text-muted small">New</td>
-            </tr>
-        </tbody>
-    </table>
+    <div id="empty-form-template" style="display: none;">
+        {% crispy formset.empty_form %}
+    </div>
 </div>
 
-<script>
-    document.addEventListener("DOMContentLoaded", function() {
-        const addRowBtn = document.getElementById("add-row-btn");
-        const tableBody = document.getElementById("invoice-formset-body");
-        const emptyFormTemplate = document.getElementById("empty-form-template").innerHTML;
-        const totalFormsInput = document.getElementById("id_form-TOTAL_FORMS");
-
-        if (addRowBtn && tableBody && emptyFormTemplate && totalFormsInput) {
-            addRowBtn.addEventListener("click", function(e) {
-                e.preventDefault();
-                const currentFormCount = parseInt(totalFormsInput.value);
-                const newRowHtml = emptyFormTemplate.replace(/__prefix__/g, currentFormCount);
-                tableBody.insertAdjacentHTML('beforeend', newRowHtml);
-                totalFormsInput.value = currentFormCount + 1;
-            });
-        }
-    });
-</script>
-
 <style>
-    .table label { display: none; }
-    .table .form-group { margin-bottom: 0 !important; }
-    .table input, .table select, .table textarea { font-size: 0.85rem; padding: 0.4rem; }
+    /* Clean up crispy forms labels and margins */
+    label { font-weight: 600; color: #495057; font-size: 0.9rem; margin-bottom: 0.2rem; }
+    .form-group { margin-bottom: 1rem !important; }
+    input, select, textarea { font-size: 0.85rem; padding: 0.4rem; }
+    
+    /* Smooth transition for auto-expanding textareas */
+    .auto-expand {
+        overflow: hidden;
+        resize: none;
+        transition: height 0.2s ease;
+    }
 </style>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+
+    // --- FUNCTION TO INITIALIZE UI ELEMENTS (Hover, Expand, Format) ---
+    // We put this in a function so we can re-run it when new rows are added
+    function initUIElements(container) {
+        
+        // 1. HOVER TOOLTIPS FOR FULL TEXT
+        container.querySelectorAll('input[type="text"], textarea').forEach(el => {
+            el.addEventListener('mouseenter', function() {
+                if (this.value) { this.title = this.value; }
+            });
+        });
+
+        // 2. AUTO-EXPAND TEXTAREAS
+        const adjustHeight = (el) => {
+            el.style.height = 'auto';
+            el.style.height = (el.scrollHeight) + 'px';
+        };
+        container.querySelectorAll('.auto-expand').forEach(el => {
+            el.addEventListener('input', () => adjustHeight(el));
+            setTimeout(() => adjustHeight(el), 100); // Initial adjustment
+        });
+
+        // 3. NUMBER FORMATTING (100,000.00)
+        const formatCurrency = (val) => {
+            if (!val || val === '') return '0.00';
+            let num = parseFloat(val.toString().replace(/,/g, ''));
+            if (isNaN(num)) return val;
+            return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        };
+
+        container.querySelectorAll('.number-format').forEach(el => {
+            el.value = formatCurrency(el.value); // Initial format
+
+            el.addEventListener('focus', function() {
+                this.value = this.value.replace(/,/g, ''); // Strip on focus
+            });
+
+            el.addEventListener('blur', function() {
+                this.value = formatCurrency(this.value); // Reformat on blur
+            });
+        });
+    }
+
+    // Initialize the UI elements for the forms already loaded on the page
+    initUIElements(document.getElementById("invoice-formset-body"));
+
+
+    // --- 4. DYNAMIC ROW ADDITION ---
+    const addRowBtn = document.getElementById("add-row-btn");
+    const formsetBody = document.getElementById("invoice-formset-body");
+    const emptyFormTemplate = document.getElementById("empty-form-template").innerHTML;
+    const totalFormsInput = document.getElementById("id_form-TOTAL_FORMS");
+
+    if (addRowBtn && formsetBody && emptyFormTemplate && totalFormsInput) {
+        addRowBtn.addEventListener("click", function(e) {
+            e.preventDefault();
+            const currentFormCount = parseInt(totalFormsInput.value);
+            
+            // Replace Django's __prefix__ with the new ID number
+            const newRowHtml = emptyFormTemplate.replace(/__prefix__/g, currentFormCount);
+            
+            // Create a temporary div to convert HTML string to actual DOM elements
+            const tempDiv = document.createElement('div');
+            tempDiv.innerHTML = newRowHtml;
+            
+            // Find the form_number input and set it manually to "New" or the exact number
+            const numberInput = tempDiv.querySelector('input[name="form-' + currentFormCount + '-form_number"]');
+            if (numberInput) { numberInput.value = "New"; }
+            
+            // Append to the container
+            formsetBody.appendChild(tempDiv.firstElementChild);
+            totalFormsInput.value = currentFormCount + 1;
+
+            // VERY IMPORTANT: Initialize formatting and auto-expand for the NEW row!
+            initUIElements(formsetBody.lastElementChild);
+        });
+    }
+
+    // --- 5. PRE-SUBMIT CLEANUP ---
+    // Remove commas before Django validates the floats
+    document.getElementById('review-form').addEventListener('submit', function() {
+        document.querySelectorAll('.number-format').forEach(el => {
+            el.value = el.value.replace(/,/g, '');
+        });
+    });
+
+});
+</script>
 {% endblock %}

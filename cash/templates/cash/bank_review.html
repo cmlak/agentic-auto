@@ -1,0 +1,105 @@
+{% extends 'base_1.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+{% block title %}Review Bank Transactions{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4 mb-5 px-3">
+    <div class="row mb-3">
+        <div class="col">
+            <h2>Review Bank Statement Data</h2>
+            <p class="text-muted">
+                <strong>File:</strong> {{ metadata.file_name }} | <strong>Pages Processed:</strong> {{ metadata.total_pages }}
+            </p>
+        </div>
+    </div>
+
+    <form id="review-form" method="post">
+        {% csrf_token %}
+        {{ formset.management_form }}
+
+        <div class="shadow-sm border rounded p-4 bg-white mb-3">
+            {% for form in formset %}
+                {% crispy form %}
+            {% endfor %}
+        </div>
+
+        <div class="d-flex justify-content-end mt-4">
+            <a href="{% url 'cash:bank_upload' %}" class="btn btn-outline-danger me-3 btn-lg shadow-sm">Cancel & Discard</a>
+            <button type="submit" class="btn btn-success btn-lg shadow-sm px-5">💾 Confirm & Save All</button>
+        </div>
+    </form>
+</div>
+
+<style>
+    .table label { display: none; }
+    .form-group { margin-bottom: 0 !important; }
+    input, select, textarea { font-size: 0.85rem; padding: 0.4rem; }
+    
+    /* Smooth transition for auto-expanding textareas */
+    .auto-expand {
+        overflow: hidden;
+        resize: none;
+        transition: height 0.2s ease;
+    }
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    
+    // --- 1. HOVER TOOLTIPS FOR FULL TEXT ---
+    // Dynamically adds the 'title' attribute so users can hover to see cut-off text
+    document.querySelectorAll('input[type="text"], textarea').forEach(el => {
+        el.addEventListener('mouseenter', function() {
+            if (this.value) { this.title = this.value; }
+        });
+    });
+
+    // --- 2. AUTO-EXPAND TEXTAREAS ---
+    // Makes 'purpose' and 'raw_remark' expand vertically so no text is hidden
+    const adjustHeight = (el) => {
+        el.style.height = 'auto';
+        el.style.height = (el.scrollHeight) + 'px';
+    };
+    document.querySelectorAll('.auto-expand').forEach(el => {
+        el.addEventListener('input', () => adjustHeight(el));
+        // Small timeout to allow DOM to render before measuring scrollHeight
+        setTimeout(() => adjustHeight(el), 100);
+    });
+
+    // --- 3. NUMBER FORMATTING (100,000.00) ---
+    const formatCurrency = (val) => {
+        if (!val || val === '') return '0.00';
+        let num = parseFloat(val.toString().replace(/,/g, ''));
+        if (isNaN(num)) return val;
+        return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    };
+
+    document.querySelectorAll('.number-format').forEach(el => {
+        // Format on initial load
+        el.value = formatCurrency(el.value);
+
+        // Strip commas when user clicks in to edit the number
+        el.addEventListener('focus', function() {
+            this.value = this.value.replace(/,/g, '');
+        });
+
+        // Re-format when user clicks away
+        el.addEventListener('blur', function() {
+            this.value = formatCurrency(this.value);
+        });
+    });
+
+    // --- 4. PRE-SUBMIT CLEANUP ---
+    // Django's FloatField will crash if we submit strings with commas. 
+    // This removes the commas right before the form goes to the backend.
+    document.getElementById('review-form').addEventListener('submit', function() {
+        document.querySelectorAll('.number-format').forEach(el => {
+            el.value = el.value.replace(/,/g, '');
+        });
+    });
+
+});
+</script>
+{% endblock %}

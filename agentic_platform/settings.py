@@ -33,6 +33,7 @@ INSTALLED_APPS = [
     'storages',  
     'register',
     'tools',
+    'cash',
     'crispy_forms',
     'crispy_bootstrap5',
 ]
@@ -63,6 +64,9 @@ TEMPLATES = [
 
             # Path 3: Your explicit app templates (Optional, but safe to keep)
             os.path.join(BASE_DIR, 'tools', 'templates', 'tools'),
+
+            # Path 4: Your explicit app templates (Optional, but safe to keep)
+            os.path.join(BASE_DIR, 'cash', 'templates', 'cash'),
         ],
         'APP_DIRS': True,
         'OPTIONS': {

@@ -10,6 +10,7 @@ urlpatterns = [
 
     path('process-invoices/', views.invoice_ai_upload_view, name='invoice_upload'),
     path('review-invoices/', views.review_invoices, name='review_invoices'),
+    path('invoice-success/', views.invoice_download_view, name='invoice_download'),
     path('download-invoice-report/', views.download_invoice_report, name='download_invoice_report'),
 
     path('management/ai-costs/', views.ai_cost_dashboard, name='ai_cost_dashboard'),

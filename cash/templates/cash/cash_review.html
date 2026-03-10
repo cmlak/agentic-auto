@@ -1,0 +1,75 @@
+{% extends 'base_1.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+{% block title %}Review Cash Book{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4 mb-5 px-3">
+    <div class="row mb-3">
+        <div class="col">
+            <h2>Review Cash Book Data</h2>
+            <p class="text-muted">
+                <strong>File:</strong> {{ metadata.file_name }} | <strong>Client:</strong> {{ metadata.client_name }}
+            </p>
+        </div>
+    </div>
+
+    <form id="review-form" method="post">
+        {% csrf_token %}
+        {{ formset.management_form }}
+
+        <div id="cash-formset-body" class="shadow-sm border rounded p-4 bg-white mb-3">
+            {% for form in formset %}
+                {% crispy form %}
+            {% endfor %}
+        </div>
+
+        <div class="d-flex justify-content-end mt-4">
+            <a href="{% url 'cash:cash_upload' %}" class="btn btn-outline-danger me-3 btn-lg shadow-sm">Cancel & Discard</a>
+            <button type="submit" class="btn btn-success btn-lg shadow-sm px-5">💾 Confirm & Save All</button>
+        </div>
+    </form>
+</div>
+
+<style>
+    label { font-weight: 600; color: #495057; font-size: 0.9rem; margin-bottom: 0.2rem; }
+    .form-group { margin-bottom: 1rem !important; }
+    input, select, textarea { font-size: 0.85rem; padding: 0.4rem; }
+    .auto-expand { overflow: hidden; resize: none; transition: height 0.2s ease; }
+</style>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function initUIElements(container) {
+        container.querySelectorAll('input[type="text"], textarea').forEach(el => {
+            el.addEventListener('mouseenter', function() { if (this.value) { this.title = this.value; } });
+        });
+        const adjustHeight = (el) => { el.style.height = 'auto'; el.style.height = (el.scrollHeight) + 'px'; };
+        container.querySelectorAll('.auto-expand').forEach(el => {
+            el.addEventListener('input', () => adjustHeight(el));
+            setTimeout(() => adjustHeight(el), 100); 
+        });
+        const formatCurrency = (val) => {
+            if (!val || val === '') return '0.00';
+            let num = parseFloat(val.toString().replace(/,/g, ''));
+            if (isNaN(num)) return val;
+            return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        };
+        container.querySelectorAll('.number-format').forEach(el => {
+            el.value = formatCurrency(el.value); 
+            el.addEventListener('focus', function() { this.value = this.value.replace(/,/g, ''); });
+            el.addEventListener('blur', function() { this.value = formatCurrency(this.value); });
+        });
+    }
+
+    initUIElements(document.getElementById("cash-formset-body"));
+
+    document.getElementById('review-form').addEventListener('submit', function() {
+        document.querySelectorAll('.number-format').forEach(el => {
+            el.value = el.value.replace(/,/g, '');
+        });
+    });
+});
+</script>
+{% endblock %}

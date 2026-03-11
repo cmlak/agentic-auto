@@ -3,14 +3,15 @@ import tempfile
 import pandas as pd
 from django.conf import settings
 from django.shortcuts import render, redirect
+from django.core.paginator import Paginator
 from django.contrib import messages
 from django.http import HttpResponse
 
-from .forms import BankBatchUploadForm, BankFormSet
+from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet
 from .processors import GeminiABABankProcessor, GeminiCanadiaBankProcessor, ClientBCustomBankProcessor,\
     CashStandardExcelProcessor
 from .models import Bank, Cash
-from tools.models import AICostLog, Client 
+from tools.models import AICostLog, Client, Vendor
 
 BANK_PROCESSOR_MAP = {
     'aba_standard': GeminiABABankProcessor,
@@ -160,7 +161,15 @@ def cash_upload_view(request):
                 return redirect('cash:cash_upload')
             
             # Handle extensions correctly for Pandas
-            ext = '.csv' if uploaded_file.name.endswith('.csv') else '.xlsx'
+            _, file_ext = os.path.splitext(uploaded_file.name)
+            # Respect .xls for legacy support, .csv for text, default everything else (e.g. .xlse) to .xlsx
+            if file_ext.lower() == '.xls':
+                ext = '.xls'
+            elif file_ext.lower() == '.csv':
+                ext = '.csv'
+            else:
+                ext = '.xlsx'
+
             with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
                 for chunk in uploaded_file.chunks():
                     tmp_file.write(chunk)
@@ -187,10 +196,13 @@ def cash_upload_view(request):
                 return redirect('cash:cash_review')
                 
             except Exception as e:
+                print(f"❌ CASH PROCESSING ERROR: {str(e)}")
                 messages.error(request, f"Processing Error: {str(e)}")
             finally:
                 if os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
+        else:
+            print(f"❌ CASH UPLOAD FORM ERRORS: {form.errors}")
     else:
         form = CashBatchUploadForm()
     return render(request, 'cash_upload.html', {'form': form})
@@ -212,9 +224,19 @@ def cash_review_view(request):
     
     temp_vendors = list(dict.fromkeys(temp_vendors))
     dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
+    
+    # Pagination: Limit to 20 rows per render
+    page_number = request.GET.get('page', 1)
+    items_per_page = 20
+    paginator = Paginator(extracted_data, items_per_page)
+    page_obj = paginator.get_page(page_number)
+    current_slice = page_obj.object_list
+    
+    start_sequence = (page_obj.number - 1) * items_per_page
 
     if request.method == 'POST':
-        formset = CashFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices})
+        formset = CashFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices, 'start_sequence': start_sequence})
+        
         if formset.is_valid():
             saved_instances = []
             for form in formset:
@@ -248,15 +270,42 @@ def cash_review_view(request):
                 report_path = os.path.join(media_dir, 'cash_process_report.xlsx')
                 df_report.to_excel(report_path, index=False, engine='openpyxl')
                 request.session['cash_report_path'] = report_path 
-            
-            request.session.pop('extracted_cash', None)
-            request.session.pop('cash_metadata', None)
-            messages.success(request, f"Successfully saved {len(saved_instances)} cash transactions!")
-            return redirect('cash:cash_download') 
-    else:
-        formset = CashFormSet(initial=extracted_data, form_kwargs={'dynamic_choices': dynamic_choices})
 
-    return render(request, 'cash_review.html', {'formset': formset, 'metadata': metadata})
+            # Remove the processed items from the session list
+            try:
+                # Use the page number from the URL to identify which slice was processed
+                current_page_num = int(request.GET.get('page', 1))
+            except ValueError:
+                current_page_num = 1
+
+            start_index = (current_page_num - 1) * items_per_page
+            end_index = start_index + items_per_page
+            
+            # Delete the processed slice from the master list
+            del extracted_data[start_index:end_index]
+            request.session['extracted_cash'] = extracted_data
+            request.session.modified = True
+
+            if not extracted_data:
+                request.session.pop('extracted_cash', None)
+                request.session.pop('cash_metadata', None)
+                messages.success(request, f"Success! All {len(saved_instances)} items saved. Process Complete.")
+                return redirect('cash:cash_download') 
+            else:
+                messages.success(request, f"Saved {len(saved_instances)} items. {len(extracted_data)} remaining.")
+                return redirect('cash:cash_review')
+        else:
+            # FIX 3: Print errors to the terminal so you know exactly why it failed!
+            print("❌ FORMSET VALIDATION FAILED:")
+            for i, form in enumerate(formset):
+                if form.errors:
+                    print(f"Row {i+1} Errors: {form.errors}")
+            messages.error(request, "Validation failed. Please check the form for errors.")
+            
+    else:
+        formset = CashFormSet(initial=current_slice, form_kwargs={'dynamic_choices': dynamic_choices, 'start_sequence': start_sequence})
+
+    return render(request, 'cash_review.html', {'formset': formset, 'metadata': metadata, 'page_obj': page_obj})
 
 def cash_download_view(request):
     file_path = request.session.get('cash_report_path')

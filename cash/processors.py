@@ -1,11 +1,17 @@
 import os
 import time
+import threading
+import re
+import difflib
+import pandas as pd
+import numpy as np
 from pypdf import PdfReader
 from pydantic import BaseModel, Field, field_validator
 from typing import List
 from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
+from tools.models import Vendor
 
 class BankTransaction(BaseModel):
     sys_id: str = Field(..., description="Sequential ID (e.g., 2025-01-001).")
@@ -122,14 +128,16 @@ class CashStandardExcelProcessor:
         print("\n" + "="*50)
         print("💵 INITIALIZING: CASH BOOK EXCEL PROCESSOR")
         print("="*50)
-        # Note: We don't strictly need Gemini API here since the data is already tabular,
-        # but we accept the api_key to strictly match the Strategy Pattern signature.
+        # Note: We don't strictly need the Gemini API key here since the data is already tabular,
+        # but we accept the api_key to perfectly match the Strategy Pattern signature used in views.
         self.vendor_lock = threading.Lock()
         self.batch_new_vendors = {}
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
 
     def resolve_and_assign_vendor(self, raw_name, client_id):
         """Matches vendor strictly within the selected client's isolated database."""
+        
+        # Ensure V001 (General Vendor) exists for THIS specific client
         general_vendor, _ = Vendor.objects.get_or_create(
             client_id=client_id,
             vendor_id='V001', 
@@ -142,17 +150,20 @@ class CashStandardExcelProcessor:
         name_str = str(raw_name).lower().replace('&', ' and ')
         target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
 
-        # 1. Exact Match
+        # 1. Exact Match (Scoped to Client)
         exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
         if exact_match:
             return {'db_id': exact_match.id, 'is_new': False, 'temp_vid': None}
 
-        # 2. Fuzzy Match
+        # 2. Fuzzy Match (Scoped to Client)
         best_vendor, best_coverage = None, 0.0
         for v in Vendor.objects.filter(client_id=client_id):
-            if not v.normalized_name or v.normalized_name[0] != target_norm[0]: continue
+            if not v.normalized_name or v.normalized_name[0] != target_norm[0]: 
+                continue
+            
             matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
             match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
+            
             if match.a == 0 and match.b == 0:
                 coverage = match.size / len(target_norm)
                 if coverage >= 0.6 and coverage > best_coverage:
@@ -162,11 +173,12 @@ class CashStandardExcelProcessor:
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
 
-        # 3. New Vendor Cache
+        # 3. Cache as New Vendor Candidate (Scoped to Client)
         with self.vendor_lock: 
             if target_norm in self.batch_new_vendors:
                 return self.batch_new_vendors[target_norm]
 
+            # Find the highest existing VXXX ID for THIS client
             last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
             next_num = 2
             if last_vendor and re.search(r'V(\d+)', last_vendor.vendor_id):
@@ -177,6 +189,7 @@ class CashStandardExcelProcessor:
             
             vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
             self.batch_new_vendors[target_norm] = vendor_data
+            
             return vendor_data
 
     def process(self, file_path, client_id, batch_name="", custom_prompt=""):
@@ -189,7 +202,7 @@ class CashStandardExcelProcessor:
             else:
                 df = pd.read_excel(file_path)
                 
-            # Clean NaNs to prevent JSON serialization errors later
+            # Clean NaNs to prevent JSON serialization errors
             df = df.replace({np.nan: None})
             
         except Exception as e:
@@ -198,22 +211,37 @@ class CashStandardExcelProcessor:
 
         ledgers = []
         
-        # Standardize column mapping based on your sample CSV
+        # Helper function to strictly parse floats, stripping commas and currency symbols
+        def safe_float(val):
+            if pd.isna(val) or val is None or val == '': 
+                return 0.0
+            try:
+                # Remove common problematic characters before parsing
+                clean_str = str(val).replace(',', '').replace('$', '').replace(' ', '').strip()
+                if clean_str == '':
+                    return 0.0
+                return float(clean_str)
+            except (ValueError, TypeError):
+                return 0.0
+                
+        # Standardize column mapping based on the CSV headers
         for index, row in df.iterrows():
-            raw_vendor = str(row.get('vendor', '')).strip() if row.get('vendor') else ''
+            
+            # Extract and resolve Vendor
+            raw_vendor = str(row.get('vendor', '')).strip() if pd.notna(row.get('vendor')) else ''
             vendor_data = self.resolve_and_assign_vendor(raw_vendor, client_id)
             
-            # Safely handle dates
+            # Robust Date Handling (Ensures we only grab YYYY-MM-DD or return None)
             raw_date = row.get('date')
-            clean_date = str(raw_date)[:10] if raw_date else None # Keep YYYY-MM-DD
+            clean_date = str(raw_date)[:10] if pd.notna(raw_date) and str(raw_date).strip() != '' else None
             
             entry_dict = {
                 'batch': batch_name,
                 'date': clean_date,
-                'voucher_no': row.get('voucher_no', ''),
-                'description': row.get('description', ''),
+                'voucher_no': str(row.get('voucher_no', '')) if pd.notna(row.get('voucher_no')) else '',
+                'description': str(row.get('description', '')) if pd.notna(row.get('description')) else '',
                 
-                # Vendor Mappings
+                # Vendor Mappings required for the Django Formset Dynamic Choices
                 'company': raw_vendor,
                 'vendor_db_id': vendor_data['db_id'],
                 'is_new_vendor': vendor_data['is_new'],
@@ -221,13 +249,17 @@ class CashStandardExcelProcessor:
                 'temp_id': vendor_data.get('temp_id'),
                 'vendor_choice': vendor_data['temp_id'] if vendor_data['is_new'] else vendor_data['db_id'],
                 
-                'invoice_no': row.get('invoice_no', ''),
-                'debit': float(row.get('debit', 0.0) or 0.0),
-                'credit': float(row.get('credit', 0.0) or 0.0),
-                'balance': float(row.get('balance', 0.0) or 0.0),
-                'note': row.get('note', ''),
+                'invoice_no': str(row.get('invoice_no', '')) if pd.notna(row.get('invoice_no')) else '',
+                
+                # Financials (using the robust safe_float parser)
+                'debit': safe_float(row.get('debit')),
+                'credit': safe_float(row.get('credit')),
+                'balance': safe_float(row.get('balance')),
+                
+                'note': str(row.get('note', '')) if pd.notna(row.get('note')) else '',
             }
             ledgers.append(entry_dict)
 
         print(f"🎉 SUCCESS: Parsed {len(ledgers)} cash rows.")
-        return ledgers, 1, self.cost_stats # Returns ledgers, total_pages (1 for Excel), costs
+        # Returns: (ledgers, total_pages, costs). Total pages is 1 for a single spreadsheet.
+        return ledgers, 1, self.cost_stats

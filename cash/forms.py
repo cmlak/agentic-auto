@@ -1,7 +1,7 @@
 from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Row, Column
+from crispy_forms.layout import Layout, Row, Column, Field
 from tools.models import Client # Import Client from tools
 from .models import Bank, Cash
 
@@ -127,6 +127,7 @@ class CashReviewForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         dynamic_choices = kwargs.pop('dynamic_choices', None)
+        start_sequence = kwargs.pop('start_sequence', 0)
         super().__init__(*args, **kwargs)
         
         if dynamic_choices:
@@ -136,8 +137,8 @@ class CashReviewForm(forms.ModelForm):
 
         if self.prefix:
             try:
-                form_index = int(self.prefix.split('-')[-1]) + 1
-                self.fields['form_number'].initial = str(form_index)
+                form_index = int(self.prefix.split('-')[-1])
+                self.fields['form_number'].initial = str(start_sequence + form_index + 1)
             except (ValueError, IndexError):
                 self.fields['form_number'].initial = 'N/A'
         else:

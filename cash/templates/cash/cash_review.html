@@ -15,7 +15,26 @@
         </div>
     </div>
 
-    <form id="review-form" method="post">
+    <div class="alert alert-info">
+        <strong>Progress:</strong> Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}. 
+        Displaying <strong>{{ page_obj.object_list|length }}</strong> of <strong>{{ page_obj.paginator.count }}</strong> total items remaining.
+    </div>
+
+    <div class="row mb-3">
+        <div class="col-12">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <!-- IMPORTANT: Include the page number in the action so the view knows which slice to process -->
+    <form id="review-form" method="post" action="?page={{ page_obj.number }}">
         {% csrf_token %}
         {{ formset.management_form }}
 
@@ -25,9 +44,38 @@
             {% endfor %}
         </div>
 
+        <!-- Pagination Controls -->
+        <nav aria-label="Review pagination" class="mt-4">
+            <ul class="pagination justify-content-center">
+                {% if page_obj.has_previous %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled"><span class="page-link">Previous</span></li>
+                {% endif %}
+
+                {% for num in page_obj.paginator.page_range %}
+                    {% if page_obj.number == num %}
+                        <li class="page-item active"><span class="page-link">{{ num }}</span></li>
+                    {% else %}
+                        <li class="page-item"><a class="page-link" href="?page={{ num }}">{{ num }}</a></li>
+                    {% endif %}
+                {% endfor %}
+
+                {% if page_obj.has_next %}
+                    <li class="page-item">
+                        <a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a>
+                    </li>
+                {% else %}
+                    <li class="page-item disabled"><span class="page-link">Next</span></li>
+                {% endif %}
+            </ul>
+        </nav>
+
         <div class="d-flex justify-content-end mt-4">
             <a href="{% url 'cash:cash_upload' %}" class="btn btn-outline-danger me-3 btn-lg shadow-sm">Cancel & Discard</a>
-            <button type="submit" class="btn btn-success btn-lg shadow-sm px-5">💾 Confirm & Save All</button>
+            <button type="submit" class="btn btn-success btn-lg shadow-sm px-5">💾 Confirm & Save Page {{ page_obj.number }}</button>
         </div>
     </form>
 </div>

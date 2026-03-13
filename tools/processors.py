@@ -27,11 +27,13 @@ class PurchaseEntry(BaseModel):
     description: str = Field(..., description="Detailed description of the items in the original language.")
     description_en: str = Field(..., description="Summarize the detailed description in English ONLY. Maximum 25 words.")
     
-    # ENHANCED: Balanced Account Assignment Fields
+    # ENHANCED: Full 5-Leg Account Assignment Fields
     account_id: Optional[int] = Field(None, description="Main Debit Account ID (e.g., Expense or Asset).")
     vat_account_id: Optional[int] = Field(None, description="Debit Account ID for VAT Input (e.g., 115010). Leave null if no VAT.")
+    wht_debit_account_id: Optional[int] = Field(None, description="Debit Account ID for WHT Expense (e.g., 725420) if company bears the tax. Leave null if no WHT.")
     credit_account_id: int = Field(200000, description="Main Credit Account ID (Default: 200000 for Trade Payable).")
-    wht_account_id: Optional[int] = Field(None, description="Credit Account ID for Withholding Tax Payable (e.g., 210040). Leave null if no WHT.")
+    wht_account_id: Optional[int] = Field(None, description="Credit Account ID for WHT Payable (e.g., 210040). Leave null if no WHT.")
+    
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts and ensuring they balance based on the rules.")
     
     # ENHANCED: Renamed for clean database architecture
@@ -184,8 +186,9 @@ class GeminiInvoiceProcessor:
                - If VAT is charged, put base in 'vat_base_usd' and tax in 'vat_usd'.
             7. BALANCED ASSIGNMENT: Assign IDs so the transaction mathematically balances.
                - account_id: Main Debit (Expense/Asset).
-               - credit_account_id: Main Credit (Payable/Cash).
                - vat_account_id: VAT Input Debit (e.g., 115010) if VAT exists.
+               - wht_debit_account_id: WHT Expense Debit (e.g., 725420) if company bears the WHT.
+               - credit_account_id: Main Credit (Payable/Cash).
                - wht_account_id: WHT Payable Credit (e.g., 210040) if WHT is triggered.
             </OUTPUT_INSTRUCTIONS>
             

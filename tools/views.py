@@ -10,7 +10,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Sum
 
 # Import your forms, processors, and local models
-from .forms import BatchUploadForm, PurchaseFormSet
+from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm
 from .processors import GeminiInvoiceProcessor
 from .models import Purchase, AICostLog, Vendor, Client
 from account.models import AccountMappingRule, ClientPromptMemo
@@ -178,6 +178,12 @@ def review_invoices(request):
                     if str(purchase_instance.vattin).lower().strip() in garbage_values:
                         purchase_instance.vattin = None
                     
+                    # --- FIX: Convert empty strings to None for IntegerFields ---
+                    for field in ['account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id']:
+                        val = getattr(purchase_instance, field)
+                        if val == '' or val == "":
+                            setattr(purchase_instance, field, None)
+
                     # --- VENDOR RESOLUTION ---
                     vc = form.cleaned_data.get('vendor_choice')
                     raw_name = form.cleaned_data.get('company', 'Unknown Vendor')
@@ -336,3 +342,105 @@ def ai_cost_dashboard(request):
         total_pages=Sum('total_pages')
     )
     return render(request, 'cost_dashboard.html', {'cost_logs': cost_logs, 'totals': totals})
+
+def manual_invoice_entry_view(request):
+    """View to manually enter a single invoice and post it to the GL."""
+    # Ensure a client is active in the session
+    client_id = request.session.get('active_client_id')
+
+    # 1. Prefer the client from POST if submitted (allows switching client in form)
+    if request.method == 'POST' and request.POST.get('client'):
+        client_id = request.POST.get('client')
+
+    if not client_id:
+        # Fallback: Default to the first client if session variable is missing
+        first_client = Client.objects.first()
+        if first_client:
+            client_id = first_client.id
+        else:
+            messages.error(request, "Please create a client first.")
+            return redirect('tools:invoice_upload')
+
+    # Fetch dynamic choices
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
+
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    if request.method == 'POST':
+        form = ManualPurchaseEntryForm(request.POST, vendor_choices=vendor_choices, account_choices=account_choices)
+        
+        if form.is_valid():
+            purchase = form.save(commit=False)
+            # purchase.client is now set automatically by the form
+            purchase.batch = "MANUAL_ENTRY"
+            
+            # --- FIX: Convert empty strings to None for IntegerFields ---
+            for field in ['account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id']:
+                val = getattr(purchase, field)
+                if val == '' or val == "":
+                    setattr(purchase, field, None)
+            
+            # Resolve Vendor
+            vc = form.cleaned_data.get('vendor_choice')
+            if vc:
+                purchase.vendor_id = int(vc)
+            
+            purchase.save()
+
+            # ==========================================================
+            # --- POST TO GENERAL LEDGER ---
+            # ==========================================================
+            je = JournalEntry.objects.create(
+                client=purchase.client,
+                date=purchase.date or date.today(),
+                description=f"Manual Purchase: {purchase.company}",
+                reference_number=purchase.invoice_no,
+                purchase=purchase
+            )
+
+            # Get amounts safely
+            total_amount = float(purchase.total_usd or 0.0)
+            vat_amount = float(purchase.vat_usd or 0.0)
+            unreg_amount = float(purchase.unreg_usd or 0.0)
+            
+            # Calculate WHT mathematically if WHT accounts are selected
+            wht_amount = 0.0
+            if purchase.wht_account_id and unreg_amount > 0:
+                # Assuming 10% or 15% was manually calculated and baked into the total by the user,
+                # Or you can calculate it dynamically here based on your rules.
+                wht_amount = round(total_amount - unreg_amount, 2) # simplified logic, adjust if needed
+
+            # 1. Main Debit (Expense/Asset)
+            if purchase.account_id:
+                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=(total_amount - vat_amount - wht_amount))
+
+            # 2. VAT Debit
+            if vat_amount > 0 and purchase.vat_account_id:
+                vat_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
+                JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
+
+            # 3. WHT Expense Debit (Gross-up scenario)
+            if wht_amount > 0 and purchase.wht_debit_account_id:
+                wht_exp_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=wht_exp_acct, description="WHT Expense Absorbed", debit=wht_amount)
+
+            # 4. Main Credit (Payable)
+            if total_amount > 0 and purchase.credit_account_id:
+                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, description=f"Payable - {purchase.company}", credit=total_amount)
+
+            # 5. WHT Payable Credit
+            if wht_amount > 0 and purchase.wht_account_id:
+                wht_pay_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
+                JournalLine.objects.create(journal_entry=je, account=wht_pay_acct, description="WHT Payable to GDT", credit=wht_amount)
+
+            messages.success(request, f"Successfully created manual invoice and posted Journal Entry for {purchase.company}.")
+            return redirect('tools:manual_invoice_entry') # Reload blank form
+
+    else:
+        form = ManualPurchaseEntryForm(initial={'client': client_id}, vendor_choices=vendor_choices, account_choices=account_choices)
+
+    return render(request, 'manual_invoice_entry.html', {'form': form})

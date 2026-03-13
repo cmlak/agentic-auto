@@ -12,6 +12,7 @@ urlpatterns = [
     path('review-invoices/', views.review_invoices, name='review_invoices'),
     path('invoice-success/', views.invoice_download_view, name='invoice_download'),
     path('download-invoice-report/', views.download_invoice_report, name='download_invoice_report'),
-
+    path('invoice/manual-entry/', views.manual_invoice_entry_view, name='manual_invoice_entry'),
+    
     path('management/ai-costs/', views.ai_cost_dashboard, name='ai_cost_dashboard'),
 ]

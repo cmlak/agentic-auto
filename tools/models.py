@@ -48,9 +48,10 @@ class Purchase(models.Model):
     
     vattin = models.CharField(max_length=100, blank=True, null=True)
     account_id = models.IntegerField(blank=True, null=True)
-    vat_account_id = models.IntegerField(blank=True, null=True) # NEW
+    wht_debit_account_id = models.IntegerField(blank=True, null=True)
+    vat_account_id = models.IntegerField(blank=True, null=True)
     credit_account_id = models.IntegerField(blank=True, null=True, default=200000)
-    wht_account_id = models.IntegerField(blank=True, null=True) # NEW
+    wht_account_id = models.IntegerField(blank=True, null=True)
     
     description = models.TextField(blank=True, null=True)
     description_en = models.TextField(blank=True, null=True)

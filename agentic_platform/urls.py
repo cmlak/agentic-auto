@@ -11,6 +11,7 @@ urlpatterns = [
     path('register/', include('register.urls')),
     path('tools/', include('tools.urls')),
     path('cash/', include('cash.urls')),
+    path('account/', include('account.urls')),
     path('', lambda request: redirect('admin/', permanent=False)),
 ]
 

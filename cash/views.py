@@ -52,6 +52,15 @@ def bank_ai_upload_view(request):
                     custom_prompt=custom_prompt
                 )
                 
+                # --- LOG COST IMMEDIATELY ---
+                AICostLog.objects.create(
+                    file_name=uploaded_pdf.name, 
+                    total_pages=total_pages, 
+                    flash_cost=costs.get('flash_cost', 0), 
+                    pro_cost=costs.get('pro_cost', 0), 
+                    total_cost=costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+                )
+                
                 request.session['extracted_bank'] = extracted_data
                 request.session['bank_metadata'] = {
                     'file_name': uploaded_pdf.name,
@@ -93,8 +102,6 @@ def bank_review_view(request):
                     instance.batch = metadata.get('batch_name')
                     instance.save()
                     saved_instances.append(instance)
-            
-            AICostLog.objects.create(file_name=metadata.get('file_name', 'Bank Statement'), total_pages=metadata.get('total_pages', 0), flash_cost=metadata.get('costs', {}).get('flash_cost', 0), pro_cost=metadata.get('costs', {}).get('pro_cost', 0), total_cost=metadata.get('costs', {}).get('flash_cost', 0) + metadata.get('costs', {}).get('pro_cost', 0))
 
             if saved_instances:
                 report_data = list(Bank.objects.filter(id__in=[p.id for p in saved_instances]).values())

@@ -1,6 +1,7 @@
 import os
 import tempfile
 import pandas as pd
+from datetime import date
 from django.conf import settings
 from django.shortcuts import render, redirect
 from django.contrib import messages
@@ -8,13 +9,26 @@ from django.http import HttpResponse
 from django.contrib.admin.views.decorators import staff_member_required
 from django.db.models import Sum
 
+# Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet
 from .processors import GeminiInvoiceProcessor
 from .models import Purchase, AICostLog, Vendor, Client
+from account.models import AccountMappingRule, ClientPromptMemo
+
+# Import the new accounting models
+from account.models import Account, JournalEntry, JournalLine
+
+
+# ====================================================================
+# --- 1. AI INVOICE UPLOAD & PROCESSING ---
+# ====================================================================
 
 def invoice_ai_upload_view(request):
+    """Step 1: Select Client, Upload PDF, Inject Dynamic Rules, Process via AI, and Store."""
     if request.method == 'POST':
+        # Clear previous session data safely to prevent data bleed
         request.session.pop('invoice_report_path', None)
+        
         form = BatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
@@ -22,21 +36,68 @@ def invoice_ai_upload_view(request):
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
             
+            # ==========================================================
+            # --- DYNAMIC MULTI-TENANT RULE INJECTION ---
+            # ==========================================================
+            rules_context = ""
+            memo_context = ""
+
+            # 1. Fetch the Anti-Pattern Memo for this specific client
+            client_memo = ClientPromptMemo.objects.filter(client=selected_client).first()
+            if client_memo:
+                memo_context = client_memo.memo_text
+
+            # 2. Fetch the Mapping Rules and compile them into a CSV format in memory
+            rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
+            if rules.exists():
+                rules_data = []
+                for rule in rules:
+                    rules_data.append({
+                        'Account ID': rule.account.account_id,
+                        'Account Name': rule.account.name,
+                        'Description / Trigger Keywords': rule.trigger_keywords,
+                        'Reasoning / AI Guidelines': rule.ai_guideline
+                    })
+                # Convert the database query directly into a CSV string for the AI prompt
+                df_rules = pd.DataFrame(rules_data)
+                rules_context = df_rules.to_csv(index=False)
+            else:
+                print(f"Warning: No Account Mapping Rules found in the database for {selected_client.name}.")
+
+            # ==========================================================
+            # --- HANDLE FILE UPLOAD ---
+            # ==========================================================
             with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_pdf:
                 for chunk in uploaded_pdf.chunks():
                     tmp_pdf.write(chunk)
                 tmp_pdf_path = tmp_pdf.name
 
             try:
+                # Initialize Processor
                 api_key = os.getenv("GEMINI_API_KEY_2") 
                 processor = GeminiInvoiceProcessor(api_key=api_key)
+                
+                # Execute One-Pass AI Strategy (Extraction + GL Assignment)
                 extracted_data, total_pages, costs = processor.process(
                     pdf_path=tmp_pdf_path, 
                     client_id=selected_client.id,
                     custom_prompt=custom_prompt, 
-                    batch_name=batch_name
+                    batch_name=batch_name,
+                    rules_context=rules_context,  # Passing the dynamic DB rules!
+                    memo_context=memo_context     # Passing the dynamic DB memo!
                 )
                 
+                # --- LOG COST IMMEDIATELY ---
+                # Save the cost now, so it is recorded even if the user abandons the review step.
+                AICostLog.objects.create(
+                    file_name=uploaded_pdf.name, 
+                    total_pages=total_pages, 
+                    flash_cost=costs.get('flash_cost', 0), 
+                    pro_cost=costs.get('pro_cost', 0), 
+                    total_cost=costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+                )
+                
+                # Save results and context to the session for the review screen
                 request.session['extracted_invoices'] = extracted_data
                 request.session['ai_metadata'] = {
                     'file_name': uploaded_pdf.name,
@@ -46,20 +107,29 @@ def invoice_ai_upload_view(request):
                     'total_pages': total_pages,
                     'costs': costs
                 }
+                
                 return redirect('tools:review_invoices')
                 
             except ValueError as ve:
                 messages.error(request, str(ve))
             except Exception as e:
-                messages.error(request, f"AI Error: {str(e)}")
+                messages.error(request, f"AI Processing Error: {str(e)}")
             finally:
+                # Always clean up the temporary PDF file to prevent storage leaks
                 if os.path.exists(tmp_pdf_path):
                     os.remove(tmp_pdf_path)
     else:
         form = BatchUploadForm()
+
     return render(request, 'invoice_upload.html', {'form': form})
 
+
+# ====================================================================
+# --- 2. HITL REVIEW & AUTOMATIC GL POSTING ---
+# ====================================================================
+
 def review_invoices(request):
+    """Step 2: Review AI data, Update Vendors, Save Source Doc, and Post Journal Entry."""
     extracted_data = request.session.get('extracted_invoices', [])
     metadata = request.session.get('ai_metadata', {})
 
@@ -67,25 +137,48 @@ def review_invoices(request):
         return redirect('tools:invoice_upload')
         
     client_id = metadata.get('client_id')
+    
+    # --- VENDOR CHOICES ---
+    # Isolate vendors exclusively to this client
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     
     temp_vendors = []
     for item in extracted_data:
         if item.get('is_new_vendor'):
-            temp_vendors.append((item['temp_id'], f"✨ NEW: {item.get('company', 'Unknown')} ({item['temp_vid']})"))
+            temp_vendors.append((item['temp_id'], f"✨ NEW: {item.get('company', 'Unknown')} ({item.get('temp_vid', '')})"))
     
     temp_vendors = list(dict.fromkeys(temp_vendors))
     dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
 
+    # --- ACCOUNT CHOICES ---
+    # Fetch accounts formatted nicely: "100000 - Cash on Hand"
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
     if request.method == 'POST':
-        formset = PurchaseFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices})
+        # Pass BOTH dynamic vendors and dynamic accounts to the formset
+        formset = PurchaseFormSet(
+            request.POST, 
+            form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
+        )
+        
         if formset.is_valid():
             saved_instances = []
+            
             for form in formset:
                 if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                     purchase_instance = form.save(commit=False) 
                     purchase_instance.client_id = client_id # Map to client
                     
+                    # --- DATA CLEANING ---
+                    # Prevent garbage values like "1", "null", or "Unknown" from becoming ="1" in Excel
+                    garbage_values = ['null', 'none', 'unknown', 'n/a', '1', 'nan']
+                    if str(purchase_instance.invoice_no).lower().strip() in garbage_values:
+                        purchase_instance.invoice_no = None
+                    if str(purchase_instance.vattin).lower().strip() in garbage_values:
+                        purchase_instance.vattin = None
+                    
+                    # --- VENDOR RESOLUTION ---
                     vc = form.cleaned_data.get('vendor_choice')
                     raw_name = form.cleaned_data.get('company', 'Unknown Vendor')
                     
@@ -101,11 +194,80 @@ def review_invoices(request):
                         except (ValueError, Vendor.DoesNotExist):
                             pass
                             
+                    # 1. Save the Source Document (Purchase Invoice)
                     purchase_instance.save()
                     saved_instances.append(purchase_instance)
-            
-            AICostLog.objects.create(file_name=metadata.get('file_name', 'Unknown'), total_pages=metadata.get('total_pages', 0), flash_cost=metadata.get('costs', {}).get('flash_cost', 0), pro_cost=metadata.get('costs', {}).get('pro_cost', 0), total_cost=metadata.get('costs', {}).get('flash_cost', 0) + metadata.get('costs', {}).get('pro_cost', 0))
+                    
+                    # ==========================================================
+                    # --- 2. AUTOMATIC DOUBLE-ENTRY JOURNAL CREATION ---
+                    # ==========================================================
+                    
+                    # Create Journal Entry Header (Explicit FK back to 'purchase')
+                    je = JournalEntry.objects.create(
+                        client_id=client_id,
+                        date=purchase_instance.date or date.today(),
+                        description=f"Purchase from {raw_name}",
+                        reference_number=purchase_instance.invoice_no,
+                        purchase=purchase_instance
+                    )
 
+                    # Financial Calculations
+                    total_amount = float(purchase_instance.total_usd or 0.0)
+                    vat_amount = float(purchase_instance.vat_usd or 0.0)
+                    net_amount = round(total_amount - vat_amount, 2)
+
+                    # --- USER EDITED ACCOUNTS ---
+                    # Grab the actual IDs the user settled on in the review screen
+                    form_debit_acct = form.cleaned_data.get('account_id')
+                    form_credit_acct = form.cleaned_data.get('credit_account_id')
+
+                    # CREDIT: Trade Payable (Total Liability)
+                    if total_amount > 0:
+                        cr_account_id = str(form_credit_acct) if form_credit_acct else '200000'
+                        ap_account, _ = Account.objects.get_or_create(
+                            client_id=client_id, account_id=cr_account_id, 
+                            defaults={'name': 'Trade Payable - USD', 'account_type': 'Liability'}
+                        )
+                        JournalLine.objects.create(
+                            journal_entry=je, account=ap_account, 
+                            description=f"Payable - {raw_name}", credit=total_amount
+                        )
+
+                    # DEBIT: VAT Input (Recoverable Tax Asset)
+                    if vat_amount > 0:
+                        vat_account, _ = Account.objects.get_or_create(
+                            client_id=client_id, account_id='115010', 
+                            defaults={'name': 'VAT input 进项增值税', 'account_type': 'Asset'}
+                        )
+                        JournalLine.objects.create(
+                            journal_entry=je, account=vat_account, 
+                            description="Input VAT", debit=vat_amount
+                        )
+
+                    # DEBIT: Expense Account (Net Amount)
+                    if net_amount > 0:
+                        ai_account_id = str(form_debit_acct) if form_debit_acct else '725080'
+                        exp_account, _ = Account.objects.get_or_create(
+                            client_id=client_id, account_id=ai_account_id, 
+                            defaults={'name': 'Operating Expense', 'account_type': 'Expense'}
+                        )
+                        JournalLine.objects.create(
+                            journal_entry=je, account=exp_account, 
+                            description=purchase_instance.description_en or purchase_instance.description or "Expense", 
+                            debit=net_amount
+                        )
+            
+            # --- COST LOGGING ---
+            costs = metadata.get('costs', {})
+            AICostLog.objects.create(
+                file_name=metadata.get('file_name', 'Unknown'), 
+                total_pages=metadata.get('total_pages', 0), 
+                flash_cost=costs.get('flash_cost', 0), 
+                pro_cost=costs.get('pro_cost', 0), 
+                total_cost=costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+            )
+
+            # --- EXCEL REPORT GENERATION ---
             if saved_instances:
                 report_data = list(Purchase.objects.filter(id__in=[p.id for p in saved_instances]).values())
                 df_report = pd.DataFrame(report_data)
@@ -121,29 +283,56 @@ def review_invoices(request):
                 df_report.to_excel(report_path, index=False, engine='openpyxl')
                 request.session['invoice_report_path'] = report_path
             
+            # Clean Session & Redirect
             request.session.pop('extracted_invoices', None)
             request.session.pop('ai_metadata', None)
-            messages.success(request, f"Successfully saved {len(saved_instances)} invoices for {metadata.get('client_name')}!")
+            
+            messages.success(request, f"Successfully saved {len(saved_instances)} invoices and posted Journal Entries for {metadata.get('client_name')}!")
             return redirect('tools:invoice_download') 
+        else:
+            print("❌ FORMSET VALIDATION FAILED:")
+            for i, form in enumerate(formset):
+                if form.errors:
+                    print(f"Row {i+1} Errors: {form.errors}")
+            messages.error(request, "Validation failed. Please check the form for errors.")
+            
     else:
-        formset = PurchaseFormSet(initial=extracted_data, form_kwargs={'dynamic_choices': dynamic_choices})
+        formset = PurchaseFormSet(
+            initial=extracted_data, 
+            form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
+        )
+        
     return render(request, 'invoice_review.html', {'formset': formset, 'metadata': metadata})
 
+# ====================================================================
+# --- 3. DOWNLOAD & DASHBOARD VIEWS ---
+# ====================================================================
+
 def invoice_download_view(request):
+    """Renders the success page with the download link."""
     file_path = request.session.get('invoice_report_path')
     return render(request, 'invoice_download.html', {'has_file': bool(file_path and os.path.exists(file_path))})
 
 def download_invoice_report(request):
+    """Serves the generated Excel invoice report to the user."""
     file_path = request.session.get('invoice_report_path')
     if file_path and os.path.exists(file_path):
         with open(file_path, 'rb') as fh:
             response = HttpResponse(fh.read(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            response['Content-Disposition'] = 'attachment; filename="invoice_process_report.xlsx"'
+            response['Content-Disposition'] = 'attachment; filename="ai_process_report.xlsx"'
             return response
+    
+    messages.error(request, "The report file has expired or could not be found.")
     return redirect('tools:invoice_upload')
 
 @staff_member_required
 def ai_cost_dashboard(request):
+    """Dashboard to review AI processing costs."""
     cost_logs = AICostLog.objects.all().order_by('-date')
-    totals = AICostLog.objects.aggregate(total_flash=Sum('flash_cost'), total_pro=Sum('pro_cost'), grand_total=Sum('total_cost'), total_pages=Sum('total_pages'))
+    totals = AICostLog.objects.aggregate(
+        total_flash=Sum('flash_cost'), 
+        total_pro=Sum('pro_cost'), 
+        grand_total=Sum('total_cost'), 
+        total_pages=Sum('total_pages')
+    )
     return render(request, 'cost_dashboard.html', {'cost_logs': cost_logs, 'totals': totals})

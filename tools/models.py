@@ -48,23 +48,32 @@ class Purchase(models.Model):
     
     vattin = models.CharField(max_length=100, blank=True, null=True)
     account_id = models.IntegerField(blank=True, null=True)
+    vat_account_id = models.IntegerField(blank=True, null=True) # NEW
+    credit_account_id = models.IntegerField(blank=True, null=True, default=200000)
+    wht_account_id = models.IntegerField(blank=True, null=True) # NEW
     
     description = models.TextField(blank=True, null=True)
     description_en = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
     
-    non_vat_non_tax_payer_usd = models.FloatField(blank=True, null=True)
-    non_vat_tax_payer_usd = models.FloatField(blank=True, null=True)
-    local_purchase_usd = models.FloatField(blank=True, null=True)
-    local_purchase_vat_usd = models.FloatField(blank=True, null=True)
+    unreg_usd = models.FloatField(blank=True, null=True)
+    exempt_usd = models.FloatField(blank=True, null=True)
+    vat_base_usd = models.FloatField(blank=True, null=True)
+    vat_usd = models.FloatField(blank=True, null=True)
     total_usd = models.FloatField(blank=True, null=True)
     page = models.IntegerField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
     def save(self, *args, **kwargs):
-        if self.invoice_no and not self.invoice_no.startswith('="'):
+        # Double-check cleanup to prevent ="null" or ="1"
+        if self.invoice_no and str(self.invoice_no).lower() in ['null', 'none', 'unknown', '1']:
+            self.invoice_no = None
+        if self.invoice_no and not str(self.invoice_no).startswith('="'):
             self.invoice_no = f'="{self.invoice_no}"'
-        if self.vattin and not self.vattin.startswith('="'):
+            
+        if self.vattin and str(self.vattin).lower() in ['null', 'none', 'unknown']:
+            self.vattin = None
+        if self.vattin and not str(self.vattin).startswith('="'):
             self.vattin = f'="{self.vattin}"'
         super(Purchase, self).save(*args, **kwargs)
 

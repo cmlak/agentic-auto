@@ -1,0 +1,31 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container mt-4">
+    <h2>Profit and Loss Statement</h2>
+    <div class="card mt-4">
+        <div class="card-body">
+            <h4 class="text-success">Revenues</h4>
+            <table class="table table-sm">
+                {% for rev in revenues %}
+                <tr><td>{{ rev.name }}</td><td class="text-end">{{ rev.balance|floatformat:2 }}</td></tr>
+                {% endfor %}
+                <tr class="fw-bold"><td>Total Revenue</td><td class="text-end">{{ total_revenue|floatformat:2 }}</td></tr>
+            </table>
+
+            <h4 class="text-danger mt-4">Expenses</h4>
+            <table class="table table-sm">
+                {% for exp in expenses %}
+                <tr><td>{{ exp.name }}</td><td class="text-end">{{ exp.balance|floatformat:2 }}</td></tr>
+                {% endfor %}
+                <tr class="fw-bold"><td>Total Expenses</td><td class="text-end">{{ total_expense|floatformat:2 }}</td></tr>
+            </table>
+
+            <hr>
+            <h3 class="d-flex justify-content-between {% if net_income >= 0 %}text-success{% else %}text-danger{% endif %}">
+                <span>Net Income:</span>
+                <span>${{ net_income|floatformat:2 }}</span>
+            </h3>
+        </div>
+    </div>
+</div>
+{% endblock %}

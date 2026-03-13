@@ -1,0 +1,38 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="container mt-4">
+    <h2>Trial Balance</h2>
+    <table class="table table-bordered table-striped mt-3">
+        <thead class="table-dark">
+            <tr>
+                <th>Account ID</th>
+                <th>Account Name</th>
+                <th>Type</th>
+                <th class="text-end">Debit (USD)</th>
+                <th class="text-end">Credit (USD)</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in trial_balance %}
+            <tr>
+                <td>{{ row.id }}</td>
+                <td>{{ row.name }}</td>
+                <td>{{ row.type }}</td>
+                <td class="text-end">{{ row.debit|floatformat:2 }}</td>
+                <td class="text-end">{{ row.credit|floatformat:2 }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot class="fw-bold {% if is_balanced %}table-success{% else %}table-danger{% endif %}">
+            <tr>
+                <td colspan="3" class="text-end">TOTALS:</td>
+                <td class="text-end">{{ total_dr|floatformat:2 }}</td>
+                <td class="text-end">{{ total_cr|floatformat:2 }}</td>
+            </tr>
+        </tfoot>
+    </table>
+    {% if not is_balanced %}
+    <div class="alert alert-danger">Warning: Trial Balance does not balance! Check journal entries.</div>
+    {% endif %}
+</div>
+{% endblock %}

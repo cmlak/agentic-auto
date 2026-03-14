@@ -1,0 +1,53 @@
+{% extends 'base_1.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8">
+            <div class="card shadow-sm border-0">
+                <div class="card-header bg-success text-white d-flex justify-content-between align-items-center py-3">
+                    <h4 class="mb-0">📊 Export Accounting Data</h4>
+                    <a href="{% url 'tools:export_purchases' %}" class="btn btn-sm btn-outline-light">Back to Dashboard</a>
+                </div>
+                
+                <div class="card-body p-5 text-center">
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="alert alert-{{ message.tags }} alert-dismissible fade show text-start">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+
+                    <div class="display-1 text-success mb-4">
+                        <i class="bi bi-file-earmark-excel"></i>
+                    </div>
+
+                    <h2 class="mb-3">Purchase Ledger Export</h2>
+                    <p class="text-muted mb-4 fs-5">
+                        Generate a complete, raw Excel (.xlsx) backup of all processed vendor invoices, categorized tax bases, and 5-leg General Ledger assignments for the active client.
+                    </p>
+
+                    <div class="d-grid gap-3 d-md-flex justify-content-md-center mt-4">
+                        <a href="{% url 'tools:export_purchases' %}" class="btn btn-success btn-lg px-5 shadow-sm">
+                            <i class="bi bi-download me-2"></i> Download Excel Report
+                        </a>
+                    </div>
+                </div>
+                
+                <div class="card-footer bg-light p-4">
+                    <h6 class="fw-bold text-dark">Included in this export:</h6>
+                    <ul class="text-muted small mb-0">
+                        <li>Original Vendor Names and VAT TINs</li>
+                        <li>Extracted English Descriptions and Instructions</li>
+                        <li>Categorized Tax Bases (Unregistered, Exempt, VAT Base)</li>
+                        <li>Complete Double-Entry GL Routing (Main Dr/Cr, VAT, WHT Expense/Payable)</li>
+                        <li>Source Document Tracing (Batch Names, Page Numbers)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

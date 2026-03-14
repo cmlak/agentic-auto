@@ -2,8 +2,12 @@ from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field
-from tools.models import Client # Import Client from tools
+from tools.models import Client 
 from .models import Bank, Cash
+
+# ====================================================================
+# --- 1. BANK STATEMENT FORMS ---
+# ====================================================================
 
 BANK_PROCESSOR_CHOICES = [
     ('aba_standard', 'Standard ABA Bank Rules'),
@@ -35,9 +39,41 @@ class BankBatchUploadForm(forms.Form):
 
 class BankReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
+    
+    # --- DOUBLE ENTRY ACCOUNTING FIELDS ---
+    debit_account_id = forms.ChoiceField(
+        label="Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-success'})
+    )
+    credit_account_id = forms.ChoiceField(
+        label="Account (Cr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
+    )
+    matched_purchase_id = forms.IntegerField(required=False, widget=forms.HiddenInput())
+    
+    # Readonly ensures the user cannot edit it, but the data still submits and saves to the DB
+    instruction = forms.CharField(
+        label="AI Reasoning", required=False, 
+        widget=forms.TextInput(attrs={'readonly': 'readonly', 'class': 'text-muted bg-light border-0'})
+    )
 
     def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
         super().__init__(*args, **kwargs)
+        
+        # Populate dynamic accounts
+        if account_choices:
+            self.fields['debit_account_id'].choices = account_choices
+            self.fields['credit_account_id'].choices = account_choices
+            
+        # Bind initial values from the AI's prediction
+        if self.initial.get('debit_account_id'): 
+            self.fields['debit_account_id'].initial = self.initial.get('debit_account_id')
+        if self.initial.get('credit_account_id'): 
+            self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
+        if self.initial.get('instruction'): 
+            self.fields['instruction'].initial = self.initial.get('instruction')
+
         if self.prefix:
             try:
                 form_index = int(self.prefix.split('-')[-1]) + 1
@@ -50,6 +86,8 @@ class BankReviewForm(forms.ModelForm):
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.disable_csrf = True
+        
+        # UI REARRANGED: Side-by-Side Double Entry View
         self.helper.layout = Layout(
             Row(
                 Column('form_number', css_class='form-group col-md-1'),
@@ -69,38 +107,43 @@ class BankReviewForm(forms.ModelForm):
                 Column('remark', css_class='form-group col-md-4'),
                 Column('raw_remark', css_class='form-group col-md-8'),
             ),
+            # --- THE SIDE-BY-SIDE ACCOUNTING GRID ---
             Row(
-                Column('debit', css_class='form-group col-md-4'),
-                Column('credit', css_class='form-group col-md-4'),
-                Column('balance', css_class='form-group col-md-4 fw-bold'),
+                Column('debit_account_id', css_class='form-group col-md-4'),
+                Column('debit', css_class='form-group col-md-2'),
+                Column('credit_account_id', css_class='form-group col-md-4'),
+                Column('credit', css_class='form-group col-md-2'),
+                css_class='bg-light p-2 rounded mt-2 border border-info align-items-end'
             ),
+            Row(
+                Column('instruction', css_class='form-group col-md-8'),
+                Column('balance', css_class='form-group col-md-4 fw-bold'),
+                css_class='mt-2'
+            ),
+            Field('matched_purchase_id')
         )
 
     class Meta:
         model = Bank
-        exclude = ['client']
+        exclude = ['client', 'matched_purchase']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
-            # Add 'auto-expand' class to textareas
             'purpose': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
             'raw_remark': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            # Change numbers to TextInput and add 'number-format' to handle commas via JS
-            'debit': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'credit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+            'debit': forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}),
+            'credit': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
             'balance': forms.TextInput(attrs={'class': 'number-format text-end'}),
         }
 
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
-###
 
 # ====================================================================
-# --- CASH BOOK FORMS ---
+# --- 2. CASH BOOK FORMS ---
 # ====================================================================
 
 CASH_PROCESSOR_CHOICES = [
     ('standard_excel', 'Standard Excel/CSV Parser'),
-    # You can add Gemini-powered processors here later if you want AI to translate descriptions!
 ]
 
 class CashBatchUploadForm(forms.Form):
@@ -124,16 +167,48 @@ class CashBatchUploadForm(forms.Form):
 class CashReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
     vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False)
+    
+    # --- DOUBLE ENTRY ACCOUNTING FIELDS ---
+    debit_account_id = forms.ChoiceField(
+        label="Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-success'})
+    )
+    credit_account_id = forms.ChoiceField(
+        label="Account (Cr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
+    )
+    matched_purchase_id = forms.IntegerField(required=False, widget=forms.HiddenInput())
+    
+    # Readonly ensures the user cannot edit it, but the data still submits and saves to the DB
+    instruction = forms.CharField(
+        label="AI Reasoning", required=False, 
+        widget=forms.TextInput(attrs={'readonly': 'readonly', 'class': 'text-muted bg-light border-0'})
+    )
 
     def __init__(self, *args, **kwargs):
         dynamic_choices = kwargs.pop('dynamic_choices', None)
+        account_choices = kwargs.pop('account_choices', [])
         start_sequence = kwargs.pop('start_sequence', 0)
         super().__init__(*args, **kwargs)
         
-        if dynamic_choices:
+        # Populate dynamic vendors
+        if dynamic_choices: 
             self.fields['vendor_choice'].choices = dynamic_choices
-        if self.initial.get('vendor_choice'):
+        if self.initial.get('vendor_choice'): 
             self.fields['vendor_choice'].initial = self.initial.get('vendor_choice')
+            
+        # Populate dynamic accounts
+        if account_choices:
+            self.fields['debit_account_id'].choices = account_choices
+            self.fields['credit_account_id'].choices = account_choices
+            
+        # Bind initial values from the AI's prediction
+        if self.initial.get('debit_account_id'): 
+            self.fields['debit_account_id'].initial = self.initial.get('debit_account_id')
+        if self.initial.get('credit_account_id'): 
+            self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
+        if self.initial.get('instruction'): 
+            self.fields['instruction'].initial = self.initial.get('instruction')
 
         if self.prefix:
             try:
@@ -149,6 +224,8 @@ class CashReviewForm(forms.ModelForm):
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.disable_csrf = True
+        
+        # UI REARRANGED: Side-by-Side Double Entry View
         self.helper.layout = Layout(
             Row(
                 Column('form_number', css_class='form-group col-md-1'),
@@ -166,26 +243,33 @@ class CashReviewForm(forms.ModelForm):
             Row(
                 Column('note', css_class='form-group col-md-12'),
             ),
+            # --- THE SIDE-BY-SIDE ACCOUNTING GRID ---
             Row(
-                Column('debit', css_class='form-group col-md-4'),
-                Column('credit', css_class='form-group col-md-4'),
-                Column('balance', css_class='form-group col-md-4 fw-bold'),
+                Column('debit_account_id', css_class='form-group col-md-4'),
+                Column('debit', css_class='form-group col-md-2'),
+                Column('credit_account_id', css_class='form-group col-md-4'),
+                Column('credit', css_class='form-group col-md-2'),
+                css_class='bg-light p-2 rounded mt-2 border border-info align-items-end'
             ),
-            Field('vendor', type="hidden")
+            Row(
+                Column('instruction', css_class='form-group col-md-8'),
+                Column('balance', css_class='form-group col-md-4 fw-bold'),
+                css_class='mt-2'
+            ),
+            Field('vendor', type="hidden"),
+            Field('matched_purchase_id')
         )
 
     class Meta:
         model = Cash
-        fields = ['batch', 'date', 'voucher_no', 'description', 'vendor', 'invoice_no', 
-                  'debit', 'credit', 'balance', 'note']
+        exclude = ['client', 'matched_purchase']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
             'note': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            'debit': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'credit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+            'debit': forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}),
+            'credit': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
             'balance': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'vendor': forms.HiddenInput(),
         }
 
 CashFormSet = formset_factory(CashReviewForm, extra=0, can_delete=True)

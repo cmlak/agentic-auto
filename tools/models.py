@@ -52,11 +52,18 @@ class Purchase(models.Model):
     vat_account_id = models.IntegerField(blank=True, null=True)
     credit_account_id = models.IntegerField(blank=True, null=True, default=200000)
     wht_account_id = models.IntegerField(blank=True, null=True)
-    
+
     description = models.TextField(blank=True, null=True)
     description_en = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
     
+    PAYMENT_STATUS_CHOICES = [
+        ('Open', 'Open'),
+        ('Prepayment', 'Prepayment'),
+        ('Paid', 'Paid'),
+    ]
+    payment_status = models.CharField(max_length=50, choices=PAYMENT_STATUS_CHOICES, default='Open')
+
     unreg_usd = models.FloatField(blank=True, null=True)
     exempt_usd = models.FloatField(blank=True, null=True)
     vat_base_usd = models.FloatField(blank=True, null=True)

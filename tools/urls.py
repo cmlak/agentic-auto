@@ -14,5 +14,9 @@ urlpatterns = [
     path('download-invoice-report/', views.download_invoice_report, name='download_invoice_report'),
     path('invoice/manual-entry/', views.manual_invoice_entry_view, name='manual_invoice_entry'),
     
+    path('export/purchases/<int:client_id>/', views.export_purchase_invoices, name='export_purchases'),
+    path('export/purchases/success/', views.purchase_export_success_view, name='purchase_export_success'),
+    path('export/purchases/download/', views.download_exported_purchases, name='download_exported_purchases'),
+    
     path('management/ai-costs/', views.ai_cost_dashboard, name='ai_cost_dashboard'),
 ]

@@ -1,0 +1,57 @@
+{% extends 'base_1.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>General Ledger (Chart of Accounts)</h2>
+        <a href="{% url 'account:trial_balance' %}" class="btn btn-outline-secondary">Back to Dashboard</a>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <table class="table table-hover table-striped mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th class="ps-4">Account ID</th>
+                        <th>Account Name</th>
+                        <th>Type</th>
+                        <th class="text-end">Total Dr</th>
+                        <th class="text-end">Total Cr</th>
+                        <th class="text-end">Net Balance</th>
+                        <th class="text-end pe-4">Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for account in accounts %}
+                    <tr>
+                        <td class="ps-4 fw-bold text-primary">{{ account.account_id }}</td>
+                        <td>{{ account.name }}</td>
+                        <td>
+                            <span class="badge bg-secondary">{{ account.account_type }}</span>
+                        </td>
+                        <td class="text-end text-muted">
+                            {% if account.debit > 0 %}{{ account.debit|floatformat:2 }}{% else %}-{% endif %}
+                        </td>
+                        <td class="text-end text-muted">
+                            {% if account.credit > 0 %}{{ account.credit|floatformat:2 }}{% else %}-{% endif %}
+                        </td>
+                        <td class="text-end fw-bold {% if account.balance < 0 %}text-danger{% else %}text-success{% endif %}">
+                            {{ account.balance|floatformat:2 }}
+                        </td>
+                        <td class="text-end pe-4">
+                            <a href="{% url 'account:account_ledger_detail' account.account_id %}" class="btn btn-sm btn-outline-primary">
+                                View Details
+                            </a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center py-5 text-muted">No accounts found for this client.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

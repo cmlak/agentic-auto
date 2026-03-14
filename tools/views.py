@@ -3,11 +3,13 @@ import tempfile
 import pandas as pd
 from datetime import date
 from django.conf import settings
-from django.shortcuts import render, redirect
+from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.http import HttpResponse
 from django.contrib.admin.views.decorators import staff_member_required
+from django.contrib.auth.decorators import login_required
 from django.db.models import Sum
+import datetime
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm
@@ -17,6 +19,8 @@ from account.models import AccountMappingRule, ClientPromptMemo
 
 # Import the new accounting models
 from account.models import Account, JournalEntry, JournalLine
+
+from .resources import PurchaseResource
 
 
 # ====================================================================
@@ -169,6 +173,7 @@ def review_invoices(request):
                 if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                     purchase_instance = form.save(commit=False) 
                     purchase_instance.client_id = client_id # Map to client
+                    purchase_instance.batch = metadata.get('batch_name')
                     
                     # --- DATA CLEANING ---
                     # Prevent garbage values like "1", "null", or "Unknown" from becoming ="1" in Excel
@@ -444,3 +449,55 @@ def manual_invoice_entry_view(request):
         form = ManualPurchaseEntryForm(initial={'client': client_id}, vendor_choices=vendor_choices, account_choices=account_choices)
 
     return render(request, 'manual_invoice_entry.html', {'form': form})
+
+@login_required
+def export_purchase_invoices(request, client_id):
+    """Exports Purchase instances to an Excel file using URL parameter for client routing."""
+    
+    # Optional but recommended: Verify the client exists and user has access
+    client = get_object_or_404(Client, id=client_id)
+
+    # Base Queryset: Ensure sequential order based on entry processing instead of randomly descending
+    queryset = Purchase.objects.filter(client_id=client.id).order_by('id')
+
+    # Pass the client_id directly into the Resource
+    resource = PurchaseResource(client_id=client.id)
+    dataset = resource.export(queryset=queryset)
+
+    today_str = datetime.date.today().strftime("%Y%m%d")
+    # Clean the client name for the filename (removes spaces/special chars)
+    safe_client_name = "".join([c for c in client.name if c.isalpha() or c.isdigit()]).rstrip()
+    
+    filename = f"purchase_invoices_{safe_client_name}_{today_str}.xlsx"
+    
+    media_dir = os.path.join(settings.BASE_DIR, 'media')
+    os.makedirs(media_dir, exist_ok=True)
+    report_path = os.path.join(media_dir, filename)
+    
+    with open(report_path, 'wb') as f:
+        f.write(dataset.xlsx)
+        
+    request.session['export_report_path'] = report_path
+    request.session['export_filename'] = filename
+    
+    messages.success(request, f"Successfully exported purchase invoices for {client.name}!")
+    return redirect('tools:purchase_export_success')
+
+def purchase_export_success_view(request):
+    """Renders the success page after an export completes."""
+    file_path = request.session.get('export_report_path')
+    return render(request, 'purchase_export_success.html', {'has_file': bool(file_path and os.path.exists(file_path))})
+
+def download_exported_purchases(request):
+    """Serves the exported Excel file to the user."""
+    file_path = request.session.get('export_report_path')
+    filename = request.session.get('export_filename', 'exported_purchases.xlsx')
+    
+    if file_path and os.path.exists(file_path):
+        with open(file_path, 'rb') as fh:
+            response = HttpResponse(fh.read(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+    
+    messages.error(request, "The export file has expired or could not be found.")
+    return redirect('tools:invoice_upload')

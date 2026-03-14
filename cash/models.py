@@ -1,9 +1,7 @@
 from django.db import models
-from tools.models import Client, Vendor# Import the global Client model from the tools app
+from django.core.exceptions import ValidationError
+from tools.models import Client, Vendor
 
-# ====================================================================
-# --- BANK STATEMENT MODEL ---
-# ====================================================================
 class Bank(models.Model):
     # Relational & Meta Data
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
@@ -23,6 +21,11 @@ class Bank(models.Model):
     debit = models.FloatField(default=0.0)
     credit = models.FloatField(default=0.0)
     balance = models.FloatField(default=0.0)
+    
+    # --- AI & RECONCILIATION FIELDS ---
+    matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_payments')
+    instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
+    
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
     def save(self, *args, **kwargs):
@@ -33,6 +36,7 @@ class Bank(models.Model):
 
     def __str__(self):
         return f"{self.date} | {self.bank_ref_id} | In: {self.debit} | Out: {self.credit}"
+
 
 class Cash(models.Model):
     # Relational & Meta Data (Multi-Tenant Isolation)
@@ -45,13 +49,17 @@ class Cash(models.Model):
     description = models.TextField(blank=True, null=True)
     
     # Linked to the isolated Vendor database
-    vendor = models.CharField(max_length=100, blank=True, null=True)
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, null=True, blank=True)
     invoice_no = models.CharField(max_length=100, blank=True, null=True)
     
     # Financials
     debit = models.FloatField(default=0.0)   # Money In
     credit = models.FloatField(default=0.0)  # Money Out
     balance = models.FloatField(default=0.0)
+    
+    # --- AI & RECONCILIATION FIELDS ---
+    matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_payments')
+    instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     
     # Additional Context
     note = models.TextField(blank=True, null=True)

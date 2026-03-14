@@ -154,7 +154,7 @@ def trial_balance_view(request):
         'total_cr': total_cr,
         'is_balanced': round(total_dr, 2) == round(total_cr, 2)
     }
-    return render(request, 'account/reports/trial_balance.html', context)
+    return render(request, 'account/trial_balance.html', context)
 
 
 @login_required
@@ -199,7 +199,7 @@ def profit_and_loss_view(request):
         'total_expense': total_expense,
         'net_income': net_income
     }
-    return render(request, 'account/reports/profit_and_loss.html', context)
+    return render(request, 'account/profit_and_loss.html', context)
 
 
 @login_required
@@ -268,14 +268,47 @@ def balance_sheet_view(request):
         'total_liabilities_and_equity': total_liabilities + total_equity,
         'is_balanced': round(total_assets, 2) == round(total_liabilities + total_equity, 2)
     }
-    return render(request, 'account/reports/balance_sheet.html', context)
+    return render(request, 'account/balance_sheet.html', context)
 
 @login_required
 def general_ledger_view(request):
-    """List of all accounts to view their detailed ledger."""
+    """List of all accounts with their aggregated all-time balances."""
     client_id = request.session.get('active_client_id') or Client.objects.first().id
-    accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
-    return render(request, 'account/reports/gl_list.html', {'accounts': accounts})
+    
+    # 1. Get all accounts for the client
+    db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
+    
+    # 2. Calculate all-time total Debits and Credits per account in a single query
+    sums = JournalLine.objects.filter(journal_entry__client_id=client_id).values('account_id').annotate(
+        total_dr=Sum('debit'),
+        total_cr=Sum('credit')
+    )
+    
+    # Map the sums to a dictionary for quick lookup by account.id
+    sum_dict = {item['account_id']: item for item in sums}
+
+    account_list = []
+    for acct in db_accounts:
+        acct_sums = sum_dict.get(acct.id, {'total_dr': 0, 'total_cr': 0})
+        dr = acct_sums['total_dr'] or 0
+        cr = acct_sums['total_cr'] or 0
+        
+        # Calculate normal balance based on account type
+        if acct.account_type in ['Asset', 'Expense']:
+            balance = dr - cr
+        else:
+            balance = cr - dr
+            
+        account_list.append({
+            'account_id': acct.account_id, 
+            'name': acct.name,
+            'account_type': acct.account_type,
+            'debit': dr,
+            'credit': cr,
+            'balance': balance,
+        })
+
+    return render(request, 'account/gl_list.html', {'accounts': account_list})
 
 @login_required
 def account_ledger_detail_view(request, account_id):
@@ -307,4 +340,4 @@ def account_ledger_detail_view(request, account_id):
             'balance': running_balance
         })
 
-    return render(request, 'account/reports/gl_detail.html', {'account': account, 'ledger_data': ledger_data})
+    return render(request, 'account/gl_detail.html', {'account': account, 'ledger_data': ledger_data})

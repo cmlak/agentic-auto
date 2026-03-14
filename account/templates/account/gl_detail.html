@@ -1,0 +1,70 @@
+{% extends 'base_1.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2 class="mb-1">{{ account.account_id }} - {{ account.name }}</h2>
+            <span class="badge bg-info text-dark fs-6">Type: {{ account.account_type }}</span>
+        </div>
+        <a href="{% url 'account:general_ledger_list' %}" class="btn btn-outline-secondary">
+            &larr; Back to GL List
+        </a>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <table class="table table-bordered table-striped table-hover mb-0">
+                <thead class="table-dark">
+                    <tr>
+                        <th class="ps-3" style="width: 12%;">Date</th>
+                        <th style="width: 35%;">Description</th>
+                        <th style="width: 13%;">Source</th>
+                        <th class="text-end" style="width: 13%;">Debit (USD)</th>
+                        <th class="text-end" style="width: 13%;">Credit (USD)</th>
+                        <th class="text-end pe-3" style="width: 14%;">Balance (USD)</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for line in ledger_data %}
+                    <tr>
+                        <td class="ps-3">{{ line.date|date:"Y-m-d" }}</td>
+                        <td>{{ line.description }}</td>
+                        <td>
+                            <span class="badge bg-light text-dark border">{{ line.source }}</span>
+                        </td>
+                        
+                        <td class="text-end">
+                            {% if line.debit > 0 %}
+                                {{ line.debit|floatformat:2 }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        
+                        <td class="text-end">
+                            {% if line.credit > 0 %}
+                                {{ line.credit|floatformat:2 }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        </td>
+                        
+                        <td class="text-end pe-3 fw-bold {% if line.balance < 0 %}text-danger{% else %}text-success{% endif %}">
+                            {{ line.balance|floatformat:2 }}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="text-center py-5 text-muted">
+                            <i class="fs-4 d-block mb-2">📄</i>
+                            No transactions found for this account.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{% endblock %}

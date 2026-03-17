@@ -332,3 +332,118 @@ class ManualPurchaseEntryForm(forms.ModelForm):
             'vat_usd': forms.TextInput(attrs={'class': 'number-format text-end text-primary fw-bold'}),
             'total_usd': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
         }
+
+class GLMigrationUploadForm(forms.Form):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(), 
+        empty_label="--- Select Client ---",
+        label="Target Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
+    )
+    gl_file = forms.FileField(
+        label="Upload General Ledger Extract (CSV/Excel)",
+        help_text="Must contain columns: Date, Vendor / Customer / Employee, Description, No., Debit, Credit"
+    )
+    batch_name = forms.CharField(
+        label="Migration Batch Name", 
+        max_length=255, 
+        initial="HISTORICAL-MIGRATION-JAN2026",
+        widget=forms.TextInput(attrs={'class': 'form-control'})
+    )
+
+# --- 1. PURCHASE REVIEW FORM ---
+class GLPurchaseReviewForm(forms.Form):
+    gl_no = forms.CharField(label="ID / Ref", required=False)
+    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
+    company = forms.CharField(label="Vendor Name")
+    description = forms.CharField()
+    account_id = forms.ChoiceField(label="Expense Account")
+    vat_usd = forms.FloatField(required=False)
+    total_usd = forms.FloatField(label="Total (AP)")
+    
+    def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['account_id'].choices = account_choices
+        
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
+                Column('date', css_class='col-md-3'),
+                Column('company', css_class='col-md-4 text-truncate'),
+                Column('description', css_class='col-md-4 text-truncate'),
+            ),
+            Row(    
+                Column('account_id', css_class='col-md-6'),
+                Column('vat_usd', css_class='col-md-3'),
+                Column('total_usd', css_class='col-md-3 fw-bold text-danger'),
+                css_class='mb-4 border-bottom pb-3'
+            )
+        )
+
+# --- 2. BANK REVIEW FORM ---
+class GLBankReviewForm(forms.Form):
+    gl_no = forms.CharField(label="ID / Ref", required=False)
+    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
+    counterparty = forms.CharField(label="Entity / Description")
+    ledger_account_id = forms.ChoiceField(label="Target Bank Account")
+    debit = forms.FloatField(required=False, label="Money In")
+    credit = forms.FloatField(required=False, label="Money Out")
+
+    def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['ledger_account_id'].choices = account_choices
+        
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
+                Column('date', css_class='col-md-3'),
+                Column('counterparty', css_class='col-md-8'),
+            ),
+            Row(
+                Column('ledger_account_id', css_class='col-md-6'),
+                Column('debit', css_class='col-md-3 text-success'),
+                Column('credit', css_class='col-md-3 text-danger'),
+                css_class='mb-4 border-bottom pb-3'
+            )
+        )
+
+# --- 3. CASH REVIEW FORM ---
+class GLCashReviewForm(forms.Form):
+    gl_no = forms.CharField(label="ID / Ref", required=False)
+    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
+    counterparty = forms.CharField(label="Entity / Description")
+    ledger_account_id = forms.ChoiceField(label="Target Cash Account")
+    debit = forms.FloatField(required=False, label="Money In")
+    credit = forms.FloatField(required=False, label="Money Out")
+
+    def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['ledger_account_id'].choices = account_choices
+        
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
+                Column('date', css_class='col-md-3'),
+                Column('counterparty', css_class='col-md-8'),
+            ),
+            Row(
+                Column('ledger_account_id', css_class='col-md-6'),
+                Column('debit', css_class='col-md-3 text-success'),
+                Column('credit', css_class='col-md-3 text-danger'),
+                css_class='mb-4 border-bottom pb-3'
+            )
+        )
+
+# Create the Factories
+GLPurchaseFormSet = formset_factory(GLPurchaseReviewForm, extra=0, can_delete=True)
+GLBankFormSet = formset_factory(GLBankReviewForm, extra=0, can_delete=True)
+GLCashFormSet = formset_factory(GLCashReviewForm, extra=0, can_delete=True)

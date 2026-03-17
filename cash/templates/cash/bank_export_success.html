@@ -1,0 +1,21 @@
+{% extends "base_1.html" %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6 text-center">
+            <h2 class="text-success mb-4"><i class="fas fa-check-circle me-2"></i>Bank Export Successful!</h2>
+            {% if has_file %}
+                <p class="lead mb-4">The bank transactions database has been successfully exported to Excel.</p>
+                <a href="{% url 'cash:download_exported_banks' %}" class="btn btn-primary btn-lg mb-3 shadow-sm">
+                    <i class="fas fa-file-excel me-2"></i>Download Bank Report
+                </a>
+            {% else %}
+                <p class="text-danger">Sorry, the export file could not be found or your session has expired.</p>
+            {% endif %}
+            <br>
+            <a href="{% url 'cash:bank_upload' %}" class="btn btn-outline-secondary mt-3">Return to Dashboard</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

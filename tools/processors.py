@@ -3,6 +3,8 @@ import time
 import threading
 import re
 import difflib
+import pandas as pd
+import numpy as np
 import pdfplumber
 from pydantic import BaseModel, Field, model_validator
 from typing import List, Literal, Optional
@@ -11,6 +13,7 @@ from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from .models import Vendor, Client 
+from account.models import Account, AccountMappingRule
 
 class RoutingDecision(BaseModel):
     page_type: Literal["invoice", "bank_slip", "empty"]
@@ -267,3 +270,214 @@ class GeminiInvoiceProcessor:
         ledgers.sort(key=lambda x: x.get('page', 0))
 
         return ledgers, total_pages, self.cost_stats
+
+# ====================================================================
+# --- PYDANTIC SCHEMAS FOR REVERSE-ENGINEERING ---
+# ====================================================================
+class MigratedPurchase(BaseModel):
+    gl_no: Optional[str] = Field(None, description="The extracted GL ID/No.")
+    date: str = Field(..., description="Transaction Date (YYYY-MM-DD)")
+    company: str = Field(..., description="Vendor Name")
+    description: str = Field(..., description="Nature of the expense")
+    account_id: int = Field(..., description="The main Expense/Asset GL account code (e.g., 181000). DO NOT use 200000 or 115010 here.")
+    vat_usd: float = Field(default=0.0, description="Amount debited to VAT Input (115010), if any.")
+    total_usd: float = Field(..., description="Total amount credited to Trade Payable (200000).")
+
+class MigratedBankCash(BaseModel):
+    gl_no: Optional[str] = Field(None, description="The extracted GL ID/No.")
+    date: str = Field(..., description="Transaction Date (YYYY-MM-DD)")
+    counterparty: str = Field(..., description="Vendor or Customer Name")
+    purpose: str = Field(..., description="Transaction details/description")
+    ledger_account_id: int = Field(..., description="The specific Bank or Cash Account ID (e.g., 100200, 100310, 100000) that this transaction belongs to.")
+    debit: float = Field(default=0.0, description="Money IN to the Bank/Cash account")
+    credit: float = Field(default=0.0, description="Money OUT of the Bank/Cash account")
+
+# ====================================================================
+# --- THE MIGRATION ENGINE (DB-BACKED 3-TIER ARCHITECTURE) ---
+# ====================================================================
+class GLMigrationProcessor:
+    def __init__(self, api_key, client_id):
+        print("\n" + "="*50)
+        print("🔄 INITIALIZING: HISTORICAL GL MIGRATION ENGINE (DB-BACKED)")
+        print("="*50)
+        self.client = genai.Client(api_key=api_key)
+        self.MODEL_NAME = "gemini-3.1-pro-preview"
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+        
+        # 1. LOAD TIER-1 FOUNDATION FROM DATABASE
+        self._load_chart_of_accounts(client_id)
+
+    def calculate_cost(self, usage, model_id):
+        rates = {"gemini-3.1-pro-preview": {"in": 1.25, "out": 10.00}, "gemini-3-flash-preview": {"in": 0.10, "out": 0.40}}
+        r = rates.get(model_id, {"in": 1.25, "out": 10.00})
+        if usage: return ((usage.prompt_token_count / 1e6) * r["in"]) + ((usage.candidates_token_count / 1e6) * r["out"])
+        return 0.0
+
+    def _load_chart_of_accounts(self, client_id):
+        """Dynamically loads the Chart of Accounts and Rules from the Django Database."""
+        try:
+            # Fetch all accounts for the selected client
+            accounts = Account.objects.filter(client_id=client_id)
+            
+            # Fetch all custom mapping rules for the client
+            rules = AccountMappingRule.objects.filter(client_id=client_id).select_related('account')
+            
+            # Create a quick dictionary lookup by account_id for fast merging
+            rule_dict = {str(rule.account.account_id): rule for rule in rules}
+
+            self.tier_1_prompt = "<TIER_1_CHART_OF_ACCOUNTS>\n"
+            self.cash_ids = []
+            self.bank_ids = []
+            self.ap_ids = []
+
+            for acc in accounts:
+                acc_id = str(acc.account_id)
+                acc_name = acc.name
+                
+                # Merge rule data if it exists in AccountMappingRule
+                rule = rule_dict.get(acc_id)
+                keywords = rule.trigger_keywords if rule else "None specified"
+                guideline = rule.ai_guideline if rule else "Apply standard corporate accounting principles."
+
+                # Inject into the Tier 1 Prompt
+                self.tier_1_prompt += f"ID: {acc_id} | Name: {acc_name} | Keywords: {keywords} | Rules: {guideline}\n"
+
+                # Build Dynamic Routing Lists (Case-insensitive matching)
+                name_lower = acc_name.lower()
+                if 'cash' in name_lower and 'bank' not in name_lower:
+                    self.cash_ids.append(acc_id)
+                if 'bank' in name_lower or 'canadia' in name_lower or 'aba' in name_lower:
+                    self.bank_ids.append(acc_id)
+                if 'payable' in name_lower:
+                    self.ap_ids.append(acc_id)
+                    
+            self.tier_1_prompt += "</TIER_1_CHART_OF_ACCOUNTS>\n"
+
+            print(f"📊 Loaded Tier-1 CoA from DB: {accounts.count()} Accounts recognized.")
+            print(f"🏦 Bank IDs routing: {self.bank_ids}")
+            print(f"💵 Cash IDs routing: {self.cash_ids}")
+            print(f"🧾 AP IDs routing: {self.ap_ids}")
+            
+        except Exception as e:
+            raise ValueError(f"CRITICAL: Failed to load Chart of Accounts from Database: {str(e)}")
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    def _parse_cluster(self, cluster_text, tx_type):
+        """Executes the AI Request using the 3-Tier Hierarchy."""
+        
+        if tx_type == 'PURCHASE':
+            schema = MigratedPurchase
+            tier_2 = """
+            <TIER_2_MIGRATION_RULES>
+            Reconstruct the original Accounts Payable Invoice from these General Ledger lines.
+            - 'total_usd' MUST BE the exact amount Credited to Trade Payable (e.g., 200000).
+            - 'vat_usd' MUST BE the exact amount Debited to VAT Input (115010).
+            - 'account_id' MUST BE the underlying expense/asset account (e.g., 181000). Cross-reference TIER_1 to find the exact ID based on Keywords and Rules.
+            </TIER_2_MIGRATION_RULES>
+            """
+        else:
+            schema = MigratedBankCash
+            tier_2 = f"""
+            <TIER_2_MIGRATION_RULES>
+            Reconstruct the original {tx_type} transaction from these General Ledger lines.
+            - Identify the exact 'ledger_account_id' (The specific Bank or Cash account involved, cross-referencing TIER_1).
+            - 'debit' represents Money Received into the {tx_type} account.
+            - 'credit' represents Money Paid Out of the {tx_type} account.
+            </TIER_2_MIGRATION_RULES>
+            """
+
+        prompt = f"""
+        {self.tier_1_prompt}
+        {tier_2}
+        <TIER_3_GL_CLUSTER>\n{cluster_text}\n</TIER_3_GL_CLUSTER>
+        """
+
+        response = self.client.models.generate_content(
+            model=self.MODEL_NAME, 
+            contents=prompt,
+            config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=schema, temperature=0.0)
+        )
+        
+        cost = self.calculate_cost(response.usage_metadata, self.MODEL_NAME)
+        self.cost_stats["pro_cost"] += cost
+        print(f"💲 GL Migration AI Cost Log ({tx_type}): ${cost:.5f}")
+        
+        return response.parsed
+
+    def process_migration_file(self, file_path):
+        """Groups GL rows into clusters and routes them based on Dynamic Account IDs."""
+        try:
+            if file_path.endswith('.csv'): df = pd.read_csv(file_path)
+            else: df = pd.read_excel(file_path)
+            df = df.replace({np.nan: None})
+        except Exception as e:
+            raise ValueError(f"Could not read GL file: {str(e)}")
+
+        results = {'purchases': [], 'bank_txns': [], 'cash_txns': []}
+
+        # 1. CLUSTER THE DATA (Group by ID, Date, and Vendor)
+        # Using sort=False ensures processing follows the ID's chronological order instead of random/alphabetical
+        group_cols = []
+        has_id = 'ID' in df.columns
+        if has_id:
+            group_cols.append('ID')
+        group_cols.extend(['Date', 'Vendor / Customer / Employee'])
+        
+        grouped = df.groupby(group_cols, dropna=False, sort=False)
+
+        for keys, group in grouped:
+            if has_id:
+                sys_no, date, entity = keys[0], keys[1], keys[2]
+            else:
+                sys_no = f"R-{group.index[0]}"
+                date, entity = keys[0], keys[1]
+                
+            cluster_text = group.to_string(index=False)
+            accounts_involved = " ".join(group['No.'].dropna().astype(str).tolist())
+            
+            # 2. DYNAMIC ROUTING LOGIC
+            # Route A: Purchase Invoice (Is there a Credit to ANY Payable account?)
+            ap_rows = group[group['No.'].str.contains('|'.join(self.ap_ids), na=False)]
+            is_ap_creation = False
+            for _, row in ap_rows.iterrows():
+                try: 
+                    if float(str(row['Credit']).replace(',','')) > 0: is_ap_creation = True
+                except ValueError: pass
+
+            if is_ap_creation:
+                print(f"📦 Routing to Purchase AI: ID [{sys_no}] | {date} | {entity}")
+                try:
+                    parsed_inv = self._parse_cluster(cluster_text, 'PURCHASE')
+                    parsed_dict = parsed_inv.model_dump()
+                    parsed_dict['gl_no'] = str(sys_no)
+                    results['purchases'].append(parsed_dict)
+                except Exception as e:
+                    print(f"Failed to parse Purchase: {e}")
+                continue
+
+            # Route B: Bank Transaction (Contains ANY Bank Account from the CoA)
+            if any(b_id in accounts_involved for b_id in self.bank_ids):
+                print(f"🏦 Routing to Bank AI: ID [{sys_no}] | {date} | {entity}")
+                try:
+                    parsed_bank = self._parse_cluster(cluster_text, 'BANK')
+                    parsed_dict = parsed_bank.model_dump()
+                    parsed_dict['gl_no'] = str(sys_no)
+                    results['bank_txns'].append(parsed_dict)
+                except Exception as e:
+                    print(f"Failed to parse Bank: {e}")
+                continue
+
+            # Route C: Cash Transaction (Contains ANY Cash Account from the CoA)
+            if any(c_id in accounts_involved for c_id in self.cash_ids):
+                print(f"💵 Routing to Cash AI: ID [{sys_no}] | {date} | {entity}")
+                try:
+                    parsed_cash = self._parse_cluster(cluster_text, 'CASH')
+                    parsed_dict = parsed_cash.model_dump()
+                    parsed_dict['gl_no'] = str(sys_no)
+                    results['cash_txns'].append(parsed_dict)
+                except Exception as e:
+                    print(f"Failed to parse Cash: {e}")
+
+        total_cost = self.cost_stats['flash_cost'] + self.cost_stats['pro_cost']
+        print(f"💰 Total Batch Migration AI Cost: ${total_cost:.5f}")
+        return results, self.cost_stats

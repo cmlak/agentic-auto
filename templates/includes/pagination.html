@@ -1,0 +1,40 @@
+{% if page_obj.has_other_pages %}
+<nav aria-label="Page navigation" class="mt-4 mb-4">
+    <ul class="pagination justify-content-center shadow-sm">
+        
+        {% if page_obj.has_previous %}
+            <li class="page-item">
+                <a class="page-link text-primary fw-bold" href="?page={{ page_obj.previous_page_number }}" aria-label="Previous">
+                    <i class="fas fa-chevron-left"></i> Previous
+                </a>
+            </li>
+        {% else %}
+            <li class="page-item disabled">
+                <span class="page-link text-muted"><i class="fas fa-chevron-left"></i> Previous</span>
+            </li>
+        {% endif %}
+
+        <li class="page-item active" aria-current="page">
+            <span class="page-link bg-primary border-primary">
+                Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+            </span>
+        </li>
+
+        {% if page_obj.has_next %}
+            <li class="page-item">
+                <a class="page-link text-primary fw-bold" href="?page={{ page_obj.next_page_number }}" aria-label="Next">
+                    Next <i class="fas fa-chevron-right"></i>
+                </a>
+            </li>
+        {% else %}
+            <li class="page-item disabled">
+                <span class="page-link text-muted">Next <i class="fas fa-chevron-right"></i></span>
+            </li>
+        {% endif %}
+        
+    </ul>
+</nav>
+<div class="text-center text-muted small mb-3">
+    Showing items {{ page_obj.start_index }} to {{ page_obj.end_index }} of {{ page_obj.paginator.count }} total records.
+</div>
+{% endif %}

@@ -1,0 +1,45 @@
+{% extends 'base_1.html' %} {% load crispy_forms_tags %}
+
+{% block content %}
+<div class="container">
+    <form method="GET">{% crispy filter.form %}</form>
+    
+    <div class="table-responsive mt-4">
+        <table class='table'>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Vendor/Company</th>
+                    <th>Invoice No</th>
+                    <th>Date</th>
+                    <th>Total USD</th>
+                    <th>Action</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in purchases %}
+                <tr>
+                    <td>{{ p.id }}</td>
+                    <td>{{ p.company }}</td>
+                    <td><a href="{% url 'tools:purchase_detail' p.id %}">{{ p.invoice_no }}</a></td>
+                    <td>{{ p.date }}</td>
+                    <td>${{ p.total_usd }}</td>
+                    <td>
+                        <a href="{% url 'tools:purchase_update' p.id %}" class="btn btn-sm btn-outline-secondary">Edit</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-2">
+            <a href="{% url 'tools:purchase_export' %}?{{ request.GET.urlencode }}" class="btn btn-primary mb-3 mt-5">
+                Download CSV
+            </a>
+        </div>
+    </div>
+
+</div>
+{% endblock %}

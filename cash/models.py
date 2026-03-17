@@ -25,6 +25,8 @@ class Bank(models.Model):
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_payments')
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
+    debit_account_id = models.CharField(max_length=20, blank=True, null=True)
+    credit_account_id = models.CharField(max_length=20, blank=True, null=True)
     
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
@@ -60,6 +62,8 @@ class Cash(models.Model):
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_payments')
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
+    debit_account_id = models.CharField(max_length=20, blank=True, null=True)
+    credit_account_id = models.CharField(max_length=20, blank=True, null=True)
     
     # Additional Context
     note = models.TextField(blank=True, null=True)

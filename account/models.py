@@ -33,7 +33,7 @@ class Account(models.Model):
 class JournalEntry(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE)
     date = models.DateField()
-    description = models.CharField(max_length=500)
+    description = models.CharField(max_length=1000)
     reference_number = models.CharField(max_length=100, blank=True, null=True, help_text="Store Invoice No or Voucher No for safe-keeping")
     
     # --- THE SPARSE MATRIX (Explicit Foreign Keys) ---
@@ -99,7 +99,7 @@ class JournalLine(models.Model):
     journal_entry = models.ForeignKey(JournalEntry, on_delete=models.CASCADE, related_name='lines')
     account = models.ForeignKey(Account, on_delete=models.CASCADE)
     
-    description = models.CharField(max_length=255, blank=True, null=True)
+    description = models.CharField(max_length=1000, blank=True, null=True)
     debit = models.FloatField(default=0.0)
     credit = models.FloatField(default=0.0)
 

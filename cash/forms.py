@@ -2,12 +2,8 @@ from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field
-from tools.models import Client 
+from tools.models import Client
 from .models import Bank, Cash
-
-# ====================================================================
-# --- 1. BANK STATEMENT FORMS ---
-# ====================================================================
 
 BANK_PROCESSOR_CHOICES = [
     ('aba_standard', 'Standard ABA Bank Rules'),
@@ -30,11 +26,23 @@ class BankBatchUploadForm(forms.Form):
     bank_pdf = forms.FileField(label="Upload Bank Statement (PDF)")
     batch_name = forms.CharField(
         label="Batch Name", max_length=255, required=True,
-        help_text="e.g., ABA Bank - Jan 2026"
+        help_text="e.g., ABA Bank - Feb 2026"
     )
     ai_prompt = forms.CharField(
         label="Custom Rules for AI (Optional)",
         widget=forms.Textarea(attrs={'rows': 3}), required=False
+    )
+
+    # --- ENHANCEMENT: Dual File Uploads ---
+    custom_rules_file = forms.FileField(
+        label="Bank Payment Explanation (Optional Excel/CSV)", 
+        required=False,
+        help_text="Upload client's bank payment explanation file with vendor/invoice mappings."
+    )
+    historical_gl_file = forms.FileField(
+        label="Historical General Ledger (Optional Excel/CSV)", 
+        required=False,
+        help_text="Upload previous month's GL to allow AI to search for established payables."
     )
 
 class BankReviewForm(forms.ModelForm):
@@ -49,7 +57,10 @@ class BankReviewForm(forms.ModelForm):
         label="Account (Cr)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
-    matched_purchase_id = forms.IntegerField(required=False, widget=forms.HiddenInput())
+    matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
+    
+    debit_amount = forms.CharField(label="Debit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}))
+    credit_amount = forms.CharField(label="Credit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}))
     
     # Readonly ensures the user cannot edit it, but the data still submits and saves to the DB
     instruction = forms.CharField(
@@ -73,6 +84,10 @@ class BankReviewForm(forms.ModelForm):
             self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
         if self.initial.get('instruction'): 
             self.fields['instruction'].initial = self.initial.get('instruction')
+        if self.initial.get('debit_amount'): 
+            self.fields['debit_amount'].initial = self.initial.get('debit_amount')
+        if self.initial.get('credit_amount'): 
+            self.fields['credit_amount'].initial = self.initial.get('credit_amount')
 
         if self.prefix:
             try:
@@ -109,18 +124,29 @@ class BankReviewForm(forms.ModelForm):
             ),
             # --- THE SIDE-BY-SIDE ACCOUNTING GRID ---
             Row(
-                Column('debit_account_id', css_class='form-group col-md-4'),
-                Column('debit', css_class='form-group col-md-2'),
-                Column('credit_account_id', css_class='form-group col-md-4'),
-                Column('credit', css_class='form-group col-md-2'),
-                css_class='bg-light p-2 rounded mt-2 border border-info align-items-end'
+                # DEBIT SIDE (Takes up 5 columns total)
+                # 'pe-2' adds padding-end (right margin) to keep it away from the amount
+                Column('debit_account_id', css_class='form-group col-md-3 pe-2'),
+                Column('debit_amount', css_class='form-group col-md-2'),
+                
+                # THE GAP (Takes up 2 empty columns in the middle)
+                # 'offset-md-2' creates a massive empty space between Debit Amount and Credit Account
+                
+                # CREDIT SIDE (Takes up 5 columns total)
+                Column('credit_account_id', css_class='form-group col-md-3 offset-md-2 pe-2'),
+                Column('credit_amount', css_class='form-group col-md-2'),
+                
+                # 'gx-3' ensures standard Bootstrap gutters are applied between all items
+                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end gx-3'
             ),
             Row(
                 Column('instruction', css_class='form-group col-md-8'),
                 Column('balance', css_class='form-group col-md-4 fw-bold'),
                 css_class='mt-2'
             ),
-            Field('matched_purchase_id')
+            Field('debit', type="hidden"),
+            Field('credit', type="hidden"),
+            Field('matched_purchase_ids')
         )
 
     class Meta:
@@ -130,10 +156,28 @@ class BankReviewForm(forms.ModelForm):
             'date': forms.DateInput(attrs={'type': 'date'}),
             'purpose': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
             'raw_remark': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            'debit': forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}),
-            'credit': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
+            'debit': forms.HiddenInput(),
+            'credit': forms.HiddenInput(),
             'balance': forms.TextInput(attrs={'class': 'number-format text-end'}),
         }
+        
+    def clean(self):
+        cleaned_data = super().clean()
+        # Sync the edited balanced amounts back to the directional fields for the DB
+        d_amt_raw = cleaned_data.get('debit_amount')
+        if d_amt_raw is not None and str(d_amt_raw).strip() != "":
+            try: d_amt = float(str(d_amt_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: d_amt = 0.0
+            
+            # Preserves Money In / Money Out direction for views.py
+            orig_cr = float(cleaned_data.get('credit') or self.initial.get('credit') or 0.0)
+            if orig_cr > 0:
+                cleaned_data['credit'] = d_amt
+                cleaned_data['debit'] = 0.0
+            else:
+                cleaned_data['debit'] = d_amt
+                cleaned_data['credit'] = 0.0
+        return cleaned_data
 
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
@@ -177,7 +221,10 @@ class CashReviewForm(forms.ModelForm):
         label="Account (Cr)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
-    matched_purchase_id = forms.IntegerField(required=False, widget=forms.HiddenInput())
+    matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
+    
+    debit_amount = forms.CharField(label="Debit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}))
+    credit_amount = forms.CharField(label="Credit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}))
     
     # Readonly ensures the user cannot edit it, but the data still submits and saves to the DB
     instruction = forms.CharField(
@@ -209,6 +256,10 @@ class CashReviewForm(forms.ModelForm):
             self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
         if self.initial.get('instruction'): 
             self.fields['instruction'].initial = self.initial.get('instruction')
+        if self.initial.get('debit_amount'): 
+            self.fields['debit_amount'].initial = self.initial.get('debit_amount')
+        if self.initial.get('credit_amount'): 
+            self.fields['credit_amount'].initial = self.initial.get('credit_amount')
 
         if self.prefix:
             try:
@@ -241,23 +292,21 @@ class CashReviewForm(forms.ModelForm):
                 Column('description', css_class='form-group col-md-8'),
             ),
             Row(
-                Column('note', css_class='form-group col-md-12'),
-            ),
-            # --- THE SIDE-BY-SIDE ACCOUNTING GRID ---
-            Row(
-                Column('debit_account_id', css_class='form-group col-md-4'),
-                Column('debit', css_class='form-group col-md-2'),
-                Column('credit_account_id', css_class='form-group col-md-4'),
-                Column('credit', css_class='form-group col-md-2'),
-                css_class='bg-light p-2 rounded mt-2 border border-info align-items-end'
+                Column('debit_account_id', css_class='form-group col-md-3 pe-3'),
+                Column('debit_amount', css_class='form-group col-md-2'),
+                Column('credit_account_id', css_class='form-group col-md-3 offset-md-1 pe-3'),
+                Column('credit_amount', css_class='form-group col-md-2'),
+                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end'
             ),
             Row(
                 Column('instruction', css_class='form-group col-md-8'),
                 Column('balance', css_class='form-group col-md-4 fw-bold'),
                 css_class='mt-2'
             ),
+            Field('debit', type="hidden"),
+            Field('credit', type="hidden"),
             Field('vendor', type="hidden"),
-            Field('matched_purchase_id')
+            Field('matched_purchase_ids')
         )
 
     class Meta:
@@ -267,9 +316,25 @@ class CashReviewForm(forms.ModelForm):
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
             'note': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            'debit': forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}),
-            'credit': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
+            'debit': forms.HiddenInput(),
+            'credit': forms.HiddenInput(),
             'balance': forms.TextInput(attrs={'class': 'number-format text-end'}),
         }
+        
+    def clean(self):
+        cleaned_data = super().clean()
+        d_amt_raw = cleaned_data.get('debit_amount')
+        if d_amt_raw is not None and str(d_amt_raw).strip() != "":
+            try: d_amt = float(str(d_amt_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: d_amt = 0.0
+            
+            orig_cr = float(cleaned_data.get('credit') or self.initial.get('credit') or 0.0)
+            if orig_cr > 0:
+                cleaned_data['credit'] = d_amt
+                cleaned_data['debit'] = 0.0
+            else:
+                cleaned_data['debit'] = d_amt
+                cleaned_data['credit'] = 0.0
+        return cleaned_data
 
 CashFormSet = formset_factory(CashReviewForm, extra=0, can_delete=True)

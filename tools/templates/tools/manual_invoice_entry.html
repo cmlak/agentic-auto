@@ -1,38 +1,91 @@
-{% extends 'base_1.html' %}
+{% extends 'base_1.html' %} {% load static %}
 {% load crispy_forms_tags %}
 
+{% block title %}
+    Manual Purchase Entry
+{% endblock %}
+
 {% block content %}
-<div class="container mt-5">
-    <div class="row justify-content-center">
-        <div class="col-lg-10">
-            <div class="card shadow-sm border-0">
-                <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
-                    <h4 class="mb-0">✍️ Manual Invoice Entry</h4>
-                    <a href="{% url 'tools:invoice_upload' %}" class="btn btn-sm btn-outline-light">Back to AI Batch</a>
+<div class="container">
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center py-2">
+            <h2>Add Manual Purchase Invoice</h2>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-10 col-lg-8 text-center">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center mt-3">
+        <div class="col-sm-12 col-md-10 col-lg-8">
+            
+            <form action="{% url 'tools:manual_invoice_entry' %}" method="post" id="purchaseForm">
+                
+                {% csrf_token %}
+                
+                {{ form | crispy }}
+                
+                <div class="row d-flex justify-content-center">
+                    <div class="col text-center py-4">
+                        <button type="submit" id="submitBtn" class="btn btn-primary mx-2" style="width: 150px;">
+                            Submit Invoice
+                        </button>
+                        <a href="{% url 'tools:purchase_list' %}" class="btn btn-secondary mx-2" style="width: 150px;">
+                            View List
+                        </a>
+                    </div>
                 </div>
                 
-                <div class="card-body p-4">
-                    {% if messages %}
-                        {% for message in messages %}
-                            <div class="alert alert-{{ message.tags }} alert-dismissible fade show">
-                                {{ message }}
-                                <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
-                            </div>
-                        {% endfor %}
-                    {% endif %}
-
-                    <form method="POST">
-                        {% csrf_token %}
-                        
-                        {% crispy form %}
-
-                        <div class="d-flex justify-content-end mt-4">
-                            <button type="submit" class="btn btn-primary btn-lg px-5">Save & Post to Ledger</button>
-                        </div>
-                    </form>
-                </div>
-            </div>
+            </form>
+            
         </div>
     </div>
 </div>
-{% endblock %}
+{% endblock content %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        
+        // 1. Initialize Select2 for dropdowns to make searching large charts of accounts/vendors easier
+        if ($("#id_vendor_choice").length) {
+            $("#id_vendor_choice").select2({
+                placeholder: "--- Select Existing Vendor ---",
+                allowClear: true
+            });
+        }
+        
+        // Add Select2 to account dropdowns if they exist in your form
+        var accountFields = ['#id_account_id', '#id_vat_account_id', '#id_wht_debit_account_id', '#id_credit_account_id', '#id_wht_account_id'];
+        accountFields.forEach(function(field) {
+            if ($(field).length) {
+                $(field).select2();
+            }
+        });
+
+        // 2. Prevent double submission to protect General Ledger integrity
+        $("#purchaseForm").on("submit", function() {
+            var btn = $("#submitBtn");
+            
+            // Disable the button to prevent subsequent clicks
+            btn.prop("disabled", true);
+            
+            // Update button text to provide visual feedback to the user
+            btn.html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...');
+        });
+        
+    });
+</script>
+{% endblock scripts %}

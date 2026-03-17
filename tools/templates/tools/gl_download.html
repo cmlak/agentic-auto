@@ -1,0 +1,34 @@
+{% extends 'base_1.html' %}
+
+{% block content %}
+<div class="container mt-5 text-center">
+    <div class="card shadow-lg p-5 mx-auto" style="max-width: 650px; border-top: 5px solid #0d6efd;">
+        <i class="fas fa-check-circle text-primary mb-3" style="font-size: 4rem;"></i>
+        <h2 class="mb-4">Migration Complete!</h2>
+        
+        <p class="text-muted mb-4 fs-5">
+            The General Ledger queue has been fully processed and reconstructed into your Subledgers.
+        </p>
+
+        {% if has_file %}
+            <div class="alert alert-info text-start">
+                <strong><i class="fas fa-file-excel"></i> Audit Trail Ready</strong><br>
+                Please download the excel log for your records. It contains all DB assignments made during this migration.
+            </div>
+            
+            <a href="/media/{{ request.session.gl_report_path|cut:settings.BASE_DIR|cut:'/media/' }}" class="btn btn-primary btn-lg mt-3 mb-4 w-100 fw-bold" download>
+                <i class="fas fa-download"></i> Download Migration Report
+            </a>
+        {% else %}
+            <div class="alert alert-warning">
+                Report file could not be generated. Check server logs.
+            </div>
+        {% endif %}
+
+        <div class="mt-4 d-flex justify-content-center gap-3">
+            <a href="{% url 'home' %}" class="btn btn-outline-dark">Return to Dashboard</a>
+            <a href="{% url 'tools:gl_migration_upload' %}" class="btn btn-outline-secondary">Migrate Another Ledger</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

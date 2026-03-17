@@ -18,5 +18,15 @@ urlpatterns = [
     path('export/purchases/success/', views.purchase_export_success_view, name='purchase_export_success'),
     path('export/purchases/download/', views.download_exported_purchases, name='download_exported_purchases'),
     
+    path('purchases/', views.PurchaseListView, name='purchase_list'),
+    path('purchases/<int:pk>/', views.PurchaseDetailView.as_view(), name='purchase_detail'),
+    path('purchases/<int:pk>/update/', views.PurchaseUpdateView.as_view(), name='purchase_update'),
+    path('purchases/<int:pk>/delete/', views.PurchaseDeleteView.as_view(), name='purchase_delete'),
+    path('purchases/export/', views.export_purchase_csv, name='purchase_export'),
+    
+    path('gl-migration/', views.gl_migration_upload_view, name='gl_migration_upload'),
+    path('gl-migration/review/', views.gl_review_view, name='gl_review'),
+    path('gl-migration/download/', views.gl_download_view, name='gl_download'),
+    
     path('management/ai-costs/', views.ai_cost_dashboard, name='ai_cost_dashboard'),
 ]

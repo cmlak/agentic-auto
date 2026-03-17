@@ -24,8 +24,8 @@ class BankTransaction(BaseModel):
     trans_type: str = Field(..., description="The main transaction type.")
     counterparty: str = Field(..., description="The counterparty name, if available.")
     purpose: str = Field(..., description="The text of the transaction details.")
-    remark: str = Field(..., description="The specific digit-hyphen-digit pattern.")
-    raw_remark: str = Field(..., description="The full text following 'REMARK:'.") 
+    remark: str = Field(..., description="Matched Vendor and Invoice No (e.g., 'Vendor: X, Inv: Y'). Maximum 250 characters.")
+    raw_remark: str = Field(..., description="The full original bank text plus any matched supplementary data including Invoice No.") 
     debit: float = Field(..., description="Money In (0.0 if empty).")
     credit: float = Field(..., description="Money Out (0.0 if empty).")
     balance: float = Field(..., description="Balance column.")
@@ -89,20 +89,33 @@ class GeminiABABankProcessor:
             raise e
 
         print(f"🧠 Sending structured text to Gemini ({self.MODEL_NAME})...")
-        extraction_prompt = "Extract all bank transactions from the text below.\nStrictly follow the JSON schema provided.\n"
-        if custom_prompt: extraction_prompt += f"\nADDITIONAL INSTRUCTIONS:\n{custom_prompt}\n"
+        print(f"   🔹 PDF Text Length: {len(raw_text)} characters")
+        
+        # --- ENHANCEMENT: Instruct AI to merge Spreadsheet data into remarks ---
+        extraction_prompt = """Extract all bank transactions from the text below. Strictly follow the JSON schema.
+        
+        CRITICAL EXTRACTION RULES:
+        1. Read the SUPPLEMENTARY ROUTING DATA (if provided). Cross-reference it with the bank transactions using dates and amounts.
+        2. If matched, extract ONLY the 'Vendor' and 'Invoice No' from the supplementary data and format it into the 'remark' field (e.g., 'Vendor: Cambodia Concrete, Inv: 2026-00012'). Ensure the remark field does not exceed 250 characters.
+        3. Include BOTH the original bank PDF text AND the supplementary spreadsheet information (including the Invoice No) in the 'raw_remark' field so no context is lost.
+        """
+        
+        if custom_prompt: 
+            print(f"   🔹 Injecting supplementary data and instructions...")
+            extraction_prompt += f"\nADDITIONAL INSTRUCTIONS & SUPPLEMENTARY DATA:\n{custom_prompt}\n"
         extraction_prompt += f"\nDATA:\n---\n{raw_text}\n---\n"
 
         try:
+            print("   ⏳ Waiting for Gemini API response...")
             response = self.client.models.generate_content(
                 model=self.MODEL_NAME,
                 contents=extraction_prompt,
                 config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=BankInfo, temperature=0.0)
             )
+            print("   ✅ Received structured data from Gemini API.")
             
             cost = self.calculate_cost(response.usage_metadata)
             self.cost_stats["flash_cost"] += cost
-            print(f"💲 Extraction AI Cost Log: ${cost:.5f}")
 
             structured_data = response.parsed
             if not structured_data: raise ValueError("Model returned unparseable schema.")
@@ -111,6 +124,11 @@ class GeminiABABankProcessor:
             for t in transactions:
                 t['batch'] = batch_name
                 t['date'] = t.pop('tr_date', None) 
+                
+                # --- DOUBLE ENTRY BALANCING FOR UI ---
+                amt = max(float(t.get('debit') or 0.0), float(t.get('credit') or 0.0))
+                t['debit_amount'] = amt
+                t['credit_amount'] = amt
             return transactions, len(reader.pages), self.cost_stats
         except Exception as e:
             print(f"❌ AI Extraction Error: {str(e)}")
@@ -123,7 +141,6 @@ class GeminiCanadiaBankProcessor:
 class ClientBCustomBankProcessor:
     def __init__(self, api_key): pass
     def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
-
 
 # ====================================================================
 # --- 2. CASH BOOK EXTRACTION PROCESSOR ---
@@ -199,6 +216,10 @@ class CashStandardExcelProcessor:
                 df = pd.read_csv(file_path)
             else:
                 df = pd.read_excel(file_path)
+                
+            # --- FIX: Standardize column names to lowercase to prevent missing data ---
+            df.columns = [str(c).strip().lower() for c in df.columns]
+            
             df = df.replace({np.nan: None})
         except Exception as e:
             print(f"❌ File Reading Error: {str(e)}")
@@ -216,6 +237,14 @@ class CashStandardExcelProcessor:
                 return 0.0
                 
         for index, row in df.iterrows():
+            d_val = safe_float(row.get('debit'))
+            c_val = safe_float(row.get('credit'))
+            amt = max(d_val, c_val)
+            
+            # --- FIX: Skip empty rows or summary rows with no monetary value ---
+            if amt == 0.0:
+                continue
+                
             raw_vendor = str(row.get('vendor', '')).strip() if pd.notna(row.get('vendor')) else ''
             vendor_data = self.resolve_and_assign_vendor(raw_vendor, client_id)
             
@@ -236,8 +265,10 @@ class CashStandardExcelProcessor:
                 'vendor_choice': vendor_data['temp_id'] if vendor_data['is_new'] else vendor_data['db_id'],
                 'invoice_no': str(row.get('invoice_no', '')) if pd.notna(row.get('invoice_no')) else '',
                 
-                'debit': safe_float(row.get('debit')),
-                'credit': safe_float(row.get('credit')),
+                'debit': d_val,
+                'credit': c_val,
+                'debit_amount': amt,   # Balanced Double Entry Leg
+                'credit_amount': amt,  # Balanced Double Entry Leg
                 'balance': safe_float(row.get('balance')),
                 'note': str(row.get('note', '')) if pd.notna(row.get('note')) else '',
             }
@@ -253,16 +284,18 @@ class CashStandardExcelProcessor:
 
 class ReconciliationMapping(BaseModel):
     transaction_id: str = Field(..., description="The sys_id or row index of the Bank/Cash transaction.")
-    matched_purchase_id: Optional[int] = Field(None, description="The ID of the matched Purchase. Null if no match.")
+    matched_purchase_ids: Optional[List[int]] = Field(None, description="A list of IDs of the matched Purchases. Null if no match.")
     debit_account_id: str = Field(..., description="The 6-digit GL Account code to be Debited.")
+    debit_amount: float = Field(..., description="The balancing transaction amount for the Debit leg.")
     credit_account_id: str = Field(..., description="The 6-digit GL Account code to be Credited.")
+    credit_amount: float = Field(..., description="The balancing transaction amount for the Credit leg.")
     reasoning: str = Field(..., description="Brief explanation of why these accounts were selected.")
 
 class ReconciliationResult(BaseModel):
     mappings: List[ReconciliationMapping]
 
 class GeminiReconciliationEngine:
-    """Dedicated engine to cross-check Bank/Cash flows against Open Purchases using 3-Tier Hierarchy."""
+    """Dedicated engine to cross-check Bank flows against Open Purchases AND Historical GL."""
     
     def __init__(self, api_key, context_account='100010'):
         print("\n" + "="*50)
@@ -271,15 +304,9 @@ class GeminiReconciliationEngine:
         self.client = genai.Client(api_key=api_key)
         self.MODEL_NAME = "gemini-3.1-pro-preview" 
         self.context_account = context_account 
-        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
-
-    def calculate_cost(self, usage):
-        if usage:
-            return ((usage.prompt_token_count / 1e6) * 1.25) + ((usage.candidates_token_count / 1e6) * 10.00)
-        return 0.0
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def reconcile(self, transactions_data: str, open_purchases_data: str, prompt_memo: str = ""):
+    def reconcile(self, transactions_data: str, open_purchases_data: str, prompt_memo: str = "", historical_gl_data: str = ""):
         
         prompt = f"""
         <TIER_1_INDUSTRY_RULES>
@@ -289,13 +316,15 @@ class GeminiReconciliationEngine:
         Rule 1: MONEY OUT (Payments/Credits to Base Account)
         - CREDIT: Always {self.context_account}.
         - DEBIT: 
-            - 100000 (Cash on Hand) if the remark says "Cheque Withdrawal", "Cash", or "Reimbursement".
-            - 200000 (Trade Payable) IF AND ONLY IF you find an exact match in the <OPEN_PURCHASES> list.
-            - 120000 (Prepayment) if it is a vendor payment but NO exact match is found in <OPEN_PURCHASES>.
+            - A Bank or Cash account (e.g., 100000 Cash on Hand) if the remark indicates an internal transfer, ATM withdrawal, cash replenishment, or reimbursement to cash on hand. CRITICAL: For internal transfers, leave 'matched_purchase_ids' empty.
+            - 200000 (Trade Payable) IF AND ONLY IF you find an exact match in <OPEN_PURCHASES>, OR if you find that a Payable was already established in the <HISTORICAL_LEDGER> (indicated by a credit to a Payable account for this vendor/invoice). 
+              *COMBINATION MATCHING*: Be mathematically creative. A single payment might cover multiple open purchases. If multiple purchases are paid by one transaction, include ALL matched purchase IDs in the 'matched_purchase_ids' list. Use the extracted 'remark'/'raw_remark'/'description'/'note' fields to search these databases.
+            - 120000 (Prepayment) if it is a vendor payment but NO matching invoice or prior payable is found in either <OPEN_PURCHASES> or <HISTORICAL_LEDGER>.
 
         Rule 2: MONEY IN (Receipts/Debits to Base Account)
         - DEBIT: Always {self.context_account}.
         - CREDIT:
+            - A Bank or Cash account (e.g., 100010 Cash in Bank) if it is an internal transfer, cash deposit, or replenishment from the bank to cash on hand. CRITICAL: For internal transfers, leave 'matched_purchase_ids' empty.
             - 300000 (Share Capital) if the remark says "Capital", "Shareholders", or "Funds Received" from owners.
             - 400000 (Accounts Receivable) if it is a payment from a customer.
         </TIER_1_INDUSTRY_RULES>
@@ -305,12 +334,17 @@ class GeminiReconciliationEngine:
         </TIER_2_COMPANY_MEMO>
         
         <TIER_3_BATCH_DATA>
-        Compare the following TRANSACTIONS against the OPEN_PURCHASES. 
-        Match them based on Vendor Name, Invoice Number, Date proximity, or Exact Amounts. Output strict JSON matching the schema.
+        Compare the <TRANSACTIONS> against BOTH the <OPEN_PURCHASES> and the <HISTORICAL_LEDGER>. 
+        Use the extracted 'remark', 'raw_remark', 'description', and 'note' fields to identify Vendor Name and Invoice Number. 
+        Analyze the historical ledger to determine if a transaction is paying off a prior period payable or if it is a new advance payment (prepayment).
         
         <OPEN_PURCHASES>
         {open_purchases_data}
         </OPEN_PURCHASES>
+        
+        <HISTORICAL_LEDGER>
+        {historical_gl_data if historical_gl_data else "No historical ledger provided."}
+        </HISTORICAL_LEDGER>
         
         <TRANSACTIONS>
         {transactions_data}
@@ -319,6 +353,7 @@ class GeminiReconciliationEngine:
         """
 
         try:
+            print(f"   ⚖️  Sending Reconciliation Prompt to Gemini ({self.MODEL_NAME})...")
             response = self.client.models.generate_content(
                 model=self.MODEL_NAME,
                 contents=prompt,
@@ -328,15 +363,18 @@ class GeminiReconciliationEngine:
                     temperature=0.0
                 )
             )
-            cost = self.calculate_cost(response.usage_metadata)
-            self.cost_stats["pro_cost"] += cost
-            print(f"💲 Reconciliation AI Cost Log: ${cost:.5f}")
+            print("   ✅ Received reconciliation mappings from Gemini API.")
             
-            return response.parsed.mappings, self.cost_stats
+            flash_cost = 0.0
+            pro_cost = 0.0
+            if response.usage_metadata:
+                pro_cost = ((response.usage_metadata.prompt_token_count / 1e6) * 1.25) + ((response.usage_metadata.candidates_token_count / 1e6) * 5.00)
+                print(f"💲 Reconciliation AI Cost Log: ${pro_cost:.5f}")
+
+            return response.parsed.mappings, {"flash_cost": flash_cost, "pro_cost": pro_cost}
         except Exception as e:
             print(f"❌ Reconciliation Error: {str(e)}")
-            return [], self.cost_stats
-
+            return [], {"flash_cost": 0.0, "pro_cost": 0.0}
 
 # ====================================================================
 # --- STRATEGY MAPS ---

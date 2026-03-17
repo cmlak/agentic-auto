@@ -1,0 +1,18 @@
+{% extends 'base_1.html' %}
+{% block content %}
+<div class="container text-center">
+    <h3>Purchase Detail: {{ purchase.invoice_no }}</h3>
+    <ul class="list-group w-50 mx-auto mt-4 text-left">
+        <li class="list-group-item"><strong>Company:</strong> {{ purchase.company }}</li>
+        <li class="list-group-item"><strong>Date:</strong> {{ purchase.date }}</li>
+        <li class="list-group-item"><strong>Total USD:</strong> ${{ purchase.total_usd }}</li>
+        <li class="list-group-item"><strong>Batch:</strong> {{ purchase.batch }}</li>
+    </ul>
+    
+    <div class="mt-4">
+        <a href="{% url 'tools:purchase_update' purchase.pk %}" class="btn btn-primary">Update</a>
+        <a href="{% url 'tools:purchase_delete' purchase.pk %}" class="btn btn-danger">Delete</a>
+        <a href="{% url 'tools:purchase_list' %}" class="btn btn-secondary">Back to List</a>
+    </div>
+</div>
+{% endblock %}

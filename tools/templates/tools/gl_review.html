@@ -1,0 +1,63 @@
+{% extends 'base_1.html' %}
+{% load crispy_forms_tags %}
+
+{% block content %}
+<div class="container mt-4 mb-5 pb-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Migrate General Ledger: <span class="text-primary">{{ meta.client_name }}</span></h2>
+        <span class="badge bg-secondary fs-5">Items in Queue: {{ total_remaining }}</span>
+    </div>
+
+    <form method="POST" action="{% url 'tools:gl_review' %}">
+        {% csrf_token %}
+        
+        {% if purchase_formset.forms %}
+            <h4 class="mt-4 text-primary border-bottom pb-2"><i class="fas fa-file-invoice"></i> Reconstructed Accounts Payable</h4>
+            {{ purchase_formset.management_form }}
+            {% for form in purchase_formset %}
+                <div class="card mb-3 shadow-sm border-primary border-opacity-25">
+                    <div class="card-body py-2">
+                        {% crispy form %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% endif %}
+
+        {% if bank_formset.forms %}
+            <h4 class="mt-5 text-success border-bottom pb-2"><i class="fas fa-university"></i> Reconstructed Bank Activity</h4>
+            {{ bank_formset.management_form }}
+            {% for form in bank_formset %}
+                <div class="card mb-3 shadow-sm border-success border-opacity-25">
+                    <div class="card-body py-2">
+                        {% crispy form %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% endif %}
+
+        {% if cash_formset.forms %}
+            <h4 class="mt-5 text-warning border-bottom pb-2"><i class="fas fa-wallet"></i> Reconstructed Cash Activity</h4>
+            {{ cash_formset.management_form }}
+            {% for form in cash_formset %}
+                <div class="card mb-3 shadow-sm border-warning border-opacity-25">
+                    <div class="card-body py-2">
+                        {% crispy form %}
+                    </div>
+                </div>
+            {% endfor %}
+        {% endif %}
+
+        <div class="fixed-bottom bg-white p-3 border-top shadow-lg d-flex justify-content-between align-items-center" style="z-index: 1000;">
+            <span class="text-muted fw-bold">
+                <i class="fas fa-layer-group"></i> Processing Batch ({{ total_remaining }} total items remaining in queue)
+            </span>
+            <div>
+                <a href="{% url 'tools:gl_migration_upload' %}" class="btn btn-outline-danger btn-lg me-3">Cancel Migration</a>
+                <button type="submit" class="btn btn-primary btn-lg fw-bold">
+                    <i class="fas fa-save"></i> Save Batch & Load Next <i class="fas fa-arrow-right ms-2"></i>
+                </button>
+            </div>
+        </div>
+    </form>
+</div>
+{% endblock %}

@@ -1,18 +1,60 @@
 {% extends 'base_1.html' %}
 {% block content %}
-<div class="container text-center">
-    <h3>Purchase Detail: {{ purchase.invoice_no }}</h3>
-    <ul class="list-group w-50 mx-auto mt-4 text-left">
-        <li class="list-group-item"><strong>Company:</strong> {{ purchase.company }}</li>
-        <li class="list-group-item"><strong>Date:</strong> {{ purchase.date }}</li>
-        <li class="list-group-item"><strong>Total USD:</strong> ${{ purchase.total_usd }}</li>
-        <li class="list-group-item"><strong>Batch:</strong> {{ purchase.batch }}</li>
-    </ul>
-    
-    <div class="mt-4">
-        <a href="{% url 'tools:purchase_update' purchase.pk %}" class="btn btn-primary">Update</a>
-        <a href="{% url 'tools:purchase_delete' purchase.pk %}" class="btn btn-danger">Delete</a>
-        <a href="{% url 'tools:purchase_list' %}" class="btn btn-secondary">Back to List</a>
+<div class="container">
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center">
+          <h1 class="h3">{{ purchase.company }} Purchase Detail</h1>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="row d-flex justify-content-center">
+        {% if purchase %}
+            <div class="col-sm-12 col-md-8 col-lg-6 text-left py-2">
+                <ul class="list-group">
+                    <li class="list-group-item">
+                        <strong>ID:&nbsp;&nbsp;</strong> {{ purchase.id }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Batch:&nbsp;&nbsp;</strong> {{ purchase.batch|default:"-" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Date:&nbsp;&nbsp;</strong> {{ purchase.date }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Company / Vendor:&nbsp;&nbsp;</strong> {{ purchase.company }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Invoice No:&nbsp;&nbsp;</strong> {{ purchase.invoice_no|default:"-"|cut:'="'|cut:'"' }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>VAT TIN:&nbsp;&nbsp;</strong> {{ purchase.vattin|default:"-"|cut:'="'|cut:'"' }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Description:&nbsp;&nbsp;</strong> {{ purchase.description_en|default:purchase.description }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>VAT USD:&nbsp;&nbsp;</strong> ${{ purchase.vat_usd|default:"0.00" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Total USD:&nbsp;&nbsp;</strong> ${{ purchase.total_usd }}
+                    </li>
+                </ul>
+            </div>
+        {% else %}
+            <p>No purchase record found.</p>
+        {% endif %}
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-2 btn-container">
+            {% if is_owner %}
+               <a href="{% url 'tools:purchase_update' pk=purchase.pk %}" role="button" class="btn btn-primary" style="width: 80px;">Update</a>
+               <a href="{% url 'tools:purchase_delete' pk=purchase.pk %}" role="button" class="btn btn-danger" style="width: 80px;">Delete</a>
+            {% endif %}
+           <a href="{% url 'tools:purchase_list' %}" role="button" class="btn btn-secondary" style="width: 80px;">List</a>
+        </div>
     </div>
 </div>
 {% endblock %}

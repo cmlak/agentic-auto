@@ -1,0 +1,22 @@
+{% extends 'base_1.html' %}
+{% block content %}
+<div class="container">
+    <div class="row d-flex justify-content-center mt-5">
+        <div class="col-md-6">
+            <div class="card shadow-sm">
+                <div class="card-body text-center">
+                    <h4 class="card-title text-danger mb-4">Confirm Deletion</h4>
+                    <p class="card-text">Are you sure you want to delete bank transaction <strong>{{ bank.bank_ref_id }}</strong>?</p>
+                    <p class="text-muted small">This action cannot be undone, and associated Journal Entries will also be deleted.</p>
+                    
+                    <form method="post" class="mt-4">
+                        {% csrf_token %}
+                        <button type="submit" class="btn btn-danger px-4 mx-2">Yes, Delete</button>
+                        <a href="{% url 'cash:bank_detail' bank.id %}" class="btn btn-secondary px-4 mx-2">Cancel</a>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

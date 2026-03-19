@@ -1,7 +1,7 @@
 from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Row, Column, Field
+from crispy_forms.layout import Layout, Row, Column, Field, Submit
 from .models import Purchase, Client
 
 class BatchUploadForm(forms.Form):
@@ -21,6 +21,25 @@ class BatchUploadForm(forms.Form):
         widget=forms.Textarea(attrs={'rows': 3}),
         required=False
     )
+
+class ClientSelectionForm(forms.Form):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(), 
+        empty_label="--- Select Client ---",
+        label="Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('client', css_class='form-group col-md-12'),
+            ),
+            Submit('submit', 'Select Client', css_class='btn btn-primary w-100 mt-3')
+        )
 
 class PurchaseReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)

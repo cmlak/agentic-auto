@@ -1,0 +1,39 @@
+{% extends 'base_1.html' %} 
+{% load crispy_forms_tags %}
+
+{% block content %}
+<div class="container">
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center py-2">
+            <h2>Update Cash Transaction</h2>
+        </div>
+    </div><hr>
+
+    <div class="row d-flex justify-content-center mt-3">
+        <div class="col-sm-12 col-md-10 col-lg-8">
+            <form action="" method="post" id="txnForm">
+                {% csrf_token %}
+                {{ form | crispy }}
+                <div class="row d-flex justify-content-center">
+                    <div class="col text-center py-4">
+                        <button type="submit" id="submitBtn" class="btn btn-primary mx-2" style="width: 150px;">Update Transaction</button>
+                        <a href="{% url 'cash:cash_list' %}" class="btn btn-secondary mx-2" style="width: 150px;">Cancel</a>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        $('#id_vendor_choice').select2({ placeholder: "--- Select Existing Vendor ---", allowClear: true });
+        $('#id_description').select2({ tags: true }); 
+        $("#txnForm").on("submit", function() {
+            $("#submitBtn").prop("disabled", true).html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...');
+        });
+    });
+</script>
+{% endblock %}

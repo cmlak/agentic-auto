@@ -8,22 +8,30 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.core.paginator import Paginator
 from django.contrib import messages
 from django.http import HttpResponse
+from django.http import HttpResponseForbidden, HttpResponseRedirect
+from django.urls import reverse_lazy, reverse
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth.mixins import LoginRequiredMixin
+from django.views.generic import DetailView, UpdateView, DeleteView
 from django.db import transaction
 
-from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet
+from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet, ManualBankEntryForm, ManualCashEntryForm
 from .processors import GeminiABABankProcessor, GeminiCanadiaBankProcessor, ClientBCustomBankProcessor, \
     CashStandardExcelProcessor, GeminiReconciliationEngine
 from .models import Bank, Cash
 from .resources import BankResource, CashResource
+from .filters import BankFilter, CashFilter
 from tools.models import AICostLog, Client, Vendor, Purchase
 from account.models import Account, JournalEntry, JournalLine, ClientPromptMemo, AccountMappingRule
+from register.models import Profile
 
 BANK_PROCESSOR_MAP = {
     'aba_standard': GeminiABABankProcessor,
     'canadia_standard': GeminiCanadiaBankProcessor,
     'client_b_custom': ClientBCustomBankProcessor,
 }
+
+AUTHORIZED_DEPARTMENTS = ['Accounting', 'Procurement', 'Management']
 
 @login_required
 def bank_ai_upload_view(request):
@@ -764,3 +772,396 @@ def download_exported_cash(request):
     
     messages.error(request, "The export file has expired or could not be found.")
     return redirect('cash:cash_upload')
+
+
+# ====================================================================
+# --- BANK CRUD SYSTEM ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def BankListView(request):
+    user = request.user
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('register:main')
+
+    base_queryset = Bank.objects.filter(client_id=client_id)
+    if user.is_staff or user.is_superuser:
+        banks = base_queryset
+    else:
+        try:
+            profile = Profile.objects.get(user=user)
+            if profile.department in AUTHORIZED_DEPARTMENTS:
+                banks = base_queryset
+            else:
+                banks = base_queryset.filter(user=user)
+        except Profile.DoesNotExist:
+            banks = Bank.objects.none()
+
+    banks = banks.order_by('-date', '-id')
+    bank_filter = BankFilter(request.GET, queryset=banks)
+    paginator = Paginator(bank_filter.qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'cash/bank_list.html', {
+        'filter': bank_filter, 'banks': page_obj, 'page_obj': page_obj
+    })
+
+@login_required(login_url="register:login")
+def manual_bank_entry_view(request):
+    client_id = request.session.get('active_client_id')
+    if not client_id: return redirect('register:main')
+
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    if request.method == 'POST':
+        form = ManualBankEntryForm(request.POST, account_choices=account_choices)
+        if form.is_valid():
+            with transaction.atomic():
+                bank = form.save(commit=False)
+                bank.client_id = client_id
+                bank.user = request.user
+                bank.batch = "MANUAL_ENTRY"
+                bank.save()
+
+                dr_acct_id = str(bank.debit_account_id)
+                cr_acct_id = str(bank.credit_account_id)
+                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Asset'})
+                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Liability'})
+
+                amount = bank.debit if bank.debit > 0 else bank.credit
+                je_desc = f"Manual Bank Txn: {bank.counterparty or bank.purpose}"[:500]
+
+                je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
+                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+            messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
+            return redirect('cash:bank_list')
+    else:
+        form = ManualBankEntryForm(account_choices=account_choices)
+    return render(request, 'cash/manual_bank_entry.html', {'form': form})
+
+class BankDetailView(LoginRequiredMixin, DetailView):
+    model = Bank
+    template_name = 'cash/bank_detail.html'
+    context_object_name = 'bank'
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+        
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        is_owner = user.is_staff or user.is_superuser
+        try:
+            if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or self.get_object().user == user:
+                is_owner = True
+        except: pass
+        context['is_owner'] = is_owner
+        return context
+
+class BankUpdateView(LoginRequiredMixin, UpdateView):
+    model = Bank
+    form_class = ManualBankEntryForm 
+    template_name = 'cash/bank_update.html'
+    
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        client_id = self.request.session.get('active_client_id')
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+        kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
+        return kwargs
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            bank = form.save()
+            JournalEntry.objects.filter(bank=bank).delete()
+            client_id = self.request.session.get('active_client_id')
+            
+            dr_acct_id = str(bank.debit_account_id)
+            cr_acct_id = str(bank.credit_account_id)
+            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Asset'})
+            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Liability'})
+
+            amount = bank.debit if bank.debit > 0 else bank.credit
+            je_desc = f"Updated Bank Txn: {bank.counterparty or bank.purpose}"[:500]
+
+            je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
+            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+            
+        messages.success(self.request, "Bank transaction updated securely!")
+        return HttpResponseRedirect(reverse('cash:bank_detail', kwargs={'pk': self.object.pk}))
+
+class BankDeleteView(LoginRequiredMixin, DeleteView):
+    model = Bank
+    template_name = 'cash/bank_confirm_delete.html'
+    success_url = reverse_lazy('cash:bank_list')
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        JournalEntry.objects.filter(bank=self.object).delete()
+        messages.success(self.request, 'Bank transaction deleted.')
+        return super().form_valid(form)
+
+@login_required(login_url="register:login")
+def export_bank_csv(request):
+    client_id = request.session.get('active_client_id')
+    if not client_id: return HttpResponse("No active client selected.", status=400)
+    
+    base_queryset = Bank.objects.filter(client_id=client_id)
+    user = request.user
+    if not (user.is_staff or user.is_superuser):
+        try:
+            if Profile.objects.get(user=user).department not in AUTHORIZED_DEPARTMENTS:
+                base_queryset = base_queryset.filter(user=user)
+        except Profile.DoesNotExist:
+            base_queryset = Bank.objects.none()
+
+    bank_filter = BankFilter(request.GET, queryset=base_queryset.order_by('-date'))
+    resource = BankResource(client_id=client_id)
+    dataset = resource.export(queryset=bank_filter.qs)
+    
+    response = HttpResponse(dataset.csv, content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="filtered_bank_transactions.csv"'
+    return response
+
+
+# ====================================================================
+# --- CASH CRUD SYSTEM ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def CashListView(request):
+    user = request.user
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('register:main')
+
+    base_queryset = Cash.objects.filter(client_id=client_id)
+    if user.is_staff or user.is_superuser:
+        cash_qs = base_queryset
+    else:
+        try:
+            profile = Profile.objects.get(user=user)
+            if profile.department in AUTHORIZED_DEPARTMENTS:
+                cash_qs = base_queryset
+            else:
+                cash_qs = base_queryset.filter(user=user)
+        except Profile.DoesNotExist:
+            cash_qs = Cash.objects.none()
+
+    cash_qs = cash_qs.order_by('-date', '-id')
+    cash_filter = CashFilter(request.GET, queryset=cash_qs)
+    cash_filter.form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
+    paginator = Paginator(cash_filter.qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    return render(request, 'cash/cash_list.html', {
+        'filter': cash_filter, 'cash_objs': page_obj, 'page_obj': page_obj
+    })
+
+@login_required(login_url="register:login")
+def manual_cash_entry_view(request):
+    client_id = request.session.get('active_client_id')
+    if not client_id: return redirect('register:main')
+
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    if request.method == 'POST':
+        form = ManualCashEntryForm(request.POST, vendor_choices=vendor_choices, account_choices=account_choices)
+        if form.is_valid():
+            with transaction.atomic():
+                cash = form.save(commit=False)
+                cash.client_id = client_id
+                cash.user = request.user
+                cash.batch = "MANUAL_ENTRY"
+                vc = form.cleaned_data.get('vendor_choice')
+                if vc: cash.vendor_id = int(vc)
+                cash.save()
+
+                dr_acct_id = str(cash.debit_account_id)
+                cr_acct_id = str(cash.credit_account_id)
+                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Asset'})
+                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Liability'})
+
+                amount = cash.debit if cash.debit > 0 else cash.credit
+                je_desc = f"Manual Cash Txn: {cash.description}"[:500]
+
+                je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
+                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+            messages.success(request, f"Manual Cash transaction posted securely!")
+            return redirect('cash:cash_list')
+    else:
+        form = ManualCashEntryForm(vendor_choices=vendor_choices, account_choices=account_choices)
+    return render(request, 'cash/manual_cash_entry.html', {'form': form})
+
+class CashDetailView(LoginRequiredMixin, DetailView):
+    model = Cash
+    template_name = 'cash/cash_detail.html'
+    context_object_name = 'cash'
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+        
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        is_owner = user.is_staff or user.is_superuser
+        try:
+            if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or self.get_object().user == user:
+                is_owner = True
+        except: pass
+        context['is_owner'] = is_owner
+        return context
+
+class CashUpdateView(LoginRequiredMixin, UpdateView):
+    model = Cash
+    form_class = ManualCashEntryForm 
+    template_name = 'cash/cash_update.html'
+    
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        client_id = self.request.session.get('active_client_id')
+        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+        kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+        kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
+        return kwargs
+        
+    def get_initial(self):
+        initial = super().get_initial()
+        if self.object.vendor:
+            initial['vendor_choice'] = self.object.vendor.id
+        return initial
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            cash = form.save(commit=False)
+            vc = form.cleaned_data.get('vendor_choice')
+            if vc: cash.vendor_id = int(vc)
+            cash.save()
+            
+            JournalEntry.objects.filter(cash=cash).delete()
+            client_id = self.request.session.get('active_client_id')
+            
+            dr_acct_id = str(cash.debit_account_id)
+            cr_acct_id = str(cash.credit_account_id)
+            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Asset'})
+            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'System Gen', 'account_type': 'Liability'})
+
+            amount = cash.debit if cash.debit > 0 else cash.credit
+            je_desc = f"Updated Cash Txn: {cash.description}"[:500]
+
+            je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
+            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+            
+        messages.success(self.request, "Cash transaction updated securely!")
+        return HttpResponseRedirect(reverse('cash:cash_detail', kwargs={'pk': self.object.pk}))
+
+class CashDeleteView(LoginRequiredMixin, DeleteView):
+    model = Cash
+    template_name = 'cash/cash_confirm_delete.html'
+    success_url = reverse_lazy('cash:cash_list')
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        obj = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                    is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        JournalEntry.objects.filter(cash=self.object).delete()
+        messages.success(self.request, 'Cash transaction deleted.')
+        return super().form_valid(form)
+
+@login_required(login_url="register:login")
+def export_cash_csv(request):
+    client_id = request.session.get('active_client_id')
+    if not client_id: return HttpResponse("No active client selected.", status=400)
+    
+    base_queryset = Cash.objects.filter(client_id=client_id)
+    user = request.user
+    if not (user.is_staff or user.is_superuser):
+        try:
+            if Profile.objects.get(user=user).department not in AUTHORIZED_DEPARTMENTS:
+                base_queryset = base_queryset.filter(user=user)
+        except Profile.DoesNotExist:
+            base_queryset = Cash.objects.none()
+
+    cash_filter = CashFilter(request.GET, queryset=base_queryset.order_by('-date'))
+    resource = CashResource(client_id=client_id)
+    dataset = resource.export(queryset=cash_filter.qs)
+    
+    response = HttpResponse(dataset.csv, content_type='text/csv')
+    response['Content-Disposition'] = 'attachment; filename="filtered_cash_transactions.csv"'
+    return response

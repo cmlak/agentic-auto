@@ -59,6 +59,10 @@
 <script>
     $(document).ready(function() {
         
+        // 0. Hide the native model 'vendor' field to prevent duplication with 'vendor_choice'
+        $("#div_id_vendor").hide();
+        $("#id_vendor").prop("required", false);
+
         // 1. Initialize Select2 for dropdowns to make searching large charts of accounts/vendors easier
         if ($("#id_vendor_choice").length) {
             $("#id_vendor_choice").select2({

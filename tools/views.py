@@ -14,10 +14,11 @@ from django.views.generic import DetailView, UpdateView, DeleteView
 from django.db.models import Sum
 from django.db import transaction
 import datetime
+from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
 from .forms import GLMigrationUploadForm
-from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLPurchaseFormSet, GLBankFormSet, GLCashFormSet
+from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLPurchaseFormSet, GLBankFormSet, GLCashFormSet, ClientSelectionForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor
 from .models import Purchase, AICostLog, Vendor, Client
 from cash.models import Bank, Cash
@@ -708,11 +709,19 @@ AUTHORIZED_DEPARTMENTS = ['Accounting', 'Procurement', 'Management']
 @login_required(login_url="register:login")
 def PurchaseListView(request):
     user = request.user
+
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            request.session['active_client_id'] = form.cleaned_data['client'].id
+            return redirect('tools:purchase_list')
+
     client_id = request.session.get('active_client_id')
     
     if not client_id:
+        form = ClientSelectionForm()
         messages.error(request, "Please select an active client.")
-        return redirect('tools:dashboard')
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # Base filtering by client
     base_queryset = Purchase.objects.filter(client_id=client_id)
@@ -740,9 +749,15 @@ def PurchaseListView(request):
     purchase_filter = PurchaseFilter(request.GET, queryset=purchases)
     purchase_filter.form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
 
+    # Apply Pagination (20 items per page)
+    paginator = Paginator(purchase_filter.qs, 20)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+
     context = {
         'filter': purchase_filter,
-        'purchases': purchase_filter.qs,
+        'purchases': page_obj,  # 'page_obj' is fully iterable, keeping the template loop happy
+        'page_obj': page_obj,
     }
     return render(request, 'purchase_list.html', context)
 

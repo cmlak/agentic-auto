@@ -1,0 +1,57 @@
+{% extends 'base_1.html' %}
+{% block content %}
+<div class="container">
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center">
+          <h1 class="h3">Cash Transaction Detail</h1>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="row d-flex justify-content-center">
+        {% if cash %}
+            <div class="col-sm-12 col-md-8 col-lg-6 text-left py-2">
+                <ul class="list-group">
+                    <li class="list-group-item">
+                        <strong>ID:&nbsp;&nbsp;</strong> {{ cash.id }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Date:&nbsp;&nbsp;</strong> {{ cash.date }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Voucher No:&nbsp;&nbsp;</strong> {{ cash.voucher_no|default:"-"|cut:'="'|cut:'"' }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Vendor:&nbsp;&nbsp;</strong> {{ cash.vendor.name|default:"-" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Invoice No:&nbsp;&nbsp;</strong> {{ cash.invoice_no|default:"-"|cut:'="'|cut:'"' }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Description:&nbsp;&nbsp;</strong> {{ cash.description|default:"-" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Debit:&nbsp;&nbsp;</strong> <span class="text-success">${{ cash.debit|default:"0.00" }}</span>
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Credit:&nbsp;&nbsp;</strong> <span class="text-danger">${{ cash.credit|default:"0.00" }}</span>
+                    </li>
+                </ul>
+            </div>
+        {% else %}
+            <p>No cash record found.</p>
+        {% endif %}
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-2 btn-container">
+            {% if is_owner %}
+               <a href="{% url 'cash:cash_update' pk=cash.pk %}" role="button" class="btn btn-primary" style="width: 80px;">Update</a>
+               <a href="{% url 'cash:cash_delete' pk=cash.pk %}" role="button" class="btn btn-danger" style="width: 80px;">Delete</a>
+            {% endif %}
+           <a href="{% url 'cash:cash_list' %}" role="button" class="btn btn-secondary" style="width: 80px;">List</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

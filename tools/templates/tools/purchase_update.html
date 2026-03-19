@@ -16,7 +16,8 @@
     <hr>
 
     <div class="row d-flex justify-content-center mt-3">
-        <div class="col-sm-12 col-md-10 col-lg-8"> <form action="" method="post">
+        <div class="col-sm-12 col-md-10 col-lg-8"> 
+            <form action="" method="post" id="updateForm">
                 
                 {% csrf_token %}
                 
@@ -37,11 +38,36 @@
 
 {% block scripts %}
 <script>
-    // Include Select2 for the dynamic vendor and account dropdowns if you use them
     $(document).ready(function() {
+        // 0. Hide the native model 'vendor' field to prevent duplication with 'vendor_choice'
+        $("#div_id_vendor").hide();
+        $("#id_vendor").prop("required", false);
+
+        // 1. Remove (="") formatting from invoice_no and vattin fields on load
+        var cleanFields = ['#id_invoice_no', '#id_vattin'];
+        cleanFields.forEach(function(selector) {
+            var el = $(selector);
+            if (el.length && el.val()) {
+                var cleanedVal = el.val().replace(/=/g, '').replace(/"/g, '');
+                el.val(cleanedVal);
+            }
+        });
+
+        // 2. Initialize Select2 for vendor inside the form (using dropdownParent)
         if ($("#id_vendor_choice").length) {
-            $("#id_vendor_choice").select2();
+            $("#id_vendor_choice").select2({
+                placeholder: "--- Select Existing Vendor ---",
+                allowClear: true
+            });
         }
+
+        // 3. Initialize Select2 for account dropdowns to match manual entry
+        var accountFields = ['#id_account_id', '#id_vat_account_id', '#id_wht_debit_account_id', '#id_credit_account_id', '#id_wht_account_id'];
+        accountFields.forEach(function(field) {
+            if ($(field).length) {
+                $(field).select2();
+            }
+        });
     });
 </script>
 {% endblock %}

@@ -182,6 +182,64 @@ class BankReviewForm(forms.ModelForm):
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
 
+class ManualBankEntryForm(forms.ModelForm):
+    debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
+    credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
+    
+    def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['debit_account_id'].choices = account_choices
+        self.fields['credit_account_id'].choices = account_choices
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('date', css_class='form-group col-md-4'),
+                Column('bank_ref_id', css_class='form-group col-md-4'),
+                Column('trans_type', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('counterparty', css_class='form-group col-md-6'),
+                Column('purpose', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('remark', css_class='form-group col-md-12'),
+            ),
+            Row(
+                Column('debit_account_id', css_class='form-group col-md-6'),
+                Column('credit_account_id', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('debit', css_class='form-group col-md-6'),
+                Column('credit', css_class='form-group col-md-6'),
+                css_class='bg-light p-3 rounded mt-3 border border-secondary'
+            )
+        )
+
+    class Meta:
+        model = Bank
+        fields = [
+            'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
+            'debit_account_id', 'credit_account_id', 'debit', 'credit'
+        ]
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date'}),
+            'purpose': forms.Textarea(attrs={'rows': 2}),
+            'debit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+            'credit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+        }
+    
+    def clean(self):
+        cleaned_data = super().clean()
+        debit = cleaned_data.get('debit') or 0.0
+        credit = cleaned_data.get('credit') or 0.0
+        if debit > 0 and credit > 0:
+            raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
+        return cleaned_data
+
+
 # ====================================================================
 # --- 2. CASH BOOK FORMS ---
 # ====================================================================
@@ -338,3 +396,65 @@ class CashReviewForm(forms.ModelForm):
         return cleaned_data
 
 CashFormSet = formset_factory(CashReviewForm, extra=0, can_delete=True)
+
+
+class ManualCashEntryForm(forms.ModelForm):
+    vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
+    debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
+    credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
+    
+    def __init__(self, *args, **kwargs):
+        vendor_choices = kwargs.pop('vendor_choices', [])
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['vendor_choice'].choices = vendor_choices
+        self.fields['debit_account_id'].choices = account_choices
+        self.fields['credit_account_id'].choices = account_choices
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('date', css_class='form-group col-md-4'),
+                Column('voucher_no', css_class='form-group col-md-4'),
+                Column('invoice_no', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('vendor_choice', css_class='form-group col-md-12'),
+            ),
+            Row(
+                Column('description', css_class='form-group col-md-12'),
+            ),
+            Row(
+                Column('debit_account_id', css_class='form-group col-md-6'),
+                Column('credit_account_id', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('debit', css_class='form-group col-md-6'),
+                Column('credit', css_class='form-group col-md-6'),
+                css_class='bg-light p-3 rounded mt-3 border border-secondary'
+            )
+        )
+
+    class Meta:
+        model = Cash
+        fields = [
+            'date', 'voucher_no', 'invoice_no', 'description', 
+            'debit_account_id', 'credit_account_id', 'debit', 'credit'
+        ]
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date'}),
+            'description': forms.Textarea(attrs={'rows': 2}),
+            'debit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+            'credit': forms.TextInput(attrs={'class': 'number-format text-end'}),
+        }
+        
+    def clean(self):
+        cleaned_data = super().clean()
+        debit = cleaned_data.get('debit') or 0.0
+        credit = cleaned_data.get('credit') or 0.0
+        if debit > 0 and credit > 0:
+            raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
+        if not debit and not credit:
+            raise forms.ValidationError("You must enter either a Debit or a Credit amount.")
+        return cleaned_data

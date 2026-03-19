@@ -1,10 +1,12 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from tools.models import Client, Vendor
+from django.contrib.auth.models import User
 
 class Bank(models.Model):
     # Relational & Meta Data
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     batch = models.CharField(max_length=255, blank=True, null=True)
     sys_id = models.CharField(max_length=50, blank=True, null=True)
     
@@ -43,6 +45,7 @@ class Bank(models.Model):
 class Cash(models.Model):
     # Relational & Meta Data (Multi-Tenant Isolation)
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     batch = models.CharField(max_length=255, blank=True, null=True)
     
     # Core Transaction Data

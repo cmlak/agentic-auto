@@ -4,6 +4,7 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 from django.shortcuts import redirect
+from register.views import IndexView
 
 
 urlpatterns = [
@@ -12,7 +13,7 @@ urlpatterns = [
     path('tools/', include('tools.urls')),
     path('cash/', include('cash.urls')),
     path('account/', include('account.urls')),
-    path('', lambda request: redirect('admin/', permanent=False)),
+    path('', IndexView, name='main'),
 ]
 
 if settings.DEBUG:

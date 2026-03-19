@@ -1,0 +1,54 @@
+{% extends 'base_1.html' %}
+{% block content %}
+<div class="container">
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 text-center">
+          <h1 class="h3">Bank Transaction Detail</h1>
+        </div>
+    </div>
+
+    <hr>
+
+    <div class="row d-flex justify-content-center">
+        {% if bank %}
+            <div class="col-sm-12 col-md-8 col-lg-6 text-left py-2">
+                <ul class="list-group">
+                    <li class="list-group-item">
+                        <strong>ID:&nbsp;&nbsp;</strong> {{ bank.id }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Date:&nbsp;&nbsp;</strong> {{ bank.date }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Bank Ref ID:&nbsp;&nbsp;</strong> {{ bank.bank_ref_id|default:"-"|cut:'="'|cut:'"' }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Counterparty:&nbsp;&nbsp;</strong> {{ bank.counterparty|default:"-" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Purpose:&nbsp;&nbsp;</strong> {{ bank.purpose|default:"-" }}
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Debit:&nbsp;&nbsp;</strong> <span class="text-success">${{ bank.debit|default:"0.00" }}</span>
+                    </li>
+                    <li class="list-group-item">
+                        <strong>Credit:&nbsp;&nbsp;</strong> <span class="text-danger">${{ bank.credit|default:"0.00" }}</span>
+                    </li>
+                </ul>
+            </div>
+        {% else %}
+            <p>No bank record found.</p>
+        {% endif %}
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-2 btn-container">
+            {% if is_owner %}
+               <a href="{% url 'cash:bank_update' pk=bank.pk %}" role="button" class="btn btn-primary" style="width: 80px;">Update</a>
+               <a href="{% url 'cash:bank_delete' pk=bank.pk %}" role="button" class="btn btn-danger" style="width: 80px;">Delete</a>
+            {% endif %}
+           <a href="{% url 'cash:bank_list' %}" role="button" class="btn btn-secondary" style="width: 80px;">List</a>
+        </div>
+    </div>
+</div>
+{% endblock %}

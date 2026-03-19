@@ -1,8 +1,25 @@
-{% extends 'base_1.html' %} 
+{% extends 'base_2_cash.html' %} 
 {% load crispy_forms_tags %}
 
 {% block content %}
 <div class="container">
+
+    <div class="row mb-4 bg-light p-3 rounded border">
+        <div class="col-12">
+            <form method="POST" action="{% url 'cash:bank_list' %}">
+                {% csrf_token %}
+                <div class="d-flex align-items-center gap-3">
+                    <div class="flex-grow-1">
+                        {{ client_form|crispy }}
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-primary">Switch Client</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="row mb-0"><div class="col-12"><form method="GET">{% crispy filter.form %}</form></div></div>
     
     <div class="row mb-3"><div class="col-12 text-center py-2"><h4>Bank Transactions</h4></div></div>

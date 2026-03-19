@@ -22,6 +22,7 @@ from .models import Bank, Cash
 from .resources import BankResource, CashResource
 from .filters import BankFilter, CashFilter
 from tools.models import AICostLog, Client, Vendor, Purchase
+from tools.forms import ClientSelectionForm
 from account.models import Account, JournalEntry, JournalLine, ClientPromptMemo, AccountMappingRule
 from register.models import Profile
 
@@ -31,16 +32,28 @@ BANK_PROCESSOR_MAP = {
     'client_b_custom': ClientBCustomBankProcessor,
 }
 
-AUTHORIZED_DEPARTMENTS = ['Accounting', 'Procurement', 'Management']
-
 @login_required
 def bank_ai_upload_view(request):
+    user = request.user
+
     if request.method == 'POST':
         request.session.pop('bank_report_path', None)
         
         form = BankBatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
+            
+            has_access = user.is_staff or user.is_superuser
+            if not has_access:
+                try:
+                    if user.profile.clients.filter(id=selected_client.id).exists():
+                        has_access = True
+                except Profile.DoesNotExist:
+                    pass
+            if not has_access:
+                messages.error(request, "You do not have permission to upload data for this client.")
+                return redirect('cash:bank_upload')
+                
             uploaded_pdf = form.cleaned_data['bank_pdf']
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
@@ -210,6 +223,13 @@ def bank_ai_upload_view(request):
                     os.remove(tmp_pdf_path)
     else:
         form = BankBatchUploadForm()
+        
+        # Dynamically limit the dropdown to ONLY the clients the user manages
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
     return render(request, 'bank_upload.html', {'form': form})
 
 @login_required
@@ -223,6 +243,17 @@ def bank_review_view(request):
 
     client_id = metadata.get('client_id')
     
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access and client_id:
+        try:
+            if user.profile.clients.filter(id=client_id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to review this client's data.")
+
     # Ensure default accounts exist so the frontend dropdown choices won't be blank
     Account.objects.get_or_create(client_id=client_id, account_id='100010', defaults={'name': 'Cash in Bank', 'account_type': 'Asset'})
     Account.objects.get_or_create(client_id=client_id, account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
@@ -349,6 +380,18 @@ def download_bank_report(request):
 def export_bank_transactions(request, client_id):
     """Exports Bank instances to an Excel file using URL parameter for client routing."""
     client = get_object_or_404(Client, id=client_id)
+    
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access:
+        try:
+            if user.profile.clients.filter(id=client.id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to export this client's data.")
+
     queryset = Bank.objects.filter(client_id=client.id).order_by('id')
 
     resource = BankResource(client_id=client.id)
@@ -401,12 +444,26 @@ CASH_PROCESSOR_MAP = {
 @login_required
 def cash_upload_view(request):
     """Upload Cash Excel, Route via Strategy Map, Process, Reconcile, and Store."""
+    user = request.user
+
     if request.method == 'POST':
         request.session.pop('cash_report_path', None)
         
         form = CashBatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
+            
+            has_access = user.is_staff or user.is_superuser
+            if not has_access:
+                try:
+                    if user.profile.clients.filter(id=selected_client.id).exists():
+                        has_access = True
+                except Profile.DoesNotExist:
+                    pass
+            if not has_access:
+                messages.error(request, "You do not have permission to upload data for this client.")
+                return redirect('cash:cash_upload')
+                
             uploaded_file = form.cleaned_data['cash_file']
             batch_name = form.cleaned_data['batch_name']
             selected_config = form.cleaned_data['processor_config']
@@ -562,6 +619,13 @@ def cash_upload_view(request):
                     os.remove(tmp_file_path)
     else:
         form = CashBatchUploadForm()
+        
+        # Dynamically limit the dropdown to ONLY the clients the user manages
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
     return render(request, 'cash_upload.html', {'form': form})
 
 
@@ -576,6 +640,17 @@ def cash_review_view(request):
 
     client_id = metadata.get('client_id')
     
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access and client_id:
+        try:
+            if user.profile.clients.filter(id=client_id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to review this client's data.")
+
     # Ensure default accounts exist so the frontend dropdown choices won't be blank
     Account.objects.get_or_create(client_id=client_id, account_id='100000', defaults={'name': 'Cash on Hand', 'account_type': 'Asset'})
     Account.objects.get_or_create(client_id=client_id, account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
@@ -734,6 +809,18 @@ def download_cash_report(request):
 def export_cash_transactions(request, client_id):
     """Exports Cash instances to an Excel file using URL parameter for client routing."""
     client = get_object_or_404(Client, id=client_id)
+    
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access:
+        try:
+            if user.profile.clients.filter(id=client.id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to export this client's data.")
+
     queryset = Cash.objects.filter(client_id=client.id).order_by('id')
 
     resource = CashResource(client_id=client.id)
@@ -781,23 +868,38 @@ def download_exported_cash(request):
 @login_required(login_url="register:login")
 def BankListView(request):
     user = request.user
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('register:main')
 
-    base_queryset = Bank.objects.filter(client_id=client_id)
-    if user.is_staff or user.is_superuser:
-        banks = base_queryset
-    else:
-        try:
-            profile = Profile.objects.get(user=user)
-            if profile.department in AUTHORIZED_DEPARTMENTS:
-                banks = base_queryset
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
             else:
-                banks = base_queryset.filter(user=user)
-        except Profile.DoesNotExist:
-            banks = Bank.objects.none()
+                request.session.pop('active_client_id', None)
+            return redirect('cash:bank_list')
+
+    client_id = request.session.get('active_client_id')
+
+    if client_id:
+        base_queryset = Bank.objects.filter(client_id=client_id)
+        if user.is_staff or user.is_superuser:
+            banks = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    banks = base_queryset
+                else:
+                    banks = Bank.objects.none()
+                    messages.error(request, "You do not have permission to view bank transactions for this client.")
+            except Profile.DoesNotExist:
+                banks = Bank.objects.none()
+        client_form = ClientSelectionForm(initial={'client': client_id})
+    else:
+        banks = Bank.objects.none()
+        client_form = ClientSelectionForm()
+        messages.info(request, "Please select a client to view bank transactions.")
 
     banks = banks.order_by('-date', '-id')
     bank_filter = BankFilter(request.GET, queryset=banks)
@@ -805,13 +907,31 @@ def BankListView(request):
     page_obj = paginator.get_page(request.GET.get('page'))
 
     return render(request, 'cash/bank_list.html', {
-        'filter': bank_filter, 'banks': page_obj, 'page_obj': page_obj
+        'filter': bank_filter, 'banks': page_obj, 'page_obj': page_obj, 'client_form': client_form
     })
 
 @login_required(login_url="register:login")
 def manual_bank_entry_view(request):
     client_id = request.session.get('active_client_id')
-    if not client_id: return redirect('register:main')
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to manage this client.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
@@ -855,7 +975,7 @@ class BankDetailView(LoginRequiredMixin, DetailView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -864,9 +984,10 @@ class BankDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         user = self.request.user
+        obj = self.get_object()
         is_owner = user.is_staff or user.is_superuser
         try:
-            if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or self.get_object().user == user:
+            if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                 is_owner = True
         except: pass
         context['is_owner'] = is_owner
@@ -883,7 +1004,7 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -928,7 +1049,7 @@ class BankDeleteView(LoginRequiredMixin, DeleteView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -948,8 +1069,8 @@ def export_bank_csv(request):
     user = request.user
     if not (user.is_staff or user.is_superuser):
         try:
-            if Profile.objects.get(user=user).department not in AUTHORIZED_DEPARTMENTS:
-                base_queryset = base_queryset.filter(user=user)
+            if not Profile.objects.get(user=user).clients.filter(id=client_id).exists():
+                base_queryset = Bank.objects.none()
         except Profile.DoesNotExist:
             base_queryset = Bank.objects.none()
 
@@ -969,38 +1090,73 @@ def export_bank_csv(request):
 @login_required(login_url="register:login")
 def CashListView(request):
     user = request.user
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('register:main')
 
-    base_queryset = Cash.objects.filter(client_id=client_id)
-    if user.is_staff or user.is_superuser:
-        cash_qs = base_queryset
-    else:
-        try:
-            profile = Profile.objects.get(user=user)
-            if profile.department in AUTHORIZED_DEPARTMENTS:
-                cash_qs = base_queryset
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
             else:
-                cash_qs = base_queryset.filter(user=user)
-        except Profile.DoesNotExist:
-            cash_qs = Cash.objects.none()
+                request.session.pop('active_client_id', None)
+            return redirect('cash:cash_list')
+
+    client_id = request.session.get('active_client_id')
+
+    if client_id:
+        base_queryset = Cash.objects.filter(client_id=client_id)
+        if user.is_staff or user.is_superuser:
+            cash_qs = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    cash_qs = base_queryset
+                else:
+                    cash_qs = Cash.objects.none()
+                    messages.error(request, "You do not have permission to view cash transactions for this client.")
+            except Profile.DoesNotExist:
+                cash_qs = Cash.objects.none()
+        client_form = ClientSelectionForm(initial={'client': client_id})
+        vendor_queryset = Vendor.objects.filter(client_id=client_id)
+    else:
+        cash_qs = Cash.objects.none()
+        client_form = ClientSelectionForm()
+        vendor_queryset = Vendor.objects.none()
+        messages.info(request, "Please select a client to view cash transactions.")
 
     cash_qs = cash_qs.order_by('-date', '-id')
     cash_filter = CashFilter(request.GET, queryset=cash_qs)
-    cash_filter.form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
+    cash_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(cash_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
     return render(request, 'cash/cash_list.html', {
-        'filter': cash_filter, 'cash_objs': page_obj, 'page_obj': page_obj
+        'filter': cash_filter, 'cash_objs': page_obj, 'page_obj': page_obj, 'client_form': client_form
     })
 
 @login_required(login_url="register:login")
 def manual_cash_entry_view(request):
     client_id = request.session.get('active_client_id')
-    if not client_id: return redirect('register:main')
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to manage this client.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
@@ -1048,7 +1204,7 @@ class CashDetailView(LoginRequiredMixin, DetailView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -1057,9 +1213,10 @@ class CashDetailView(LoginRequiredMixin, DetailView):
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         user = self.request.user
+        obj = self.get_object()
         is_owner = user.is_staff or user.is_superuser
         try:
-            if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or self.get_object().user == user:
+            if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                 is_owner = True
         except: pass
         context['is_owner'] = is_owner
@@ -1076,7 +1233,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -1133,7 +1290,7 @@ class CashDeleteView(LoginRequiredMixin, DeleteView):
         is_authorized = user.is_staff or user.is_superuser
         if not is_authorized:
             try:
-                if Profile.objects.get(user=user).department in AUTHORIZED_DEPARTMENTS or obj.user == user:
+                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist: pass
         if not is_authorized: return HttpResponseForbidden("You do not have permission.")
@@ -1153,8 +1310,8 @@ def export_cash_csv(request):
     user = request.user
     if not (user.is_staff or user.is_superuser):
         try:
-            if Profile.objects.get(user=user).department not in AUTHORIZED_DEPARTMENTS:
-                base_queryset = base_queryset.filter(user=user)
+            if not Profile.objects.get(user=user).clients.filter(id=client_id).exists():
+                base_queryset = Cash.objects.none()
         except Profile.DoesNotExist:
             base_queryset = Cash.objects.none()
 

@@ -1,7 +1,27 @@
-{% extends 'base_1.html' %}
+{% extends 'base_3_account.html' %}
+{% load crispy_forms_tags %}
 
 {% block content %}
 <div class="container mt-4">
+
+    <!-- Add this directly inside your main container -->
+    <div class="row mb-4 bg-light p-3 rounded border">
+        <div class="col-12">
+            <!-- Omit the action attribute so it automatically POSTs to the current page's URL -->
+            <form method="POST">
+                {% csrf_token %}
+                <div class="d-flex align-items-center gap-3">
+                    <div class="flex-grow-1">
+                        {{ client_form|crispy }}
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-primary">Switch Client</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="d-flex justify-content-between align-items-center mb-4">
         <div>
             <h2 class="mb-1">{{ account.account_id }} - {{ account.name }}</h2>
@@ -31,7 +51,15 @@
                         <td class="ps-3">{{ line.date|date:"Y-m-d" }}</td>
                         <td>{{ line.description }}</td>
                         <td>
-                            <span class="badge bg-light text-dark border">{{ line.source }}</span>
+                            {% if line.purchase_id %}
+                                <a href="{% url 'tools:purchase_detail' line.purchase_id %}" class="badge bg-primary text-decoration-none" title="View Purchase Details">Purchase</a>
+                            {% elif line.bank_id %}
+                                <a href="{% url 'cash:bank_detail' line.bank_id %}" class="badge bg-success text-decoration-none" title="View Bank Transaction Details">Bank</a>
+                            {% elif line.cash_id %}
+                                <a href="{% url 'cash:cash_detail' line.cash_id %}" class="badge bg-warning text-dark text-decoration-none" title="View Cash Transaction Details">Cash Book</a>
+                            {% else %}
+                                <span class="badge bg-light text-dark border">{{ line.source }}</span>
+                            {% endif %}
                         </td>
                         
                         <td class="text-end">

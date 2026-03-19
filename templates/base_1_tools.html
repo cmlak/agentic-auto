@@ -154,7 +154,7 @@
         <div class="container">
 
             <a class="navbar-brand text-primary fw-bold" href="{% url 'main' %}">
-                <i class="fas fa-robot"></i> Agentic Platform
+                <i class="fas fa-robot"></i> Agentic Accounting
             </a>
 
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarSupportedContent"
@@ -165,13 +165,13 @@
             <div class="collapse navbar-collapse" id="navbarSupportedContent">
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'register:main' %}">Home</a>
+                        <a class="nav-link" href="{% url 'main' %}">Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'tools:invoice_upload' %}">Tools</a>
+                        <a class="nav-link" href="{% url 'tools:invoice_upload' %}">Purchase Invoices Upload</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'cash:bank_upload' %}">Cash/Bank</a>
+                        <a class="nav-link" href="{% url 'tools:manual_invoice_entry' %}">Manual Purchase Entry</a>
                     </li>
 
                     <li class="nav-item dropdown">
@@ -179,9 +179,8 @@
                           More
                         </a>
                         <div class="dropdown-menu" aria-labelledby="navbarDropdown">
-                            <a class="dropdown-item" href="{% url 'register:main' %}">Company A</a>
-                            <a class="dropdown-item" href="{% url 'register:main' %}">Company B</a>
-                            <a class="dropdown-item" href="{% url 'register:main' %}">Company C</a>
+                            <a class="dropdown-item" href="{% url 'tools:purchase_list' %}">Purchase List</a>
+                            <a class="dropdown-item" href="{% url 'tools:ai_cost_dashboard' %}">AI Costs</a>
                         </div>
                     </li>
                 </ul>

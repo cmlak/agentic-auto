@@ -7,13 +7,23 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.shortcuts import render, get_object_or_404
 from django.db.models import Sum
 from django.contrib.auth.decorators import login_required
+from django.http import HttpResponseForbidden
 from tools.models import Client
+from tools.forms import ClientSelectionForm
+from register.models import Profile
 from .models import Account, AccountMappingRule, JournalEntry, JournalLine
 
-@staff_member_required
+@login_required
 def upload_mapping_rules_view(request):
     """Superuser view to batch upload AI Mapping Rules via CSV."""
-    clients = Client.objects.all()
+    user = request.user
+    if user.is_staff or user.is_superuser:
+        clients = Client.objects.all()
+    else:
+        try:
+            clients = user.profile.clients.all()
+        except Profile.DoesNotExist:
+            clients = Client.objects.none()
 
     if request.method == "POST":
         print("\n" + "="*50)
@@ -32,6 +42,15 @@ def upload_mapping_rules_view(request):
             print(f"❌ ABORT: Invalid file extension ({csv_file.name}).")
             messages.error(request, 'Error: Please upload a valid .csv file.')
             return redirect('account:upload_mapping_rules')
+
+        if not (user.is_staff or user.is_superuser):
+            try:
+                if not user.profile.clients.filter(id=client_id).exists():
+                    messages.error(request, "You do not have permission to upload mapping rules for this client.")
+                    return redirect('account:upload_mapping_rules')
+            except Profile.DoesNotExist:
+                messages.error(request, "You do not have permission to upload mapping rules for this client.")
+                return redirect('account:upload_mapping_rules')
 
         try:
             client = Client.objects.get(id=client_id)
@@ -106,10 +125,36 @@ def upload_mapping_rules_view(request):
 @login_required
 def trial_balance_view(request):
     """Generates the Trial Balance."""
-    # Assuming you have a way to determine the active client, e.g., from session or user profile
-    client_id = request.session.get('active_client_id') 
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('account:trial_balance')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to view this client's accounts.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
     if not client_id:
-        client_id = Client.objects.first().id # Fallback for testing
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # Aggregate Debits and Credits by Account
     accounts_data = JournalLine.objects.filter(journal_entry__client_id=client_id).values(
@@ -152,7 +197,8 @@ def trial_balance_view(request):
         'trial_balance': trial_balance,
         'total_dr': total_dr,
         'total_cr': total_cr,
-        'is_balanced': round(total_dr, 2) == round(total_cr, 2)
+        'is_balanced': round(total_dr, 2) == round(total_cr, 2),
+        'client_form': ClientSelectionForm(initial={'client': client_id})
     }
     return render(request, 'account/trial_balance.html', context)
 
@@ -160,7 +206,36 @@ def trial_balance_view(request):
 @login_required
 def profit_and_loss_view(request):
     """Generates the Income Statement (P&L)."""
-    client_id = request.session.get('active_client_id') or Client.objects.first().id
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('account:profit_and_loss')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to view this client's accounts.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     accounts_data = JournalLine.objects.filter(
         journal_entry__client_id=client_id,
@@ -197,7 +272,8 @@ def profit_and_loss_view(request):
         'expenses': expenses,
         'total_revenue': total_revenue,
         'total_expense': total_expense,
-        'net_income': net_income
+        'net_income': net_income,
+        'client_form': ClientSelectionForm(initial={'client': client_id})
     }
     return render(request, 'account/profit_and_loss.html', context)
 
@@ -205,7 +281,36 @@ def profit_and_loss_view(request):
 @login_required
 def balance_sheet_view(request):
     """Generates the Balance Sheet."""
-    client_id = request.session.get('active_client_id') or Client.objects.first().id
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('account:balance_sheet')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to view this client's accounts.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # 1. Calculate Net Income (to add to Equity)
     pl_data = JournalLine.objects.filter(
@@ -266,14 +371,44 @@ def balance_sheet_view(request):
         'total_liabilities': total_liabilities,
         'total_equity': total_equity,
         'total_liabilities_and_equity': total_liabilities + total_equity,
-        'is_balanced': round(total_assets, 2) == round(total_liabilities + total_equity, 2)
+        'is_balanced': round(total_assets, 2) == round(total_liabilities + total_equity, 2),
+        'client_form': ClientSelectionForm(initial={'client': client_id})
     }
     return render(request, 'account/balance_sheet.html', context)
 
 @login_required
 def general_ledger_view(request):
     """List of all accounts with their aggregated all-time balances."""
-    client_id = request.session.get('active_client_id') or Client.objects.first().id
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('account:general_ledger_list')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to view this client's accounts.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
     
     # 1. Get all accounts for the client
     db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
@@ -308,12 +443,43 @@ def general_ledger_view(request):
             'balance': balance,
         })
 
-    return render(request, 'account/gl_list.html', {'accounts': account_list})
+    return render(request, 'account/gl_list.html', {'accounts': account_list, 'client_form': ClientSelectionForm(initial={'client': client_id})})
 
 @login_required
 def account_ledger_detail_view(request, account_id):
     """Detailed transaction list for a specific account."""
-    client_id = request.session.get('active_client_id') or Client.objects.first().id
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            # Redirect to the main GL list when switching clients to avoid 404s on account_id
+            return redirect('account:general_ledger_list')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to view this client's accounts.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+        
     account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
     
     lines = JournalLine.objects.filter(
@@ -335,9 +501,12 @@ def account_ledger_detail_view(request, account_id):
             'date': line.journal_entry.date,
             'description': line.description or line.journal_entry.description,
             'source': line.journal_entry.source_type,
+            'purchase_id': line.journal_entry.purchase_id,
+            'bank_id': line.journal_entry.bank_id,
+            'cash_id': line.journal_entry.cash_id,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance
         })
 
-    return render(request, 'account/gl_detail.html', {'account': account, 'ledger_data': ledger_data})
+    return render(request, 'account/gl_detail.html', {'account': account, 'ledger_data': ledger_data, 'client_form': ClientSelectionForm(initial={'client': client_id})})

@@ -27,7 +27,11 @@ class ClientSelectionForm(forms.Form):
         queryset=Client.objects.all(), 
         empty_label="--- Select Client ---",
         label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
+        required=False,
+        widget=forms.Select(attrs={
+            'class': 'form-select fw-bold border-primary',
+            'autocomplete': 'off'
+        })
     )
 
     def __init__(self, *args, **kwargs):

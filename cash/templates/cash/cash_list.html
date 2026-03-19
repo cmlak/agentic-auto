@@ -1,8 +1,25 @@
-{% extends 'base_1.html' %} 
+{% extends 'base_2_cash.html' %} 
 {% load crispy_forms_tags %}
 
 {% block content %}
 <div class="container">
+
+    <div class="row mb-4 bg-light p-3 rounded border">
+        <div class="col-12">
+            <form method="POST" action="{% url 'cash:cash_list' %}">
+                {% csrf_token %}
+                <div class="d-flex align-items-center gap-3">
+                    <div class="flex-grow-1">
+                        {{ client_form|crispy }}
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-primary">Switch Client</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <div class="row mb-0"><div class="col-12"><form method="GET">{% crispy filter.form %}</form></div></div>
     
     <div class="row mb-3"><div class="col-12 text-center py-2"><h4>Cash Transactions</h4></div></div>
@@ -20,9 +37,9 @@
                         <tr>
                             <td>{{ c.id }}</td>
                             <td>{{ c.date }}</td>
-                            <td><a href="{% url 'cash:cash_detail' c.id %}">{{ c.voucher_no|default:"-"|cut:'="'|cut:'"' }}</a></td>
-                            <td>{{ c.invoice_no|default:"-"|cut:'="'|cut:'"' }}</td>
-                            <td>{{ c.description|default:"-"|truncatechars:30 }}</td>
+                            <td><a href="{% url 'cash:cash_detail' c.id %}">{{ c.voucher_no|default:"---"|cut:'="'|cut:'"' }}</a></td>
+                            <td>{{ c.invoice_no|default:""|cut:'="'|cut:'"' }}</td>
+                            <td>{{ c.description|default:""|truncatechars:30 }}</td>
                             <td class="text-success">${{ c.debit|default:"0.00" }}</td>
                             <td class="text-danger">${{ c.credit|default:"0.00" }}</td>
                             <td><a href="{% url 'cash:cash_update' c.id %}" class="btn btn-sm btn-outline-secondary">Edit</a></td>

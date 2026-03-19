@@ -32,12 +32,6 @@ class Bank(models.Model):
     
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
-    def save(self, *args, **kwargs):
-        # Protect reference IDs from converting to scientific notation in Excel
-        if self.bank_ref_id and not str(self.bank_ref_id).startswith('="'):
-            self.bank_ref_id = f'="{self.bank_ref_id}"'
-        super(Bank, self).save(*args, **kwargs)
-
     def __str__(self):
         return f"{self.date} | {self.bank_ref_id} | In: {self.debit} | Out: {self.credit}"
 
@@ -70,12 +64,6 @@ class Cash(models.Model):
     
     # Additional Context
     note = models.TextField(blank=True, null=True)
-
-    def save(self, *args, **kwargs):
-        # Protect invoice numbers from converting to scientific notation in Excel exports
-        if self.invoice_no and not str(self.invoice_no).startswith('="'):
-            self.invoice_no = f'="{self.invoice_no}"'
-        super(Cash, self).save(*args, **kwargs)
 
     def __str__(self):
         desc = self.description[:30] + '...' if self.description and len(self.description) > 30 else self.description

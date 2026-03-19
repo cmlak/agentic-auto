@@ -31,8 +31,11 @@ from .resources import PurchaseResource
 # --- 1. AI INVOICE UPLOAD & PROCESSING ---
 # ====================================================================
 
+@login_required(login_url="register:login")
 def invoice_ai_upload_view(request):
     """Step 1: Select Client, Upload PDF, Inject Dynamic Rules, Process via AI, and Store."""
+    user = request.user
+
     if request.method == 'POST':
         # Clear previous session data safely to prevent data bleed
         request.session.pop('invoice_report_path', None)
@@ -40,6 +43,18 @@ def invoice_ai_upload_view(request):
         form = BatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
+            
+            has_access = user.is_staff or user.is_superuser
+            if not has_access:
+                try:
+                    if user.profile.clients.filter(id=selected_client.id).exists():
+                        has_access = True
+                except Profile.DoesNotExist:
+                    pass
+            if not has_access:
+                messages.error(request, "You do not have permission to upload data for this client.")
+                return redirect('tools:invoice_upload')
+
             uploaded_pdf = form.cleaned_data['invoice_pdf']
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
@@ -128,6 +143,13 @@ def invoice_ai_upload_view(request):
                     os.remove(tmp_pdf_path)
     else:
         form = BatchUploadForm()
+        
+        # Dynamically limit the dropdown to ONLY the clients the user manages
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'invoice_upload.html', {'form': form})
 
@@ -145,6 +167,17 @@ def review_invoices(request):
         return redirect('tools:invoice_upload')
         
     client_id = metadata.get('client_id')
+    
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access and client_id:
+        try:
+            if user.profile.clients.filter(id=client_id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to review this client's data.")
     
     # --- VENDOR CHOICES ---
     # Isolate vendors exclusively to this client
@@ -350,15 +383,36 @@ def ai_cost_dashboard(request):
 @login_required(login_url="register:login")
 def manual_invoice_entry_view(request):
     """View to manually enter a single invoice and post it to the GL."""
+    if request.method == 'POST' and 'client' in request.POST and 'vendor_choice' not in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:manual_invoice_entry')
+
     client_id = request.session.get('active_client_id')
-
-    if request.method == 'POST' and request.POST.get('client'):
-        client_id = request.POST.get('client')
-
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to manage this client.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
     if not client_id:
-        # Fallback logic...
-        messages.error(request, "Please create or select an active client first.")
-        return redirect('tools:dashboard') # Adjust fallback
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # Fetch dynamic choices
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
@@ -455,6 +509,17 @@ def export_purchase_invoices(request, client_id):
     
     # Optional but recommended: Verify the client exists and user has access
     client = get_object_or_404(Client, id=client_id)
+    
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access:
+        try:
+            if user.profile.clients.filter(id=client.id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to export this client's data.")
 
     # Base Queryset: Ensure sequential order based on entry processing instead of randomly descending
     queryset = Purchase.objects.filter(client_id=client.id).order_by('id')
@@ -511,6 +576,19 @@ def gl_migration_upload_view(request):
         form = GLMigrationUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
+            
+            user = request.user
+            has_access = user.is_staff or user.is_superuser
+            if not has_access:
+                try:
+                    if user.profile.clients.filter(id=selected_client.id).exists():
+                        has_access = True
+                except Profile.DoesNotExist:
+                    pass
+            if not has_access:
+                messages.error(request, "You do not have permission to migrate data for this client.")
+                return redirect('tools:gl_migration_upload')
+                
             uploaded_file = form.cleaned_data['gl_file']
             batch_name = form.cleaned_data['batch_name']
             
@@ -575,6 +653,18 @@ def gl_review_view(request):
         return redirect('tools:gl_migration_upload')
 
     client_id = meta.get('client_id')
+    
+    user = request.user
+    has_access = user.is_staff or user.is_superuser
+    if not has_access and client_id:
+        try:
+            if user.profile.clients.filter(id=client_id).exists():
+                has_access = True
+        except Profile.DoesNotExist:
+            pass
+    if not has_access:
+        return HttpResponseForbidden("You do not have permission to review this client's data.")
+        
     batch_name = meta.get('batch_name')
     selected_client = Client.objects.get(id=client_id)
     
@@ -703,9 +793,6 @@ def gl_download_view(request):
     file_path = request.session.get('gl_report_path')
     return render(request, 'tools/gl_download.html', {'has_file': bool(file_path and os.path.exists(file_path))})
 
-# Define departments that have global view access to Purchases
-AUTHORIZED_DEPARTMENTS = ['Accounting', 'Procurement', 'Management']
-
 @login_required(login_url="register:login")
 def PurchaseListView(request):
     user = request.user
@@ -713,41 +800,46 @@ def PurchaseListView(request):
     if request.method == 'POST' and 'client' in request.POST:
         form = ClientSelectionForm(request.POST)
         if form.is_valid():
-            request.session['active_client_id'] = form.cleaned_data['client'].id
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
             return redirect('tools:purchase_list')
 
     client_id = request.session.get('active_client_id')
     
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+    if client_id:
+        # Base filtering by client
+        base_queryset = Purchase.objects.filter(client_id=client_id)
 
-    # Base filtering by client
-    base_queryset = Purchase.objects.filter(client_id=client_id)
-
-    # Permission Filtering Logic
-    if user.is_staff or user.is_superuser:
-        # Staff see all purchases for the client
-        purchases = base_queryset
+        # Permission Filtering Logic
+        if user.is_staff or user.is_superuser:
+            purchases = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    purchases = base_queryset
+                else:
+                    purchases = Purchase.objects.none()
+                    messages.error(request, "You do not have permission to view purchases for this client.")
+            except Profile.DoesNotExist:
+                purchases = Purchase.objects.none()
+        
+        client_form = ClientSelectionForm(initial={'client': client_id})
+        vendor_queryset = Vendor.objects.filter(client_id=client_id)
     else:
-        try:
-            profile = Profile.objects.get(user=user)
-            if profile.department in AUTHORIZED_DEPARTMENTS:
-                # Authorized departments see all purchases for the client
-                purchases = base_queryset
-            else:
-                # Standard users only see purchases they created
-                purchases = base_queryset.filter(user=user)
-        except Profile.DoesNotExist:
-            # Users without a profile see nothing
-            purchases = Purchase.objects.none()
+        purchases = Purchase.objects.none()
+        client_form = ClientSelectionForm()
+        vendor_queryset = Vendor.objects.none()
+        messages.info(request, "Please select a client to view purchases.")
 
-    purchases = purchases.order_by('-date')
+    purchases = purchases.order_by('-id')
 
     # Initialize Filter
     purchase_filter = PurchaseFilter(request.GET, queryset=purchases)
-    purchase_filter.form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
+    purchase_filter.form.fields['vendor'].queryset = vendor_queryset
 
     # Apply Pagination (20 items per page)
     paginator = Paginator(purchase_filter.qs, 20)
@@ -758,6 +850,7 @@ def PurchaseListView(request):
         'filter': purchase_filter,
         'purchases': page_obj,  # 'page_obj' is fully iterable, keeping the template loop happy
         'page_obj': page_obj,
+        'client_form': client_form,
     }
     return render(request, 'purchase_list.html', context)
 
@@ -776,8 +869,8 @@ class PurchaseDetailView(LoginRequiredMixin, DetailView):
         if not is_authorized:
             try:
                 profile = Profile.objects.get(user=user)
-                # Check if user is in an authorized department OR is the creator of the purchase
-                if profile.department in AUTHORIZED_DEPARTMENTS or purchase.user == user:
+                # Check if user manages the client
+                if profile.clients.filter(id=purchase.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist:
                 pass
@@ -799,7 +892,7 @@ class PurchaseDetailView(LoginRequiredMixin, DetailView):
         else:
             try:
                 profile = Profile.objects.get(user=user)
-                if profile.department in AUTHORIZED_DEPARTMENTS or purchase.user == user:
+                if profile.clients.filter(id=purchase.client_id).exists():
                     is_owner = True
             except Profile.DoesNotExist:
                 pass
@@ -822,7 +915,7 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
         if not is_authorized:
             try:
                 profile = Profile.objects.get(user=user)
-                if profile.department in AUTHORIZED_DEPARTMENTS or purchase.user == user:
+                if profile.clients.filter(id=purchase.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist:
                 pass
@@ -834,7 +927,7 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
 
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        client_id = self.request.session.get('active_client_id')
+        client_id = self.object.client_id
         
         db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
@@ -868,7 +961,7 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
             # 1. Safely wipe old entries. (Requires JournalLine to have on_delete=models.CASCADE in models.py)
             JournalEntry.objects.filter(purchase=purchase).delete()
             
-            client_id = self.request.session.get('active_client_id')
+            client_id = purchase.client_id
             
             # 2. Rebuild the entries
             je = JournalEntry.objects.create(
@@ -928,7 +1021,7 @@ class PurchaseDeleteView(LoginRequiredMixin, DeleteView):
         if not is_authorized:
             try:
                 profile = Profile.objects.get(user=user)
-                if profile.department in AUTHORIZED_DEPARTMENTS or purchase.user == user:
+                if profile.clients.filter(id=purchase.client_id).exists():
                     is_authorized = True
             except Profile.DoesNotExist:
                 pass
@@ -962,10 +1055,10 @@ def export_purchase_csv(request):
     else:
         try:
             profile = Profile.objects.get(user=user)
-            if profile.department in AUTHORIZED_DEPARTMENTS:
+            if profile.clients.filter(id=client_id).exists():
                 purchases = base_queryset
             else:
-                purchases = base_queryset.filter(user=user)
+                purchases = Purchase.objects.none()
         except Profile.DoesNotExist:
             purchases = Purchase.objects.none()
 

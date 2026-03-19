@@ -1,7 +1,27 @@
-{% extends 'base_1.html' %}
+{% extends 'base_3_account.html' %}
+{% load crispy_forms_tags %}
 {% block content %}
 <div class="container mt-4">
     <h2>Trial Balance</h2>
+
+    <!-- Add this directly inside your main container -->
+    <div class="row mb-4 bg-light p-3 rounded border">
+        <div class="col-12">
+            <!-- Omit the action attribute so it automatically POSTs to the current page's URL -->
+            <form method="POST">
+                {% csrf_token %}
+                <div class="d-flex align-items-center gap-3">
+                    <div class="flex-grow-1">
+                        {{ client_form|crispy }}
+                    </div>
+                    <div class="mt-3">
+                        <button type="submit" class="btn btn-primary">Switch Client</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+
     <table class="table table-bordered table-striped mt-3">
         <thead class="table-dark">
             <tr>

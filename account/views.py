@@ -11,7 +11,24 @@ from django.http import HttpResponseForbidden
 from tools.models import Client
 from tools.forms import ClientSelectionForm
 from register.models import Profile
+from django.core.paginator import Paginator
 from .models import Account, AccountMappingRule, JournalEntry, JournalLine
+from .filters import ReportFilter, BalanceSheetFilter
+from django.db.models.functions import ExtractMonth, ExtractYear
+import datetime
+
+def classify_account(acct_type, acct_name):
+    """Centralized logic to classify accounts cleanly and consistently."""
+    safe_type = str(acct_type).strip().lower() if acct_type else ''
+    
+    # Since database types are verified and clean, route strictly based on acct_type
+    if 'asset' in safe_type: return 'asset'
+    if 'liability' in safe_type: return 'liability'
+    if 'equity' in safe_type: return 'equity'
+    if 'revenue' in safe_type or 'income' in safe_type: return 'revenue'
+    if 'expense' in safe_type or 'cogs' in safe_type: return 'expense'
+    
+    return 'liability'
 
 @login_required
 def upload_mapping_rules_view(request):
@@ -156,24 +173,47 @@ def trial_balance_view(request):
         messages.error(request, "Please select an active client.")
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
+    # Apply filter
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+
     # Aggregate Debits and Credits by Account
-    accounts_data = JournalLine.objects.filter(journal_entry__client_id=client_id).values(
+    accounts_data = report_filter.qs.values(
         'account__account_id', 'account__name', 'account__account_type'
     ).annotate(
         total_debit=Sum('debit'),
         total_credit=Sum('credit')
-    ).order_by('account__account_id')
+    )
+
+    # Preload ALL accounts to ensure zero-balance accounts are rendered
+    all_accounts = Account.objects.filter(client_id=client_id)
+    tb_dict = {}
+    for acct in all_accounts:
+        tb_dict[acct.account_id] = {
+            'id': acct.account_id, 'name': acct.name, 'type': acct.account_type,
+            'debit': 0.0, 'credit': 0.0, 'classification': classify_account(acct.account_type, acct.name)
+        }
+        
+    for item in accounts_data:
+        acct_id = item['account__account_id']
+        if acct_id not in tb_dict:
+            tb_dict[acct_id] = {
+                'id': acct_id, 'name': item['account__name'], 'type': item['account__account_type'],
+                'debit': 0.0, 'credit': 0.0, 'classification': classify_account(item['account__account_type'], item['account__name'])
+            }
+        tb_dict[acct_id]['debit'] += item['total_debit'] or 0.0
+        tb_dict[acct_id]['credit'] += item['total_credit'] or 0.0
 
     trial_balance = []
     total_dr = 0
     total_cr = 0
 
-    for item in accounts_data:
-        dr = item['total_debit'] or 0
-        cr = item['total_credit'] or 0
-        
-        # Calculate net balance based on normal account balances
-        if item['account__account_type'] in ['Asset', 'Expense']:
+    for acct_id in sorted(tb_dict.keys()):
+        data = tb_dict[acct_id]
+        dr = data['debit']
+        cr = data['credit']
+
+        if data['classification'] in ['asset', 'expense']:
             net_balance = dr - cr
             is_debit = net_balance > 0
         else:
@@ -181,9 +221,9 @@ def trial_balance_view(request):
             is_debit = net_balance < 0
 
         trial_balance.append({
-            'id': item['account__account_id'],
-            'name': item['account__name'],
-            'type': item['account__account_type'],
+            'id': data['id'],
+            'name': data['name'],
+            'type': data['type'],
             'debit': abs(net_balance) if is_debit else 0,
             'credit': abs(net_balance) if not is_debit else 0,
         })
@@ -198,7 +238,8 @@ def trial_balance_view(request):
         'total_dr': total_dr,
         'total_cr': total_cr,
         'is_balanced': round(total_dr, 2) == round(total_cr, 2),
-        'client_form': ClientSelectionForm(initial={'client': client_id})
+        'client_form': ClientSelectionForm(initial={'client': client_id}),
+        'filter': report_filter,
     }
     return render(request, 'account/trial_balance.html', context)
 
@@ -237,43 +278,103 @@ def profit_and_loss_view(request):
         messages.error(request, "Please select an active client.")
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
-    accounts_data = JournalLine.objects.filter(
-        journal_entry__client_id=client_id,
-        account__account_type__in=['Revenue', 'Expense']
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+
+    accounts_data = report_filter.qs.annotate(
+        year=ExtractYear('journal_entry__date'),
+        month=ExtractMonth('journal_entry__date')
     ).values(
-        'account__account_id', 'account__name', 'account__account_type'
+        'account__account_id', 'account__name', 'account__account_type', 'year', 'month'
     ).annotate(
         total_debit=Sum('debit'),
         total_credit=Sum('credit')
     ).order_by('account__account_id')
 
-    revenues = []
-    expenses = []
-    total_revenue = 0
-    total_expense = 0
+    revenues = {}
+    expenses = {}
+    
+    monthly_revenue = [0] * 12
+    monthly_expense = [0] * 12
+    monthly_net_income = [0] * 12
+    total_revenue_all = 0
+    total_expense_all = 0
+    
+    # Preload ALL accounts to ensure zero-balance accounts are rendered
+    all_accounts = Account.objects.filter(client_id=client_id)
+    for acct in all_accounts:
+        cls = classify_account(acct.account_type, acct.name)
+        if cls == 'revenue':
+            revenues[acct.account_id] = {'name': acct.name, 'months': [0]*12, 'total': 0.0}
+        elif cls == 'expense':
+            expenses[acct.account_id] = {'name': acct.name, 'months': [0]*12, 'total': 0.0}
+
+    target_year = datetime.date.today().year
+    start_date_str = request.GET.get('start_date')
+    end_date_str = request.GET.get('end_date')
+    if start_date_str:
+        try: target_year = int(start_date_str.split('-')[0])
+        except: pass
+    elif end_date_str:
+        try: target_year = int(end_date_str.split('-')[0])
+        except: pass
 
     for item in accounts_data:
+        mo = item['month']
+        yr = item['year']
+        
+        # Filter out other years from the monthly breakdown columns
+        if yr != target_year:
+            continue
+            
+        acct_id = item['account__account_id']
+        acct_name = item['account__name']
+        acct_type = item['account__account_type']
+        
         dr = item['total_debit'] or 0
         cr = item['total_credit'] or 0
         
-        if item['account__account_type'] == 'Revenue':
-            balance = cr - dr # Revenue normal balance is Credit
-            revenues.append({'name': item['account__name'], 'balance': balance})
-            total_revenue += balance
+        cls = classify_account(acct_type, acct_name)
+        
+        if cls not in ['revenue', 'expense']:
+            continue
+            
+        if cls == 'revenue':
+            balance = cr - dr
+            if acct_id not in revenues:
+                revenues[acct_id] = {'name': acct_name, 'months': [0]*12, 'total': 0}
+            if mo:
+                revenues[acct_id]['months'][mo - 1] += balance
+                monthly_revenue[mo - 1] += balance
+            revenues[acct_id]['total'] += balance
+            total_revenue_all += balance
         else:
-            balance = dr - cr # Expense normal balance is Debit
-            expenses.append({'name': item['account__name'], 'balance': balance})
-            total_expense += balance
+            balance = dr - cr
+            if acct_id not in expenses:
+                expenses[acct_id] = {'name': acct_name, 'months': [0]*12, 'total': 0}
+            if mo:
+                expenses[acct_id]['months'][mo - 1] += balance
+                monthly_expense[mo - 1] += balance
+            expenses[acct_id]['total'] += balance
+            total_expense_all += balance
 
-    net_income = total_revenue - total_expense
+    for i in range(12):
+        monthly_net_income[i] = monthly_revenue[i] - monthly_expense[i]
+
+    net_income_all = total_revenue_all - total_expense_all
 
     context = {
-        'revenues': revenues,
-        'expenses': expenses,
-        'total_revenue': total_revenue,
-        'total_expense': total_expense,
-        'net_income': net_income,
-        'client_form': ClientSelectionForm(initial={'client': client_id})
+        'revenues': revenues.values(),
+        'expenses': expenses.values(),
+        'monthly_revenue': monthly_revenue,
+        'monthly_expense': monthly_expense,
+        'monthly_net_income': monthly_net_income,
+        'total_revenue': total_revenue_all,
+        'total_expense': total_expense_all,
+        'net_income': net_income_all,
+        'client_form': ClientSelectionForm(initial={'client': client_id}),
+        'filter': report_filter,
+        'months_headers': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     }
     return render(request, 'account/profit_and_loss.html', context)
 
@@ -312,67 +413,116 @@ def balance_sheet_view(request):
         messages.error(request, "Please select an active client.")
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
-    # 1. Calculate Net Income (to add to Equity)
-    pl_data = JournalLine.objects.filter(
-        journal_entry__client_id=client_id,
-        account__account_type__in=['Revenue', 'Expense']
-    ).aggregate(
-        total_dr=Sum('debit'),
-        total_cr=Sum('credit')
-    )
-    # Net Income = (Revenue Cr - Revenue Dr) - (Expense Dr - Expense Cr) 
-    # Simplified: Total P&L Credits - Total P&L Debits
-    net_income = (pl_data['total_cr'] or 0) - (pl_data['total_dr'] or 0)
+    target_year = datetime.date.today().year
+    end_date_str = request.GET.get('end_date')
+    
+    # 1. BASE QUERYSET: Fetch ALL lines. We MUST NOT use a standard FilterSet here
+    # to avoid dropping offsetting entries (e.g., filtering out specific accounts).
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    
+    if end_date_str:
+        try:
+            target_year = int(end_date_str.split('-')[0])
+            # Strictly apply ONLY the 'As-Of' date to preserve historical opening balances
+            base_qs = base_qs.filter(journal_entry__date__lte=end_date_str)
+        except (ValueError, IndexError):
+            pass
 
-    # 2. Get Assets, Liabilities, Equity
-    accounts_data = JournalLine.objects.filter(
-        journal_entry__client_id=client_id,
-        account__account_type__in=['Asset', 'Liability', 'Equity']
+    # Instantiate the filter purely for rendering the UI form, NOT for data execution
+    bs_filter = BalanceSheetFilter(request.GET, queryset=JournalLine.objects.none())
+
+    # 2. Execute aggregation on the SAFE base_qs
+    bs_data = base_qs.annotate(
+        year=ExtractYear('journal_entry__date'),
+        month=ExtractMonth('journal_entry__date')
     ).values(
-        'account__account_id', 'account__name', 'account__account_type'
+        'account__account_id', 'account__name', 'account__account_type', 'year', 'month'
     ).annotate(
         total_debit=Sum('debit'),
         total_credit=Sum('credit')
     ).order_by('account__account_id')
 
-    assets = []
-    liabilities = []
-    equities = []
-    total_assets = 0
-    total_liabilities = 0
-    total_equity = 0
+    assets = {}
+    liabilities = {}
+    equities = {}
+    retained_earnings = [0] * 12
+    
+    # Preload ALL accounts to ensure zero-balance accounts are rendered
+    all_accounts = Account.objects.filter(client_id=client_id)
+    for acct in all_accounts:
+        cls = classify_account(acct.account_type, acct.name)
+        if cls == 'asset': assets[acct.account_id] = {'name': acct.name, 'months': [0]*12}
+        elif cls == 'equity': equities[acct.account_id] = {'name': acct.name, 'months': [0]*12}
+        elif cls == 'liability': liabilities[acct.account_id] = {'name': acct.name, 'months': [0]*12}
 
-    for item in accounts_data:
+    for item in bs_data:
+        acct_id = item['account__account_id']
+        if not acct_id:
+            continue # Skip broken journal lines safely
+            
+        yr = item['year']
+        mo = item['month']
+        
         dr = item['total_debit'] or 0
         cr = item['total_credit'] or 0
         
-        if item['account__account_type'] == 'Asset':
-            balance = dr - cr
-            assets.append({'name': item['account__name'], 'balance': balance})
-            total_assets += balance
-        elif item['account__account_type'] == 'Liability':
-            balance = cr - dr
-            liabilities.append({'name': item['account__name'], 'balance': balance})
-            total_liabilities += balance
-        elif item['account__account_type'] == 'Equity':
-            balance = cr - dr
-            equities.append({'name': item['account__name'], 'balance': balance})
-            total_equity += balance
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        
+        # P&L Routing
+        if cls in ['revenue', 'expense']:
+            net = cr - dr
+            if yr and yr < target_year:
+                for i in range(12):
+                    retained_earnings[i] += net
+            elif yr == target_year and mo:
+                for i in range(mo - 1, 12):
+                    retained_earnings[i] += net
+                    
+        # Balance Sheet Routing
+        else:
+            if cls == 'asset':
+                balance = dr - cr
+                target_dict = assets
+            elif cls == 'equity':
+                balance = cr - dr
+                target_dict = equities
+            else:
+                balance = cr - dr
+                target_dict = liabilities
+                
+            if acct_id not in target_dict:
+                target_dict[acct_id] = {'name': item['account__name'], 'months': [0]*12}
+                
+            if yr and yr < target_year:
+                for i in range(12):
+                    target_dict[acct_id]['months'][i] += balance
+            elif yr == target_year and mo:
+                for i in range(mo - 1, 12):
+                    target_dict[acct_id]['months'][i] += balance
 
     # Add Net Income to Equity
-    equities.append({'name': 'Current Year Earnings', 'balance': net_income})
-    total_equity += net_income
+    equities['RETAINED'] = {'name': 'Current & Retained Earnings', 'months': retained_earnings}
+
+    total_assets = [sum(a['months'][i] for a in assets.values()) for i in range(12)]
+    total_liabilities = [sum(l['months'][i] for l in liabilities.values()) for i in range(12)]
+    total_equity = [sum(e['months'][i] for e in equities.values()) for i in range(12)]
+    total_liabilities_and_equity = [total_liabilities[i] + total_equity[i] for i in range(12)]
+    
+    # Check for balance safely using rounding
+    is_balanced = all(round(total_assets[i], 2) == round(total_liabilities_and_equity[i], 2) for i in range(12))
 
     context = {
-        'assets': assets,
-        'liabilities': liabilities,
-        'equities': equities,
+        'assets': assets.values(),
+        'liabilities': liabilities.values(),
+        'equities': equities.values(),
         'total_assets': total_assets,
         'total_liabilities': total_liabilities,
         'total_equity': total_equity,
-        'total_liabilities_and_equity': total_liabilities + total_equity,
-        'is_balanced': round(total_assets, 2) == round(total_liabilities + total_equity, 2),
-        'client_form': ClientSelectionForm(initial={'client': client_id})
+        'total_liabilities_and_equity': total_liabilities_and_equity,
+        'is_balanced': is_balanced,
+        'client_form': ClientSelectionForm(initial={'client': client_id}),
+        'filter': bs_filter, # Passed strictly for UI rendering
+        'months_headers': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     }
     return render(request, 'account/balance_sheet.html', context)
 
@@ -413,8 +563,11 @@ def general_ledger_view(request):
     # 1. Get all accounts for the client
     db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
     
-    # 2. Calculate all-time total Debits and Credits per account in a single query
-    sums = JournalLine.objects.filter(journal_entry__client_id=client_id).values('account_id').annotate(
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+
+    # 2. Calculate total Debits and Credits per account in a single query
+    sums = report_filter.qs.values('account_id').annotate(
         total_dr=Sum('debit'),
         total_cr=Sum('credit')
     )
@@ -429,7 +582,10 @@ def general_ledger_view(request):
         cr = acct_sums['total_cr'] or 0
         
         # Calculate normal balance based on account type
-        if acct.account_type in ['Asset', 'Expense']:
+        cls = classify_account(acct.account_type, acct.name)
+        is_debit_normal = cls in ['asset', 'expense']
+                    
+        if is_debit_normal:
             balance = dr - cr
         else:
             balance = cr - dr
@@ -443,7 +599,12 @@ def general_ledger_view(request):
             'balance': balance,
         })
 
-    return render(request, 'account/gl_list.html', {'accounts': account_list, 'client_form': ClientSelectionForm(initial={'client': client_id})})
+    context = {
+        'accounts': account_list, 
+        'client_form': ClientSelectionForm(initial={'client': client_id}),
+        'filter': report_filter,
+    }
+    return render(request, 'account/gl_list.html', context)
 
 @login_required
 def account_ledger_detail_view(request, account_id):
@@ -482,17 +643,23 @@ def account_ledger_detail_view(request, account_id):
         
     account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
     
-    lines = JournalLine.objects.filter(
+    base_qs = JournalLine.objects.filter(
         account=account, 
         journal_entry__client_id=client_id
     ).select_related('journal_entry').order_by('journal_entry__date', 'id')
+
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+    lines = report_filter.qs
+
+    cls = classify_account(account.account_type, account.name)
+    is_debit_normal = cls in ['asset', 'expense']
 
     # Calculate running balance
     running_balance = 0
     ledger_data = []
     
     for line in lines:
-        if account.account_type in ['Asset', 'Expense']:
+        if is_debit_normal:
             running_balance += (line.debit - line.credit)
         else:
             running_balance += (line.credit - line.debit)
@@ -509,4 +676,16 @@ def account_ledger_detail_view(request, account_id):
             'balance': running_balance
         })
 
-    return render(request, 'account/gl_detail.html', {'account': account, 'ledger_data': ledger_data, 'client_form': ClientSelectionForm(initial={'client': client_id})})
+    # Pagination
+    paginator = Paginator(ledger_data, 20)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+
+    context = {
+        'account': account, 
+        'ledger_data': page_obj, 
+        'page_obj': page_obj,
+        'client_form': ClientSelectionForm(initial={'client': client_id}),
+        'filter': report_filter,
+    }
+    return render(request, 'account/gl_detail.html', context)

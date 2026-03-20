@@ -22,29 +22,95 @@
         </div>
     </div>
 
+    <div class="row mb-0">
+        <div class="col-12">
+            <form method="GET">
+                {% crispy filter.form %}
+            </form>
+        </div>
+    </div>
+
     <div class="card mt-4">
         <div class="card-body">
             <h4 class="text-success">Revenues</h4>
-            <table class="table table-sm">
+                <div class="table-responsive">
+                <table class="table table-sm table-bordered table-striped">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Account</th>
+                            {% for m in months_headers %}
+                            <th class="text-end">{{ m }}</th>
+                            {% endfor %}
+                            <th class="text-end fw-bold">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                 {% for rev in revenues %}
-                <tr><td>{{ rev.name }}</td><td class="text-end">{{ rev.balance|floatformat:2 }}</td></tr>
+                    <tr>
+                        <td>{{ rev.name }}</td>
+                        {% for val in rev.months %}
+                        <td class="text-end">{{ val|floatformat:2 }}</td>
+                        {% endfor %}
+                        <td class="text-end fw-bold">{{ rev.total|floatformat:2 }}</td>
+                    </tr>
                 {% endfor %}
-                <tr class="fw-bold"><td>Total Revenue</td><td class="text-end">{{ total_revenue|floatformat:2 }}</td></tr>
+                    <tr class="fw-bold table-success">
+                        <td>Total Revenue</td>
+                        {% for val in monthly_revenue %}
+                        <td class="text-end">{{ val|floatformat:2 }}</td>
+                        {% endfor %}
+                        <td class="text-end">{{ total_revenue|floatformat:2 }}</td>
+                    </tr>
+                    </tbody>
             </table>
+                </div>
 
             <h4 class="text-danger mt-4">Expenses</h4>
-            <table class="table table-sm">
+                <div class="table-responsive">
+                <table class="table table-sm table-bordered table-striped">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Account</th>
+                            {% for m in months_headers %}
+                            <th class="text-end">{{ m }}</th>
+                            {% endfor %}
+                            <th class="text-end fw-bold">Total</th>
+                        </tr>
+                    </thead>
+                    <tbody>
                 {% for exp in expenses %}
-                <tr><td>{{ exp.name }}</td><td class="text-end">{{ exp.balance|floatformat:2 }}</td></tr>
+                    <tr>
+                        <td>{{ exp.name }}</td>
+                        {% for val in exp.months %}
+                        <td class="text-end">{{ val|floatformat:2 }}</td>
+                        {% endfor %}
+                        <td class="text-end fw-bold">{{ exp.total|floatformat:2 }}</td>
+                    </tr>
                 {% endfor %}
-                <tr class="fw-bold"><td>Total Expenses</td><td class="text-end">{{ total_expense|floatformat:2 }}</td></tr>
+                    <tr class="fw-bold table-danger">
+                        <td>Total Expenses</td>
+                        {% for val in monthly_expense %}
+                        <td class="text-end">{{ val|floatformat:2 }}</td>
+                        {% endfor %}
+                        <td class="text-end">{{ total_expense|floatformat:2 }}</td>
+                    </tr>
+                    </tbody>
             </table>
+                </div>
 
             <hr>
-            <h3 class="d-flex justify-content-between {% if net_income >= 0 %}text-success{% else %}text-danger{% endif %}">
-                <span>Net Income:</span>
-                <span>${{ net_income|floatformat:2 }}</span>
-            </h3>
+                <h4 class="mt-4">Net Income</h4>
+                <div class="table-responsive">
+                <table class="table table-sm table-bordered">
+                    <tr class="fw-bold {% if net_income >= 0 %}table-success{% else %}table-danger{% endif %}">
+                        <td>Net Income</td>
+                        {% for val in monthly_net_income %}
+                        <td class="text-end">{{ val|floatformat:2 }}</td>
+                        {% endfor %}
+                        <td class="text-end">${{ net_income|floatformat:2 }}</td>
+                    </tr>
+                </table>
+                </div>
         </div>
     </div>
 </div>

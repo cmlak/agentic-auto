@@ -20,7 +20,13 @@ SECRET_KEY = env('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env('DEBUG')
 
-ALLOWED_HOSTS = ["*"]
+# ALLOWED_HOSTS = ["*"]
+
+ALLOWED_HOSTS = [
+    'agentic-platform-521063372903.asia-southeast1.run.app',
+    'localhost',
+    '127.0.0.1',
+]
 
 INSTALLED_APPS = [
     'django.contrib.admin',
@@ -127,7 +133,10 @@ if not DEBUG:
     }
     
     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-    CSRF_TRUSTED_ORIGINS = ["https://*.a.run.app"]
+
+    CSRF_TRUSTED_ORIGINS = [
+    'https://agentic-platform-521063372903.asia-southeast1.run.app',
+]
 else:
     # --- LOCAL DEVELOPMENT ---
     STORAGES = {

@@ -42,69 +42,78 @@ def logout_request(request):
 @never_cache
 def login_request(request):
     context = {}
-    # Handles POST request
     if request.method == "POST":
-        # Get username and password from request.POST dictionary
-        username = request.POST['username']
-        password = request.POST['psw']
-        # Try to check if provide credential can be authenticated
-        user = authenticate(username=username, password=password)
-        if user is not None:
-            # If user is valid, call login method to login current user
-            login(request, user)
-            # return redirect('onlinecourse:popular_course_list')
-            return redirect("register:main")
-        else:
-            # If not, return to login page again
+        # SAFE EXTRACTION: Use .get() to prevent crashes
+        username = request.POST.get('username')
+        password = request.POST.get('psw') 
+        
+        if not username or not password:
+            context['message'] = "Please provide both a username and password."
             return render(request, 'register/user_login.html', context)
 
-    else:
-        return render(request, 'register/user_login.html', context)
+        # Try to authenticate
+        user = authenticate(request, username=username, password=password)
+        
+        if user is not None:
+            login(request, user)
+            return redirect("register:main")
+        else:
+            # Login failed - pass the error to your HTML alert box
+            context['message'] = "Invalid username or password. Please try again."
+            return render(request, 'register/user_login.html', context)
+
+    # GET request
+    return render(request, 'register/user_login.html', context)
+
 
 @never_cache
 def registration_request(request):
     context = {}
-    # If it is a GET request, just render the registration page
-    if request.method == 'GET':
-        return render(request, 'register/user_registration.html', context)
-        # return render(request, 'todolist:upload_list_select.html', context)
-    # If it is a POST request
-    elif request.method == 'POST':
-        # Get user information from request.POST
-        username = request.POST['username']
-        password = request.POST['psw']
-        first_name = request.POST['firstname']
-        last_name = request.POST['lastname']
-        email = request.POST['email']
+    if request.method == 'POST':
+        # Safely get all fields from the form
+        username = request.POST.get('username')
+        password = request.POST.get('psw')
+        first_name = request.POST.get('firstname')
+        last_name = request.POST.get('lastname')
+        email = request.POST.get('email')
+        department = request.POST.get('department') 
         
-        department = request.POST['department']  # Get department from the for
+        # 1. Basic Validation
+        if not username or not password:
+            context['message'] = "Username and password are required!"
+            return render(request, 'register/user_registration.html', context)
         
-        user_exist = False
+        # 2. Safe check if user already exists (Replaces the try/except block)
+        if User.objects.filter(username=username).exists():
+            context['message'] = "That username is already taken. Please choose another."
+            return render(request, 'register/user_registration.html', context)
+            
+        # 3. Safe Creation
         try:
-            # Check if user already exists
-            User.objects.get(username=username)
-            user_exist = True
-        except:
-            # If not, simply log this is a new user
-            logger.debug("{} is new user".format(username))
-        # If it is a new user
-        if not user_exist:
             # Create user in auth_user table
-            user = User.objects.create_user(username=username, 
-                                            first_name=first_name, 
-                                            last_name=last_name,
-                                            password=password,
-                                            email=email)
+            user = User.objects.create_user(
+                username=username, 
+                first_name=first_name, 
+                last_name=last_name,
+                password=password,
+                email=email
+            )
             
             # Create a Profile instance and link it to the User
             Profile.objects.create(user=user, department=department) 
-                        
-            # Login the user and redirect to course list page
-            login(request, user)
             
-            return redirect("main")
-        else:
+            # Login the user and redirect to main page
+            login(request, user)
+            return redirect("register:main")
+            
+        except Exception as e:
+            # If the database rejects the creation (e.g., missing profile fields), 
+            # catch it safely and show the error on the page instead of crashing.
+            context['message'] = f"Registration failed: {str(e)}"
             return render(request, 'register/user_registration.html', context)
+            
+    # GET request
+    return render(request, 'register/user_registration.html', context)
         
 @login_required
 def registration_update(request):

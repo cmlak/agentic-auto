@@ -28,6 +28,12 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
 ]
 
+SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+CSRF_TRUSTED_ORIGINS = [
+    'https://agentic-platform-521063372903.asia-southeast1.run.app',
+]
+
 INSTALLED_APPS = [
     'django.contrib.admin',
     'django.contrib.auth',
@@ -132,11 +138,7 @@ if not DEBUG:
         },
     }
     
-    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
-
-    CSRF_TRUSTED_ORIGINS = [
-    'https://agentic-platform-521063372903.asia-southeast1.run.app',
-]
+    
 else:
     # --- LOCAL DEVELOPMENT ---
     STORAGES = {

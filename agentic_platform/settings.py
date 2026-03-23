@@ -128,13 +128,12 @@ if not DEBUG:
     GS_DEFAULT_ACL = None
 
     STORAGES = {
-        # 'default' is for media files. Keep this as Google Cloud Storage!
         "default": {
             "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
         },
-        # Change 'staticfiles' to use WhiteNoise instead of GCS
         "staticfiles": {
-            "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage",
+            # Change this line! Remove "CompressedManifest"
+            "BACKEND": "whitenoise.storage.StaticFilesStorage", 
         },
     }
     

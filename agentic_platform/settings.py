@@ -49,7 +49,7 @@ INSTALLED_APPS = [
     'account',
     'crispy_forms',
     'crispy_bootstrap5',
-    'django-import-export',
+    'import_export',
 ]
 
 MIDDLEWARE = [

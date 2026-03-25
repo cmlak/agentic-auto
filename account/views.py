@@ -16,6 +16,9 @@ from .models import Account, AccountMappingRule, JournalEntry, JournalLine
 from .filters import ReportFilter, BalanceSheetFilter
 from django.db.models.functions import ExtractMonth, ExtractYear
 import datetime
+from tablib import Dataset
+from .resources import AccountResource
+from .forms import AccountImportForm
 
 def classify_account(acct_type, acct_name):
     """Centralized logic to classify accounts cleanly and consistently."""
@@ -689,3 +692,86 @@ def account_ledger_detail_view(request, account_id):
         'filter': report_filter,
     }
     return render(request, 'account/gl_detail.html', context)
+
+@login_required
+def import_accounts_view(request):
+    """View to batch upload Chart of Accounts via CSV or Excel."""
+    user = request.user
+    
+    if request.method == "POST":
+        form = AccountImportForm(request.POST, request.FILES)
+        
+        # Dynamically limit the dropdown to ONLY the clients the user manages
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
+
+        if form.is_valid():
+            client = form.cleaned_data['client']
+            import_file = form.cleaned_data['import_file']
+            
+            dataset = Dataset()
+            try:
+                if import_file.name.endswith('.csv'):
+                    imported_data = dataset.load(import_file.read().decode('utf-8-sig'), format='csv')
+                elif import_file.name.endswith('.xlsx'):
+                    imported_data = dataset.load(import_file.read(), format='xlsx')
+                elif import_file.name.endswith('.xls'):
+                    imported_data = dataset.load(import_file.read(), format='xls')
+                else:
+                    messages.error(request, "Invalid file format. Please upload CSV or Excel.")
+                    return redirect('account:import_accounts')
+            except Exception as e:
+                messages.error(request, f"Error reading file: {str(e)}")
+                return redirect('account:import_accounts')
+
+            # Standardize headers to map to model fields
+            header_map = {
+                'account id': 'account_id',
+                'account name': 'name',
+                'type': 'account_type',
+                'account type': 'account_type',
+                'account_name': 'name'
+            }
+            dataset.headers = [header_map.get(str(h).strip().lower(), str(h).strip().lower()) for h in dataset.headers]
+
+            # Failsafe to ensure the primary matching key exists in the file
+            if 'account_id' not in dataset.headers:
+                messages.error(request, "Upload failed: Could not find an 'account_id' or 'account id' column.")
+                return redirect('account:import_accounts')
+
+            # Inject client_id into dataset rows to satisfy the FK requirement
+            if 'client_id' not in dataset.headers:
+                dataset.append_col([client.id] * len(dataset), header='client_id')
+            else:
+                client_col_index = dataset.headers.index('client_id')
+                for i in range(len(dataset)):
+                    row = list(dataset[i])
+                    row[client_col_index] = client.id
+                    dataset[i] = tuple(row)
+            
+            account_resource = AccountResource()
+            
+            # Dry run to check for errors before committing
+            result = account_resource.import_data(dataset, dry_run=True)
+            
+            if not result.has_errors():
+                account_resource.import_data(dataset, dry_run=False)
+                messages.success(request, f"Successfully imported {result.totals.get('new', 0)} new accounts and updated {result.totals.get('update', 0)} existing accounts for {client.name}.")
+            else:
+                for error in result.row_errors():
+                    messages.error(request, f"Row {error[0]}: {error[1][0].error}")
+                messages.error(request, "Import failed due to errors above.")
+                
+            return redirect('account:import_accounts')
+    else:
+        form = AccountImportForm()
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
+
+    return render(request, 'account/import_accounts.html', {'form': form})

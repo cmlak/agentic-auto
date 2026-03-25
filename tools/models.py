@@ -85,6 +85,21 @@ class Purchase(models.Model):
             self.vattin = f'="{self.vattin}"'
         super(Purchase, self).save(*args, **kwargs)
 
+class Old(models.Model):
+
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    date = models.DateField(blank=True, null=True)
+    account_id = models.IntegerField(blank=True, null=True)
+    description = models.TextField(blank=True, null=True)
+    instruction = models.TextField(blank=True, null=True)
+    debit = models.FloatField(blank=True, null=True)
+    credit = models.FloatField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
+
+    def __str__(self):
+        return f"{self.client.name} -{self.account_id} - {self.description}"
+
+
 class AICostLog(models.Model):
     date = models.DateTimeField(auto_now_add=True)
     file_name = models.CharField(max_length=255)

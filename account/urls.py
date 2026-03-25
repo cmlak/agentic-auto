@@ -6,6 +6,7 @@ app_name = 'account'
 urlpatterns = [
     
     path('admin-tools/upload-rules/', views.upload_mapping_rules_view, name='upload_mapping_rules'),
+    path('admin-tools/import-accounts/', views.import_accounts_view, name='import_accounts'),
     
     path('reports/trial-balance/', views.trial_balance_view, name='trial_balance'),
     path('reports/profit-and-loss/', views.profit_and_loss_view, name='profit_and_loss'),

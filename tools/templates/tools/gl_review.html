@@ -11,40 +11,23 @@
     <form method="POST" action="{% url 'tools:gl_review' %}">
         {% csrf_token %}
         
-        {% if purchase_formset.forms %}
-            <h4 class="mt-4 text-primary border-bottom pb-2"><i class="fas fa-file-invoice"></i> Reconstructed Accounts Payable</h4>
-            {{ purchase_formset.management_form }}
-            {% for form in purchase_formset %}
-                <div class="card mb-3 shadow-sm border-primary border-opacity-25">
-                    <div class="card-body py-2">
+        {% if formset.forms %}
+            <h4 class="mt-4 text-info border-bottom pb-2"><i class="fas fa-list"></i> Staged Historical Ledger Lines</h4>
+            
+            {{ formset.management_form }}
+            
+            {% for form in formset %}
+                <div class="card mb-3 shadow-sm border-info border-opacity-25">
+                    <div class="card-body py-3">
                         {% crispy form %}
                     </div>
                 </div>
             {% endfor %}
-        {% endif %}
-
-        {% if bank_formset.forms %}
-            <h4 class="mt-5 text-success border-bottom pb-2"><i class="fas fa-university"></i> Reconstructed Bank Activity</h4>
-            {{ bank_formset.management_form }}
-            {% for form in bank_formset %}
-                <div class="card mb-3 shadow-sm border-success border-opacity-25">
-                    <div class="card-body py-2">
-                        {% crispy form %}
-                    </div>
-                </div>
-            {% endfor %}
-        {% endif %}
-
-        {% if cash_formset.forms %}
-            <h4 class="mt-5 text-warning border-bottom pb-2"><i class="fas fa-wallet"></i> Reconstructed Cash Activity</h4>
-            {{ cash_formset.management_form }}
-            {% for form in cash_formset %}
-                <div class="card mb-3 shadow-sm border-warning border-opacity-25">
-                    <div class="card-body py-2">
-                        {% crispy form %}
-                    </div>
-                </div>
-            {% endfor %}
+            
+        {% else %}
+            <div class="alert alert-success mt-4">
+                <i class="fas fa-check-circle"></i> No more items in the queue to process!
+            </div>
         {% endif %}
 
         <div class="fixed-bottom bg-white p-3 border-top shadow-lg d-flex justify-content-between align-items-center" style="z-index: 1000;">

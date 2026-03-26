@@ -16,7 +16,7 @@
                 Please download the excel log for your records. It contains all DB assignments made during this migration.
             </div>
             
-            <a href="/media/{{ request.session.gl_report_path|cut:settings.BASE_DIR|cut:'/media/' }}" class="btn btn-primary btn-lg mt-3 mb-4 w-100 fw-bold" download>
+            <a href="{{ file_url }}" class="btn btn-primary btn-lg mt-3 mb-4 w-100 fw-bold" download>
                 <i class="fas fa-download"></i> Download Migration Report
             </a>
         {% else %}

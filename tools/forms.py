@@ -1,7 +1,7 @@
 from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
-from crispy_forms.layout import Layout, Row, Column, Field, Submit
+from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
 from .models import Purchase, Client
 
 class BatchUploadForm(forms.Form):
@@ -373,100 +373,48 @@ class GLMigrationUploadForm(forms.Form):
         initial="HISTORICAL-MIGRATION-JAN2026",
         widget=forms.TextInput(attrs={'class': 'form-control'})
     )
-
-# --- 1. PURCHASE REVIEW FORM ---
-class GLPurchaseReviewForm(forms.Form):
-    gl_no = forms.CharField(label="ID / Ref", required=False)
-    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
-    company = forms.CharField(label="Vendor Name")
-    description = forms.CharField()
-    account_id = forms.ChoiceField(label="Expense Account")
-    vat_usd = forms.FloatField(required=False)
-    total_usd = forms.FloatField(label="Total (AP)")
     
+class GLHistoricalReviewForm(forms.Form):
+    gl_no = forms.CharField(label="Voucher/GL No.", required=False)
+    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
+    account_id = forms.ChoiceField(label="Account")
+    description = forms.CharField(label="Entity / Description")
+    debit = forms.FloatField(required=False, label="Debit")
+    credit = forms.FloatField(required=False, label="Credit")
+    instruction = forms.CharField(
+        label="AI Reasoning", required=False, 
+        widget=forms.TextInput(attrs={'readonly': 'readonly', 'class': 'text-muted bg-light border-0'})
+    )
+
     def __init__(self, *args, **kwargs):
         account_choices = kwargs.pop('account_choices', [])
         super().__init__(*args, **kwargs)
         self.fields['account_id'].choices = account_choices
         
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-        self.helper.layout = Layout(
-            Row(
-                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
-                Column('date', css_class='col-md-3'),
-                Column('company', css_class='col-md-4 text-truncate'),
-                Column('description', css_class='col-md-4 text-truncate'),
-            ),
-            Row(    
-                Column('account_id', css_class='col-md-6'),
-                Column('vat_usd', css_class='col-md-3'),
-                Column('total_usd', css_class='col-md-3 fw-bold text-danger'),
-                css_class='mb-4 border-bottom pb-3'
-            )
-        )
-
-# --- 2. BANK REVIEW FORM ---
-class GLBankReviewForm(forms.Form):
-    gl_no = forms.CharField(label="ID / Ref", required=False)
-    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
-    counterparty = forms.CharField(label="Entity / Description")
-    ledger_account_id = forms.ChoiceField(label="Target Bank Account")
-    debit = forms.FloatField(required=False, label="Money In")
-    credit = forms.FloatField(required=False, label="Money Out")
-
-    def __init__(self, *args, **kwargs):
-        account_choices = kwargs.pop('account_choices', [])
-        super().__init__(*args, **kwargs)
-        self.fields['ledger_account_id'].choices = account_choices
+        # Inject 'title' attribute for tooltips on hover
+        if self.initial.get('description'):
+            self.fields['description'].widget.attrs['title'] = self.initial.get('description')
+        if self.initial.get('instruction'):
+            self.fields['instruction'].widget.attrs['title'] = self.initial.get('instruction')
         
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
-                Column('date', css_class='col-md-3'),
-                Column('counterparty', css_class='col-md-8'),
+                Column('gl_no', css_class='col-md-2 fw-bold text-primary'),
+                Column('date', css_class='col-md-2'),
+                Column('account_id', css_class='col-md-3'),
+                Column('debit', css_class='col-md-2 text-success'),
+                Column('credit', css_class='col-md-2 text-danger'),
+                Column('DELETE', css_class='col-md-1 text-center'),
             ),
             Row(
-                Column('ledger_account_id', css_class='col-md-6'),
-                Column('debit', css_class='col-md-3 text-success'),
-                Column('credit', css_class='col-md-3 text-danger'),
-                css_class='mb-4 border-bottom pb-3'
-            )
-        )
-
-# --- 3. CASH REVIEW FORM ---
-class GLCashReviewForm(forms.Form):
-    gl_no = forms.CharField(label="ID / Ref", required=False)
-    date = forms.DateField(widget=forms.DateInput(attrs={'type': 'date'}))
-    counterparty = forms.CharField(label="Entity / Description")
-    ledger_account_id = forms.ChoiceField(label="Target Cash Account")
-    debit = forms.FloatField(required=False, label="Money In")
-    credit = forms.FloatField(required=False, label="Money Out")
-
-    def __init__(self, *args, **kwargs):
-        account_choices = kwargs.pop('account_choices', [])
-        super().__init__(*args, **kwargs)
-        self.fields['ledger_account_id'].choices = account_choices
-        
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-        self.helper.layout = Layout(
-            Row(
-                Column('gl_no', css_class='col-md-1 fw-bold text-primary'),
-                Column('date', css_class='col-md-3'),
-                Column('counterparty', css_class='col-md-8'),
+                Column('description', css_class='col-md-6'),
+                Column('instruction', css_class='col-md-6'),
             ),
-            Row(
-                Column('ledger_account_id', css_class='col-md-6'),
-                Column('debit', css_class='col-md-3 text-success'),
-                Column('credit', css_class='col-md-3 text-danger'),
-                css_class='mb-4 border-bottom pb-3'
-            )
+            HTML("<hr>")
         )
 
-# Create the Factories
-GLPurchaseFormSet = formset_factory(GLPurchaseReviewForm, extra=0, can_delete=True)
-GLBankFormSet = formset_factory(GLBankReviewForm, extra=0, can_delete=True)
-GLCashFormSet = formset_factory(GLCashReviewForm, extra=0, can_delete=True)
+# Factory for the new unified form
+from django.forms import formset_factory
+GLHistoricalFormSet = formset_factory(GLHistoricalReviewForm, extra=0, can_delete=True)

@@ -1,11 +1,7 @@
-from django.shortcuts import render
 from django.http import HttpResponse, HttpResponseRedirect
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404, render, redirect
-from django.http import Http404
 from django.urls import reverse
-from django.views import generic, View
-from collections import defaultdict
 from django.contrib.auth import login, logout, authenticate, update_session_auth_hash
 import logging
 from django.contrib.auth.decorators import login_required
@@ -13,7 +9,6 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.decorators.cache import never_cache
 from django.views.generic import (ListView, DetailView, UpdateView, DeleteView)
 from django.contrib import messages
-from django.urls import reverse
 from django.utils import timezone
 
 from register.models import Profile

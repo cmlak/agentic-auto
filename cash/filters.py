@@ -2,10 +2,26 @@ import django_filters
 from django import forms
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, HTML
+from django.db.models import Q
 from .models import Bank, Cash
 from tools.models import Vendor
 
 class BankFilter(django_filters.FilterSet):
+    BANK_CHOICES = [
+        ('100200', 'ABA Bank - USD'),
+        ('100210', 'ABA Bank - KHR'),
+        ('100300', 'CANADIA - USD'),
+        ('100310', 'CANADIA - KHR'),
+    ]
+
+    bank = django_filters.ChoiceFilter(
+        label='Bank Account',
+        choices=BANK_CHOICES,
+        method='filter_bank',
+        empty_label='All Banks',
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+
     remark = django_filters.ChoiceFilter(
         label='Remark',
         empty_label='All Remarks',
@@ -19,6 +35,9 @@ class BankFilter(django_filters.FilterSet):
         field_name="date", lookup_expr="lte", label="Date To",
         widget=forms.DateInput(attrs={"type": "date", "class": "form-control"})
     )
+
+    def filter_bank(self, queryset, name, value):
+        return queryset.filter(Q(debit_account_id=value) | Q(credit_account_id=value))
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -36,9 +55,10 @@ class BankFilter(django_filters.FilterSet):
         form.helper.form_method = 'GET'
         form.helper.layout = Layout(
             Row(
-                Column('remark', css_class='form-group col-md-4 mb-3'),
-                Column('start_date', css_class='form-group col-md-4 mb-3'),
-                Column('end_date', css_class='form-group col-md-4 mb-3'),
+                Column('bank', css_class='form-group col-md-3 mb-3'),
+                Column('remark', css_class='form-group col-md-3 mb-3'),
+                Column('start_date', css_class='form-group col-md-3 mb-3'),
+                Column('end_date', css_class='form-group col-md-3 mb-3'),
                 css_class='row'
             ),
             Row(

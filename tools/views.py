@@ -1,7 +1,8 @@
 import os
 import tempfile
 import pandas as pd
-from datetime import date
+from collections import defaultdict
+from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -13,15 +14,12 @@ from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import DetailView, UpdateView, DeleteView
 from django.db.models import Sum
 from django.db import transaction
-import datetime
 from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
-from .forms import GLMigrationUploadForm
-from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLPurchaseFormSet, GLBankFormSet, GLCashFormSet, ClientSelectionForm
+from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLHistoricalFormSet, ClientSelectionForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor
-from .models import Purchase, AICostLog, Vendor, Client
-from cash.models import Bank, Cash
+from .models import Purchase, AICostLog, Vendor, Client, Old
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
 from .filters import PurchaseFilter
@@ -572,6 +570,7 @@ def gl_migration_upload_view(request):
     if request.method == 'POST':
         request.session.pop('gl_report_path', None)
         request.session.pop('gl_migration_log', None)
+        request.session.pop('gl_migration_completed', None)
         
         form = GLMigrationUploadForm(request.POST, request.FILES)
         if form.is_valid():
@@ -581,9 +580,10 @@ def gl_migration_upload_view(request):
             has_access = user.is_staff or user.is_superuser
             if not has_access:
                 try:
+                    # Adjust depending on your specific Profile relation
                     if user.profile.clients.filter(id=selected_client.id).exists():
                         has_access = True
-                except Profile.DoesNotExist:
+                except Exception:
                     pass
             if not has_access:
                 messages.error(request, "You do not have permission to migrate data for this client.")
@@ -606,23 +606,24 @@ def gl_migration_upload_view(request):
                 parsed_data, costs = processor.process_migration_file(tmp_file_path)
                 
                 # Log the AI Cost Immediately
-                total_items = len(parsed_data.get('purchases', [])) + len(parsed_data.get('bank_txns', [])) + len(parsed_data.get('cash_txns', []))
+                total_items = len(parsed_data)
                 AICostLog.objects.create(
                     file_name=uploaded_file.name, 
-                    total_pages=total_items, # Treat the number of grouped clusters as 'pages'
+                    total_pages=total_items, # Treat the number of extracted lines as 'pages'
                     flash_cost=costs.get('flash_cost', 0), 
                     pro_cost=costs.get('pro_cost', 0), 
                     total_cost=costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
                 )
                 
                 # Save the parsed data arrays to session queue
-                request.session['gl_migration_data'] = parsed_data
+                request.session['gl_migration_data'] = {'lines': parsed_data}
                 request.session['gl_migration_meta'] = {
                     'client_id': selected_client.id,
                     'client_name': selected_client.name,
                     'batch_name': batch_name
                 }
                 request.session['gl_migration_log'] = [] # To store report data across multiple saves
+                request.session['gl_migration_completed'] = []
                 
                 messages.success(request, "Data parsed successfully. Please review the batches.")
                 return redirect('tools:gl_review')
@@ -643,10 +644,10 @@ def gl_migration_upload_view(request):
 
 @login_required
 def gl_review_view(request):
-    """Processes the session queue in chunks via Formsets."""
+    """Processes the session queue in chunks via Formsets. Saves to DB only when queue is completely empty."""
     parsed_data = request.session.get('gl_migration_data', {})
     meta = request.session.get('gl_migration_meta', {})
-    report_log = request.session.get('gl_migration_log', [])
+    completed_data = request.session.get('gl_migration_completed', [])
 
     if not parsed_data or not meta:
         messages.error(request, "No migration queue found. Please upload a file.")
@@ -660,96 +661,113 @@ def gl_review_view(request):
         try:
             if user.profile.clients.filter(id=client_id).exists():
                 has_access = True
-        except Profile.DoesNotExist:
+        except Exception:
             pass
     if not has_access:
         return HttpResponseForbidden("You do not have permission to review this client's data.")
         
-    batch_name = meta.get('batch_name')
     selected_client = Client.objects.get(id=client_id)
     
-    db_accounts = [(str(a.account_id), f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id)]
+    db_accounts = [(str(a.account_id), f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
-    # We process a maximum of 15 items per category per page to prevent browser lag
-    CHUNK_SIZE = 15
-    purchases_queue = parsed_data.get('purchases', [])
-    bank_queue = parsed_data.get('bank_txns', [])
-    cash_queue = parsed_data.get('cash_txns', [])
+    # We process a maximum of 30 items per page to prevent browser lag (Higher since it's single lines now)
+    CHUNK_SIZE = 30
+    lines_queue = parsed_data.get('lines', [])
 
     if request.method == 'POST':
-        purchase_formset = GLPurchaseFormSet(request.POST, prefix='purchases', form_kwargs={'account_choices': account_choices})
-        bank_formset = GLBankFormSet(request.POST, prefix='bank', form_kwargs={'account_choices': account_choices})
-        cash_formset = GLCashFormSet(request.POST, prefix='cash', form_kwargs={'account_choices': account_choices})
+        formset = GLHistoricalFormSet(request.POST, form_kwargs={'account_choices': account_choices})
 
-        if purchase_formset.is_valid() and bank_formset.is_valid() and cash_formset.is_valid():
-            new_log_entries = []
+        if formset.is_valid():
+            # Extract cleaned data from this chunk
+            chunk_results = []
+            for form in formset:
+                if form.cleaned_data and not form.cleaned_data.get('DELETE'):
+                    cd = form.cleaned_data
+                    chunk_results.append({
+                        'gl_no': cd.get('gl_no') or 'UNGROUPED',
+                        'date': str(cd['date']) if cd.get('date') else None,
+                        'account_id': cd['account_id'],
+                        'description': cd['description'],
+                        'instruction': cd.get('instruction', ''),
+                        'debit': cd['debit'] or 0.0,
+                        'credit': cd['credit'] or 0.0
+                    })
             
-            try:
-                with transaction.atomic():
-                    # 1. PROCESS PURCHASES
-                    for form in purchase_formset:
-                        if form.cleaned_data and not form.cleaned_data.get('DELETE'):
-                            cd = form.cleaned_data
-                            vendor, _ = Vendor.objects.get_or_create(client=selected_client, name=cd['company'], defaults={'vendor_id': 'V-MIGRATE'})
-                            
-                            p = Purchase.objects.create(
-                                client=selected_client, batch=batch_name, date=cd['date'],
-                                company=cd['company'], vendor=vendor, account_id=cd['account_id'],
-                                invoice_no=cd.get('gl_no'),
-                                vat_usd=cd['vat_usd'] or 0.0, total_usd=cd['total_usd'] or 0.0,
-                                description=cd['description'], payment_status='Open',
-                                instruction=f"SYSTEM: Migrated from GL (ID: {cd.get('gl_no', 'N/A')})"
-                            )
-                            new_log_entries.append({'Type': 'Purchase (AP)', 'Date': p.date, 'Entity': p.company, 'Amount': p.total_usd, 'Account': p.account_id})
-
-                    # 2. PROCESS BANK
-                    for form in bank_formset:
-                        if form.cleaned_data and not form.cleaned_data.get('DELETE'):
-                            cd = form.cleaned_data
-                            b = Bank.objects.create(
-                                client=selected_client, batch=batch_name, date=cd['date'],
-                                counterparty=cd['counterparty'], purpose="GL Migration",
-                                debit=cd['debit'] or 0.0, credit=cd['credit'] or 0.0,
-                                instruction=f"SYSTEM: Ledger {cd['ledger_account_id']} | ID: {cd.get('gl_no', 'N/A')}"
-                            )
-                            new_log_entries.append({'Type': 'Bank', 'Date': b.date, 'Entity': b.counterparty, 'Amount': b.debit or b.credit, 'Account': cd['ledger_account_id']})
-
-                    # 3. PROCESS CASH
-                    for form in cash_formset:
-                        if form.cleaned_data and not form.cleaned_data.get('DELETE'):
-                            cd = form.cleaned_data
-                            c = Cash.objects.create(
-                                client=selected_client, batch=batch_name, date=cd['date'],
-                                description=cd['counterparty'], 
-                                debit=cd['debit'] or 0.0, credit=cd['credit'] or 0.0,
-                                note=f"SYSTEM: Ledger {cd['ledger_account_id']} | ID: {cd.get('gl_no', 'N/A')}"
-                            )
-                            new_log_entries.append({'Type': 'Cash', 'Date': c.date, 'Entity': c.description, 'Amount': c.debit or c.credit, 'Account': cd['ledger_account_id']})
-            except Exception as e:
-                messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
-                total_remaining = len(purchases_queue) + len(bank_queue) + len(cash_queue)
-                return render(request, 'tools/gl_review.html', {
-                    'purchase_formset': purchase_formset,
-                    'bank_formset': bank_formset,
-                    'cash_formset': cash_formset,
-                    'meta': meta,
-                    'total_remaining': total_remaining
-                })
-            
-            report_log.extend(new_log_entries)
+            # Add to the session's completed list
+            completed_data.extend(chunk_results)
+            request.session['gl_migration_completed'] = completed_data
 
             # Remove the processed chunk from the session queues
-            parsed_data['purchases'] = purchases_queue[CHUNK_SIZE:]
-            parsed_data['bank_txns'] = bank_queue[CHUNK_SIZE:]
-            parsed_data['cash_txns'] = cash_queue[CHUNK_SIZE:]
+            parsed_data['lines'] = lines_queue[CHUNK_SIZE:]
             
             request.session['gl_migration_data'] = parsed_data
-            request.session['gl_migration_log'] = report_log
             request.session.modified = True
 
-            # If all queues are empty, generate the final report and finish
-            if not parsed_data['purchases'] and not parsed_data['bank_txns'] and not parsed_data['cash_txns']:
+            # If queue is empty, we are done reviewing! Now perform atomic DB save.
+            if not parsed_data['lines']:
+                grouped_records = defaultdict(list)
+                report_log = []
+                
+                try:
+                    with transaction.atomic():
+                        # 1. PROCESS AND SAVE TO 'Old' MODEL
+                        for item in completed_data:
+                            Old.objects.create(
+                                client=selected_client,
+                                date=item['date'],
+                                account_id=item['account_id'],
+                                description=item['description'],
+                                instruction=item['instruction'],
+                                debit=item['debit'],
+                                credit=item['credit']
+                            )
+                            
+                            gl_no = item['gl_no']
+                            grouped_records[gl_no].append(item)
+                            
+                            report_log.append({
+                                'GL No': gl_no, 'Date': item['date'], 
+                                'Account': item['account_id'], 
+                                'Debit': item['debit'], 'Credit': item['credit'], 
+                                'Description': item['description']
+                            })
+
+                        # 2. CREATE DOUBLE-ENTRY JOURNALS
+                        for gl_no, items in grouped_records.items():
+                            if not items:
+                                continue
+                            
+                            first_item = items[0]
+                            
+                            je = JournalEntry.objects.create(
+                                client=selected_client,
+                                date=first_item['date'],
+                                reference_number=f"HIST-{gl_no}",
+                                description=f"Historical GL Migration: {first_item['description']}"[:255]
+                            )
+                            
+                            for item in items:
+                                account, _ = Account.objects.get_or_create(
+                                    account_id=str(item['account_id']),
+                                    client=selected_client,
+                                    defaults={'name': 'System Gen Acct', 'account_type': 'Asset'}
+                                )
+                                
+                                JournalLine.objects.create(
+                                    journal_entry=je,
+                                    account=account,
+                                    debit=item['debit'],
+                                    credit=item['credit'],
+                                    description=item['description']
+                                )
+                except Exception as e:
+                    messages.error(request, f"Database transaction failed during final save. Nothing was saved. Error: {str(e)}")
+                    return render(request, 'tools/gl_review.html', {
+                        'formset': formset, 'meta': meta, 'total_remaining': 0
+                    })
+
+                # Generate final report
                 if report_log:
                     df_report = pd.DataFrame(report_log)
                     media_dir = os.path.join(settings.BASE_DIR, 'media')
@@ -761,37 +779,38 @@ def gl_review_view(request):
                 request.session.pop('gl_migration_data', None)
                 request.session.pop('gl_migration_meta', None)
                 request.session.pop('gl_migration_log', None)
+                request.session.pop('gl_migration_completed', None)
                 
-                messages.success(request, "🎉 All historical data batches successfully processed!")
+                messages.success(request, "🎉 All historical data successfully staged to Old model and mapped to Journals!")
                 return redirect('tools:gl_download')
             
-            messages.success(request, "Batch saved. Loading next items in queue...")
+            messages.success(request, "Batch reviewed and queued. Loading next items...")
             return redirect('tools:gl_review')
             
         else:
             messages.error(request, "Validation errors found. Please correct them below.")
     else:
         # Load the next chunk into the forms
-        purchase_formset = GLPurchaseFormSet(initial=purchases_queue[:CHUNK_SIZE], prefix='purchases', form_kwargs={'account_choices': account_choices})
-        bank_formset = GLBankFormSet(initial=bank_queue[:CHUNK_SIZE], prefix='bank', form_kwargs={'account_choices': account_choices})
-        cash_formset = GLCashFormSet(initial=cash_queue[:CHUNK_SIZE], prefix='cash', form_kwargs={'account_choices': account_choices})
+        formset = GLHistoricalFormSet(initial=lines_queue[:CHUNK_SIZE], form_kwargs={'account_choices': account_choices})
 
-    total_remaining = len(purchases_queue) + len(bank_queue) + len(cash_queue)
+    total_remaining = len(lines_queue)
 
     return render(request, 'tools/gl_review.html', {
-        'purchase_formset': purchase_formset,
-        'bank_formset': bank_formset,
-        'cash_formset': cash_formset,
+        'formset': formset,
         'meta': meta,
         'total_remaining': total_remaining
     })
-
 
 @login_required
 def gl_download_view(request):
     """Provides the download link for the completed migration report."""
     file_path = request.session.get('gl_report_path')
-    return render(request, 'tools/gl_download.html', {'has_file': bool(file_path and os.path.exists(file_path))})
+    has_file = bool(file_path and os.path.exists(file_path))
+    file_url = f"/media/{os.path.basename(file_path)}" if has_file else ""
+    return render(request, 'tools/gl_download.html', {
+        'has_file': has_file,
+        'file_url': file_url
+    })
 
 @login_required(login_url="register:login")
 def PurchaseListView(request):

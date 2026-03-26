@@ -2,7 +2,7 @@ from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
-from .models import Purchase, Client
+from .models import Purchase, Vendor, Client, Old
 
 class BatchUploadForm(forms.Form):
     client = forms.ModelChoiceField(
@@ -418,3 +418,47 @@ class GLHistoricalReviewForm(forms.Form):
 # Factory for the new unified form
 from django.forms import formset_factory
 GLHistoricalFormSet = formset_factory(GLHistoricalReviewForm, extra=0, can_delete=True)
+
+class OldEntryForm(forms.ModelForm):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        label="Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
+    )
+    account_id = forms.ChoiceField(
+        label="GL Account", required=True, 
+        widget=forms.Select(attrs={'class': 'form-select text-primary fw-bold'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        account_choices = kwargs.pop('account_choices', [])
+        super().__init__(*args, **kwargs)
+        self.fields['account_id'].choices = account_choices
+        
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('client', css_class='form-group col-md-4'),
+                Column('date', css_class='form-group col-md-4'),
+                Column('account_id', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('description', css_class='form-group col-md-6'),
+                Column('instruction', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('debit', css_class='form-group col-md-6'),
+                Column('credit', css_class='form-group col-md-6'),
+            )
+        )
+
+    class Meta:
+        model = Old
+        fields = ['client', 'date', 'account_id', 'description', 'instruction', 'debit', 'credit']
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date'}),
+            'description': forms.Textarea(attrs={'rows': 2}),
+            'instruction': forms.Textarea(attrs={'rows': 2, 'placeholder': 'Optional AI/Manual Reasoning...'}),
+        }

@@ -1,0 +1,21 @@
+{% extends 'base_3_account.html' %}
+{% load crispy_forms_tags %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>{% if form.instance.pk %}Update Record #{{ form.instance.pk }}{% else %}New Historical Record{% endif %}</h2>
+    
+    <div class="card shadow-sm mt-4">
+        <div class="card-body bg-light">
+            <form method="POST">
+                {% csrf_token %}
+                {% crispy form %}
+                <div class="mt-4">
+                    <button type="submit" class="btn btn-success px-4 me-2">Save Record & Post to GL</button>
+                    <a href="{% url 'tools:old_list' %}" class="btn btn-outline-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

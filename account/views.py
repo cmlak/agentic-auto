@@ -5,7 +5,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.db.models import Sum
 from django.contrib.auth.decorators import login_required
-from django.http import HttpResponseForbidden
+from django.http import HttpResponseForbidden, HttpResponse
 from tools.models import Client
 from tools.forms import ClientSelectionForm
 from register.models import Profile
@@ -14,8 +14,8 @@ from .models import Account, AccountMappingRule, JournalEntry, JournalLine
 from .filters import ReportFilter, BalanceSheetFilter
 from django.db.models.functions import ExtractMonth, ExtractYear
 import datetime
-from tablib import Dataset
-from .resources import AccountResource
+from tablib import Dataset 
+from .resources import AccountResource, TrialBalanceResource, ProfitAndLossResource, BalanceSheetResource, GeneralLedgerSummaryResource, AccountLedgerDetailResource
 from .forms import AccountImportForm
 
 def classify_account(acct_type, acct_name):
@@ -693,13 +693,17 @@ def account_ledger_detail_view(request, account_id):
 
 @login_required
 def import_accounts_view(request):
-    """View to batch upload Chart of Accounts via CSV or Excel."""
+    """
+    Clean view to batch upload Chart of Accounts.
+    Accepts standardized CSV/Excel files (pre-processed by transformation script).
+    Only creates NEW accounts to prevent duplication.
+    """
     user = request.user
     
     if request.method == "POST":
         form = AccountImportForm(request.POST, request.FILES)
         
-        # Dynamically limit the dropdown to ONLY the clients the user manages
+        # Dynamically limit client selection to user's managed clients
         if not (user.is_staff or user.is_superuser):
             try:
                 form.fields['client'].queryset = user.profile.clients.all()
@@ -710,61 +714,85 @@ def import_accounts_view(request):
             client = form.cleaned_data['client']
             import_file = form.cleaned_data['import_file']
             
+            # 1. Load the file into a Tablib Dataset
             dataset = Dataset()
             try:
+                content = import_file.read()
                 if import_file.name.endswith('.csv'):
-                    imported_data = dataset.load(import_file.read().decode('utf-8-sig'), format='csv')
+                    dataset.load(content.decode('utf-8-sig'), format='csv')
                 elif import_file.name.endswith('.xlsx'):
-                    imported_data = dataset.load(import_file.read(), format='xlsx')
+                    dataset.load(content, format='xlsx')
                 elif import_file.name.endswith('.xls'):
-                    imported_data = dataset.load(import_file.read(), format='xls')
+                    dataset.load(content, format='xls')
                 else:
-                    messages.error(request, "Invalid file format. Please upload CSV or Excel.")
+                    messages.error(request, "Unsupported file format.")
                     return redirect('account:import_accounts')
             except Exception as e:
                 messages.error(request, f"Error reading file: {str(e)}")
                 return redirect('account:import_accounts')
 
-            # Standardize headers to map to model fields
+            # 2. Standardize headers to map to the Account Model
             header_map = {
                 'account id': 'account_id',
+                'account_id': 'account_id',
                 'account name': 'name',
+                'account_name': 'name',
                 'type': 'account_type',
-                'account type': 'account_type',
-                'account_name': 'name'
+                'account type': 'account_type'
             }
             dataset.headers = [header_map.get(str(h).strip().lower(), str(h).strip().lower()) for h in dataset.headers]
 
-            # Failsafe to ensure the primary matching key exists in the file
+            # Failsafe: Ensure account_id exists
             if 'account_id' not in dataset.headers:
-                messages.error(request, "Upload failed: Could not find an 'account_id' or 'account id' column.")
+                messages.error(request, "Upload failed: Column 'account_id' not found. Ensure you used the transformation script.")
                 return redirect('account:import_accounts')
 
-            # Inject client_id into dataset rows to satisfy the FK requirement
-            if 'client_id' not in dataset.headers:
-                dataset.append_col([client.id] * len(dataset), header='client_id')
-            else:
-                client_col_index = dataset.headers.index('client_id')
-                for i in range(len(dataset)):
-                    row = list(dataset[i])
-                    row[client_col_index] = client.id
-                    dataset[i] = tuple(row)
-            
-            account_resource = AccountResource()
-            
-            # Dry run to check for errors before committing
-            result = account_resource.import_data(dataset, dry_run=True)
-            
-            if not result.has_errors():
-                account_resource.import_data(dataset, dry_run=False)
-                messages.success(request, f"Successfully imported {result.totals.get('new', 0)} new accounts and updated {result.totals.get('update', 0)} existing accounts for {client.name}.")
-            else:
-                for error in result.row_errors():
-                    messages.error(request, f"Row {error[0]}: {error[1][0].error}")
-                messages.error(request, "Import failed due to errors above.")
+            # 3. LOGIC BLOCK: PREVENT DUPLICATION
+            # Get existing IDs for this specific client to perform a delta check
+            existing_ids = set(
+                Account.objects.filter(client=client)
+                .values_list('account_id', flat=True)
+            )
+
+            # Create a filtered dataset containing only truly NEW accounts
+            new_accounts_dataset = Dataset()
+            new_accounts_dataset.headers = ['account_id', 'name', 'account_type', 'client_id']
+
+            # Find indices for the source dataset
+            idx_id = dataset.headers.index('account_id')
+            idx_name = dataset.headers.index('name')
+            idx_type = dataset.headers.index('account_type')
+
+            for row in dataset:
+                acc_id = str(row[idx_id]).strip()
                 
+                # Check against existing IDs in the database
+                if acc_id not in existing_ids:
+                    new_accounts_dataset.append([
+                        acc_id,
+                        row[idx_name],
+                        row[idx_type],
+                        client.id
+                    ])
+
+            # 4. Import the filtered data
+            if len(new_accounts_dataset) > 0:
+                account_resource = AccountResource()
+                # dry_run=False since we've already manually validated the delta
+                result = account_resource.import_data(new_accounts_dataset, dry_run=False)
+                
+                messages.success(
+                    request, 
+                    f"Success: {len(new_accounts_dataset)} new accounts created for {client.name}. "
+                    f"Duplicates found in file were ignored."
+                )
+            else:
+                messages.info(request, "All accounts in the uploaded file already exist in the database.")
+
             return redirect('account:import_accounts')
+
     else:
+        # GET Request: Initialize empty form
         form = AccountImportForm()
         if not (user.is_staff or user.is_superuser):
             try:
@@ -773,3 +801,299 @@ def import_accounts_view(request):
                 form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'account/import_accounts.html', {'form': form})
+    
+@login_required
+def export_trial_balance(request):
+    """Exports the Trial Balance report to XLSX."""
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('account:trial_balance')
+
+    # Replicate data fetching from trial_balance_view
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+    accounts_data = report_filter.qs.values(
+        'account__account_id', 'account__name', 'account__account_type'
+    ).annotate(
+        total_debit=Sum('debit'),
+        total_credit=Sum('credit')
+    )
+
+    all_accounts = Account.objects.filter(client_id=client_id)
+    tb_dict = {
+        acct.account_id: {
+            'id': acct.account_id, 'name': acct.name, 'type': acct.account_type,
+            'debit': 0.0, 'credit': 0.0, 'classification': classify_account(acct.account_type, acct.name)
+        } for acct in all_accounts
+    }
+
+    for item in accounts_data:
+        acct_id = item['account__account_id']
+        if acct_id not in tb_dict:
+            tb_dict[acct_id] = {
+                'id': acct_id, 'name': item['account__name'], 'type': item['account__account_type'],
+                'debit': 0.0, 'credit': 0.0, 'classification': classify_account(item['account__account_type'], item['account__name'])
+            }
+        tb_dict[acct_id]['debit'] += item['total_debit'] or 0.0
+        tb_dict[acct_id]['credit'] += item['total_credit'] or 0.0
+
+    trial_balance_data = []
+    for acct_id in sorted(tb_dict.keys()):
+        data = tb_dict[acct_id]
+        dr = data['debit']
+        cr = data['credit']
+        net_balance = (dr - cr) if data['classification'] in ['asset', 'expense'] else (cr - dr)
+        is_debit = net_balance > 0 if data['classification'] in ['asset', 'expense'] else net_balance < 0
+
+        trial_balance_data.append({
+            'id': data['id'],
+            'name': data['name'],
+            'type': data['type'],
+            'debit': abs(net_balance) if is_debit else 0,
+            'credit': abs(net_balance) if not is_debit else 0,
+        })
+
+    # Export using django-import-export
+    resource = TrialBalanceResource()
+    dataset = resource.export(trial_balance_data)
+    response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="Trial_Balance_{client_id}_{datetime.date.today()}.xlsx"'
+    return response
+
+@login_required
+def export_profit_and_loss(request):
+    """Exports the Profit & Loss report to XLSX."""
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('account:profit_and_loss')
+
+    # Replicate data fetching from profit_and_loss_view
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+    accounts_data = report_filter.qs.values(
+        'account__account_id', 'account__name', 'account__account_type'
+    ).annotate(
+        total_debit=Sum('debit'),
+        total_credit=Sum('credit')
+    ).order_by('account__account_id')
+
+    export_data = []
+    total_revenue = 0
+    
+    # Revenues
+    export_data.append({'category': 'Revenue', 'account_id': '', 'account_name': '', 'total': ''})
+    for item in accounts_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls == 'revenue':
+            balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
+            if balance != 0:
+                export_data.append({
+                    'category': 'Revenue',
+                    'account_id': item['account__account_id'],
+                    'account_name': item['account__name'],
+                    'total': balance
+                })
+                total_revenue += balance
+    export_data.append({'category': 'Total Revenue', 'account_id': '', 'account_name': '', 'total': total_revenue})
+    export_data.append({'category': '', 'account_id': '', 'account_name': '', 'total': ''}) # Spacer
+
+    # Expenses
+    total_expense = 0
+    export_data.append({'category': 'Expenses', 'account_id': '', 'account_name': '', 'total': ''})
+    for item in accounts_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls == 'expense':
+            balance = (item['total_debit'] or 0) - (item['total_credit'] or 0)
+            if balance != 0:
+                export_data.append({
+                    'category': 'Expense',
+                    'account_id': item['account__account_id'],
+                    'account_name': item['account__name'],
+                    'total': balance
+                })
+                total_expense += balance
+    export_data.append({'category': 'Total Expenses', 'account_id': '', 'account_name': '', 'total': total_expense})
+    export_data.append({'category': '', 'account_id': '', 'account_name': '', 'total': ''}) # Spacer
+
+    # Net Income
+    net_income = total_revenue - total_expense
+    export_data.append({'category': 'Net Income', 'account_id': '', 'account_name': '', 'total': net_income})
+
+    resource = ProfitAndLossResource()
+    dataset = resource.export(export_data)
+    response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="Profit_and_Loss_{client_id}_{datetime.date.today()}.xlsx"'
+    return response
+
+@login_required
+def export_balance_sheet(request):
+    """Exports the Balance Sheet report to XLSX."""
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('account:balance_sheet')
+
+    end_date_str = request.GET.get('end_date')
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    if end_date_str:
+        base_qs = base_qs.filter(journal_entry__date__lte=end_date_str)
+
+    bs_data = base_qs.values(
+        'account__account_id', 'account__name', 'account__account_type'
+    ).annotate(
+        total_debit=Sum('debit'),
+        total_credit=Sum('credit')
+    ).order_by('account__account_id')
+
+    export_data = []
+    
+    # Calculate Retained Earnings
+    retained_earnings = 0
+    for item in bs_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls in ['revenue', 'expense']:
+            net = (item['total_credit'] or 0) - (item['total_debit'] or 0)
+            retained_earnings += net
+
+    # Assets
+    total_assets = 0
+    export_data.append({'category': 'Assets', 'account_id': '', 'account_name': '', 'balance': ''})
+    for item in bs_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls == 'asset':
+            balance = (item['total_debit'] or 0) - (item['total_credit'] or 0)
+            if balance != 0:
+                export_data.append({'category': 'Asset', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
+                total_assets += balance
+    export_data.append({'category': 'Total Assets', 'account_id': '', 'account_name': '', 'balance': total_assets})
+    export_data.append({'category': '', 'account_id': '', 'account_name': '', 'balance': ''})
+
+    # Liabilities
+    total_liabilities = 0
+    export_data.append({'category': 'Liabilities', 'account_id': '', 'account_name': '', 'balance': ''})
+    for item in bs_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls == 'liability':
+            balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
+            if balance != 0:
+                export_data.append({'category': 'Liability', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
+                total_liabilities += balance
+    export_data.append({'category': 'Total Liabilities', 'account_id': '', 'account_name': '', 'balance': total_liabilities})
+    export_data.append({'category': '', 'account_id': '', 'account_name': '', 'balance': ''})
+
+    # Equity
+    total_equity = 0
+    export_data.append({'category': 'Equity', 'account_id': '', 'account_name': '', 'balance': ''})
+    for item in bs_data:
+        cls = classify_account(item['account__account_type'], item['account__name'])
+        if cls == 'equity':
+            balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
+            if balance != 0:
+                export_data.append({'category': 'Equity', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
+                total_equity += balance
+    
+    # Add Retained Earnings to Equity
+    export_data.append({'category': 'Equity', 'account_id': 'RETAINED', 'account_name': 'Current & Retained Earnings', 'balance': retained_earnings})
+    total_equity += retained_earnings
+    export_data.append({'category': 'Total Equity', 'account_id': '', 'account_name': '', 'balance': total_equity})
+    export_data.append({'category': '', 'account_id': '', 'account_name': '', 'balance': ''})
+
+    # Total Liabilities and Equity
+    total_liab_equity = total_liabilities + total_equity
+    export_data.append({'category': 'Total Liabilities and Equity', 'account_id': '', 'account_name': '', 'balance': total_liab_equity})
+
+    resource = BalanceSheetResource()
+    dataset = resource.export(export_data)
+    response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="Balance_Sheet_{client_id}_{datetime.date.today()}.xlsx"'
+    return response
+
+@login_required
+def export_general_ledger_summary(request):
+    """Exports the General Ledger summary to XLSX."""
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('account:general_ledger_list')
+
+    # Replicate data fetching from general_ledger_view
+    db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
+    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+    sums = report_filter.qs.values('account_id').annotate(
+        total_dr=Sum('debit'),
+        total_cr=Sum('credit')
+    )
+    sum_dict = {item['account_id']: item for item in sums}
+
+    account_list = []
+    for acct in db_accounts:
+        acct_sums = sum_dict.get(acct.id, {'total_dr': 0, 'total_cr': 0})
+        dr = acct_sums['total_dr'] or 0
+        cr = acct_sums['total_cr'] or 0
+        
+        cls = classify_account(acct.account_type, acct.name)
+        is_debit_normal = cls in ['asset', 'expense']
+        balance = (dr - cr) if is_debit_normal else (cr - dr)
+            
+        account_list.append({
+            'account_id': acct.account_id, 
+            'name': acct.name,
+            'account_type': acct.account_type,
+            'debit': dr,
+            'credit': cr,
+            'balance': balance,
+        })
+
+    resource = GeneralLedgerSummaryResource()
+    dataset = resource.export(account_list)
+    response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="GL_Summary_{client_id}_{datetime.date.today()}.xlsx"'
+    return response
+
+@login_required
+def export_account_ledger_detail(request, account_id):
+    """Exports the detailed transaction list for a specific account to XLSX."""
+    client_id = request.session.get('active_client_id')
+    if not client_id:
+        messages.error(request, "Please select an active client.")
+        return redirect('account:general_ledger_list')
+
+    account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
+    
+    # Replicate data fetching from account_ledger_detail_view
+    base_qs = JournalLine.objects.filter(
+        account=account, 
+        journal_entry__client_id=client_id
+    ).select_related('journal_entry').order_by('journal_entry__date', 'id')
+
+    report_filter = ReportFilter(request.GET, queryset=base_qs)
+    lines = report_filter.qs
+
+    cls = classify_account(account.account_type, account.name)
+    is_debit_normal = cls in ['asset', 'expense']
+
+    running_balance = 0
+    ledger_data = []
+    for line in lines:
+        if is_debit_normal:
+            running_balance += (line.debit - line.credit)
+        else:
+            running_balance += (line.credit - line.debit)
+            
+        ledger_data.append({
+            'date': line.journal_entry.date,
+            'description': line.description or line.journal_entry.description,
+            'source': line.journal_entry.source_type,
+            'debit': line.debit,
+            'credit': line.credit,
+            'balance': running_balance
+        })
+
+    resource = AccountLedgerDetailResource()
+    dataset = resource.export(ledger_data)
+    response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    response['Content-Disposition'] = f'attachment; filename="GL_Detail_{account.account_id}_{client_id}_{datetime.date.today()}.xlsx"'
+    return response

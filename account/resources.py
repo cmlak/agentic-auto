@@ -30,3 +30,53 @@ class AccountResource(resources.ModelResource):
             if clean_id.endswith('.0'):
                 clean_id = clean_id[:-2]
             row['account_id'] = clean_id
+
+class TrialBalanceResource(resources.Resource):
+    id = Field(attribute='id', column_name='Account ID')
+    name = Field(attribute='name', column_name='Account Name')
+    type = Field(attribute='type', column_name='Account Type')
+    debit = Field(attribute='debit', column_name='Debit')
+    credit = Field(attribute='credit', column_name='Credit')
+
+    class Meta:
+        export_order = ('id', 'name', 'type', 'debit', 'credit')
+
+class ProfitAndLossResource(resources.Resource):
+    category = Field(attribute='category', column_name='Category')
+    account_id = Field(attribute='account_id', column_name='Account ID')
+    account_name = Field(attribute='account_name', column_name='Account')
+    total = Field(attribute='total', column_name='Total')
+
+    class Meta:
+        export_order = ('category', 'account_id', 'account_name', 'total')
+
+class BalanceSheetResource(resources.Resource):
+    category = Field(attribute='category', column_name='Category')
+    account_id = Field(attribute='account_id', column_name='Account ID')
+    account_name = Field(attribute='account_name', column_name='Account')
+    balance = Field(attribute='balance', column_name='Balance')
+
+    class Meta:
+        export_order = ('category', 'account_id', 'account_name', 'balance')
+
+class GeneralLedgerSummaryResource(resources.Resource):
+    account_id = Field(attribute='account_id', column_name='Account ID')
+    name = Field(attribute='name', column_name='Account Name')
+    account_type = Field(attribute='account_type', column_name='Account Type')
+    debit = Field(attribute='debit', column_name='Total Debit')
+    credit = Field(attribute='credit', column_name='Total Credit')
+    balance = Field(attribute='balance', column_name='Balance')
+
+    class Meta:
+        export_order = ('account_id', 'name', 'account_type', 'debit', 'credit', 'balance')
+
+class AccountLedgerDetailResource(resources.Resource):
+    date = Field(attribute='date', column_name='Date')
+    description = Field(attribute='description', column_name='Description')
+    source = Field(attribute='source', column_name='Source')
+    debit = Field(attribute='debit', column_name='Debit')
+    credit = Field(attribute='credit', column_name='Credit')
+    balance = Field(attribute='balance', column_name='Running Balance')
+
+    class Meta:
+        export_order = ('date', 'description', 'source', 'debit', 'credit', 'balance')

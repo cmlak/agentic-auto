@@ -1,0 +1,25 @@
+{% extends 'base_3_account.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Delete Record #{{ object.id }}</h2>
+    
+    <div class="card shadow-sm border-danger mt-4">
+        <div class="card-body">
+            <div class="alert alert-danger mb-4">
+                <strong>Warning!</strong> Are you sure you want to permanently delete this historical record?
+                <br>
+                This action will also automatically delete the associated General Ledger (JournalEntry) mapped via <code>HIST-OLD-{{ object.id }}</code>.
+            </div>
+            
+            <p class="mb-4 text-muted border p-3 bg-light rounded">"{{ object.description }}"</p>
+            
+            <form method="POST">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-danger px-4 me-2">Yes, Confirm Delete</button>
+                <a href="{% url 'tools:old_detail' object.id %}" class="btn btn-outline-secondary px-4">Cancel</a>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

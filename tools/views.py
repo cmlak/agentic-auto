@@ -17,7 +17,7 @@ from django.db import transaction
 from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
-from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLHistoricalFormSet, ClientSelectionForm
+from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLHistoricalFormSet, ClientSelectionForm, OldEntryForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
@@ -1096,3 +1096,200 @@ def export_purchase_csv(request):
     response['Content-Disposition'] = 'attachment; filename="purchase_invoices.csv"'
     
     return response
+
+# ====================================================================
+# --- 4. OLD MODEL CRUD & JOURNAL POSTING ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def OldListView(request):
+    user = request.user
+
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:old_list')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        base_queryset = Old.objects.filter(client_id=client_id)
+
+        if user.is_staff or user.is_superuser:
+            old_records = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    old_records = base_queryset
+                else:
+                    old_records = Old.objects.none()
+                    messages.error(request, "You do not have permission to view records for this client.")
+            except Profile.DoesNotExist:
+                old_records = Old.objects.none()
+        
+        client_form = ClientSelectionForm(initial={'client': client_id})
+    else:
+        old_records = Old.objects.none()
+        client_form = ClientSelectionForm()
+        messages.info(request, "Please select a client to view historical records.")
+
+    old_records = old_records.order_by('-id')
+
+    paginator = Paginator(old_records, 20)
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+
+    context = {
+        'old_records': page_obj,
+        'page_obj': page_obj,
+        'client_form': client_form,
+    }
+    return render(request, 'tools/old_list.html', context)
+
+
+@login_required(login_url="register:login")
+def manual_old_entry_view(request):
+    if request.method == 'POST' and 'client' in request.POST and 'account_id' not in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:manual_old_entry')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Profile.DoesNotExist:
+                pass
+        if not has_access:
+            messages.error(request, "You do not have permission to manage this client.")
+            request.session.pop('active_client_id', None)
+            client_id = None
+            
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    if request.method == 'POST':
+        form = OldEntryForm(request.POST, account_choices=account_choices)
+        if form.is_valid():
+            with transaction.atomic():
+                old_record = form.save()
+
+                # Post to General Ledger, linking via reference_number
+                je = JournalEntry.objects.create(
+                    client=old_record.client,
+                    date=old_record.date or date.today(),
+                    description=f"Historical Entry: {old_record.description}"[:255],
+                    reference_number=f"OLD-{old_record.id}"
+                )
+                
+                acct, _ = Account.objects.get_or_create(
+                    client_id=client_id, 
+                    account_id=str(old_record.account_id), 
+                    defaults={'name': 'Historical Default', 'account_type': 'Asset'}
+                )
+                JournalLine.objects.create(
+                    journal_entry=je, 
+                    account=acct, 
+                    description=old_record.description or "Historical Entry", 
+                    debit=old_record.debit or 0.0,
+                    credit=old_record.credit or 0.0
+                )
+            
+            messages.success(request, f"Successfully created manual historical record and posted to GL.")
+            return redirect('tools:old_list') 
+    else:
+        form = OldEntryForm(initial={'client': client_id}, account_choices=account_choices)
+
+    return render(request, 'tools/old_form.html', {'form': form})
+
+
+class OldDetailView(LoginRequiredMixin, DetailView):
+    login_url = "register:login"
+    model = Old
+    template_name = 'tools/old_detail.html'
+    context_object_name = 'old_record'
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        old_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=old_record.client_id).exists():
+                    is_authorized = True
+            except Profile.DoesNotExist:
+                pass
+        if not is_authorized:
+            return HttpResponseForbidden(render(request, 'messages/403_forbidden.html', {'message': "Permission denied."}))
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        old_record = self.get_object()
+        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=old_record.client_id).exists())
+        return context
+
+
+class OldUpdateView(LoginRequiredMixin, UpdateView):
+    login_url = "register:login"
+    model = Old
+    form_class = OldEntryForm 
+    template_name = 'tools/old_form.html'
+    
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=self.object.client_id).order_by('account_id')]
+        kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
+        return kwargs
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            old_record = form.save()
+            # Wipe old journal entries by matching exact reference string
+            JournalEntry.objects.filter(reference_number=f"OLD-{old_record.id}").delete()
+            
+            je = JournalEntry.objects.create(
+                client=old_record.client, date=old_record.date or date.today(),
+                description=f"Updated Historical Entry: {old_record.description}"[:255], reference_number=f"OLD-{old_record.id}"
+            )
+            acct, _ = Account.objects.get_or_create(client_id=old_record.client_id, account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
+            JournalLine.objects.create(journal_entry=je, account=acct, description=old_record.description or "Historical Entry", debit=old_record.debit or 0.0, credit=old_record.credit or 0.0)
+        messages.success(self.request, "Historical record and General Ledger entries updated successfully!")
+        return HttpResponseRedirect(self.get_success_url())
+
+    def get_success_url(self):
+        return reverse('tools:old_detail', kwargs={'pk': self.object.pk})
+
+class OldDeleteView(LoginRequiredMixin, DeleteView):
+    login_url = "register:login"
+    model = Old
+    template_name = 'tools/old_confirm_delete.html'
+    success_url = reverse_lazy('tools:old_list')
+
+    def form_valid(self, form):
+        JournalEntry.objects.filter(reference_number=f"OLD-{self.object.id}").delete()
+        messages.success(self.request, 'Record and associated Journal Entries deleted successfully!')
+        return super().form_valid(form)

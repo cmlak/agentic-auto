@@ -1,0 +1,48 @@
+{% extends 'base_3_account.html' %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Historical Record Details (#{{ old_record.id }})</h2>
+        <div>
+            {% if is_owner %}
+            <a href="{% url 'tools:old_update' old_record.id %}" class="btn btn-warning me-2">Edit</a>
+            <a href="{% url 'tools:old_delete' old_record.id %}" class="btn btn-danger me-2">Delete</a>
+            {% endif %}
+            <a href="{% url 'tools:old_list' %}" class="btn btn-outline-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="card shadow-sm">
+        <div class="card-header bg-dark text-white fw-bold">
+            Transaction Information
+        </div>
+        <div class="card-body">
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">Client:</div>
+                <div class="col-md-9 fw-bold">{{ old_record.client.name }}</div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">Date:</div>
+                <div class="col-md-9">{{ old_record.date|date:"Y-m-d"|default:"N/A" }}</div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">GL Account ID:</div>
+                <div class="col-md-9 text-primary fw-bold">{{ old_record.account_id }}</div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">Debit Amount:</div>
+                <div class="col-md-9 text-success fw-bold">${{ old_record.debit|default:0.0|floatformat:2 }}</div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">Credit Amount:</div>
+                <div class="col-md-9 text-danger fw-bold">${{ old_record.credit|default:0.0|floatformat:2 }}</div>
+            </div>
+            <div class="row mb-3">
+                <div class="col-md-3 text-muted">Description:</div>
+                <div class="col-md-9">{{ old_record.description|default:"-" }}</div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -35,9 +35,14 @@
             <h2 class="mb-1">{{ account.account_id }} - {{ account.name }}</h2>
             <span class="badge bg-info text-dark fs-6">Type: {{ account.account_type }}</span>
         </div>
-        <a href="{% url 'account:general_ledger_list' %}" class="btn btn-outline-secondary">
-            &larr; Back to GL List
-        </a>
+        <div>
+            <a href="{% url 'account:export_account_ledger_detail' account.account_id %}?{{ request.GET.urlencode }}" class="btn btn-success me-2">
+                <i class="fas fa-file-excel"></i> Export Details
+            </a>
+            <a href="{% url 'account:general_ledger_list' %}" class="btn btn-outline-secondary">
+                &larr; Back to GL List
+            </a>
+        </div>
     </div>
 
     <div class="card shadow-sm border-0">

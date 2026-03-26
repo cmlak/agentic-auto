@@ -29,4 +29,11 @@ urlpatterns = [
     path('gl-migration/download/', views.gl_download_view, name='gl_download'),
     
     path('management/ai-costs/', views.ai_cost_dashboard, name='ai_cost_dashboard'),
+    
+    # Old Model CRUD URLs
+    path('old-records/', views.OldListView, name='old_list'),
+    path('old-records/new/', views.manual_old_entry_view, name='manual_old_entry'),
+    path('old-records/<int:pk>/', views.OldDetailView.as_view(), name='old_detail'),
+    path('old-records/<int:pk>/update/', views.OldUpdateView.as_view(), name='old_update'),
+    path('old-records/<int:pk>/delete/', views.OldDeleteView.as_view(), name='old_delete'),
 ]

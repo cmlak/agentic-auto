@@ -221,6 +221,9 @@ def trial_balance_view(request):
             net_balance = cr - dr
             is_debit = net_balance < 0
 
+        if round(abs(net_balance), 2) == 0:
+            continue
+
         trial_balance.append({
             'id': data['id'],
             'name': data['name'],
@@ -365,8 +368,8 @@ def profit_and_loss_view(request):
     net_income_all = total_revenue_all - total_expense_all
 
     context = {
-        'revenues': revenues.values(),
-        'expenses': expenses.values(),
+        'revenues': [r for r in revenues.values() if round(abs(r['total']), 2) > 0],
+        'expenses': [e for e in expenses.values() if round(abs(e['total']), 2) > 0],
         'monthly_revenue': monthly_revenue,
         'monthly_expense': monthly_expense,
         'monthly_net_income': monthly_net_income,
@@ -513,9 +516,9 @@ def balance_sheet_view(request):
     is_balanced = all(round(total_assets[i], 2) == round(total_liabilities_and_equity[i], 2) for i in range(12))
 
     context = {
-        'assets': assets.values(),
-        'liabilities': liabilities.values(),
-        'equities': equities.values(),
+        'assets': [a for a in assets.values() if any(round(abs(m), 2) > 0 for m in a['months'])],
+        'liabilities': [l for l in liabilities.values() if any(round(abs(m), 2) > 0 for m in l['months'])],
+        'equities': [e for e in equities.values() if any(round(abs(m), 2) > 0 for m in e['months'])],
         'total_assets': total_assets,
         'total_liabilities': total_liabilities,
         'total_equity': total_equity,
@@ -595,6 +598,9 @@ def general_ledger_view(request):
         else:
             balance = cr - dr
             
+        if round(dr, 2) == 0 and round(cr, 2) == 0:
+            continue
+
         account_list.append({
             'id': acct.id,
             'account_id': acct.account_id, 
@@ -886,6 +892,9 @@ def export_trial_balance(request):
         net_balance = (dr - cr) if data['classification'] in ['asset', 'expense'] else (cr - dr)
         is_debit = net_balance > 0 if data['classification'] in ['asset', 'expense'] else net_balance < 0
 
+        if round(abs(net_balance), 2) == 0:
+            continue
+
         trial_balance_data.append({
             'id': data['id'],
             'name': data['name'],
@@ -928,7 +937,7 @@ def export_profit_and_loss(request):
         cls = classify_account(item['account__account_type'], item['account__name'])
         if cls == 'revenue':
             balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
-            if balance != 0:
+            if round(abs(balance), 2) > 0:
                 export_data.append({
                     'category': 'Revenue',
                     'account_id': item['account__account_id'],
@@ -946,7 +955,7 @@ def export_profit_and_loss(request):
         cls = classify_account(item['account__account_type'], item['account__name'])
         if cls == 'expense':
             balance = (item['total_debit'] or 0) - (item['total_credit'] or 0)
-            if balance != 0:
+            if round(abs(balance), 2) > 0:
                 export_data.append({
                     'category': 'Expense',
                     'account_id': item['account__account_id'],
@@ -1004,7 +1013,7 @@ def export_balance_sheet(request):
         cls = classify_account(item['account__account_type'], item['account__name'])
         if cls == 'asset':
             balance = (item['total_debit'] or 0) - (item['total_credit'] or 0)
-            if balance != 0:
+            if round(abs(balance), 2) > 0:
                 export_data.append({'category': 'Asset', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
                 total_assets += balance
     export_data.append({'category': 'Total Assets', 'account_id': '', 'account_name': '', 'balance': total_assets})
@@ -1017,7 +1026,7 @@ def export_balance_sheet(request):
         cls = classify_account(item['account__account_type'], item['account__name'])
         if cls == 'liability':
             balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
-            if balance != 0:
+            if round(abs(balance), 2) > 0:
                 export_data.append({'category': 'Liability', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
                 total_liabilities += balance
     export_data.append({'category': 'Total Liabilities', 'account_id': '', 'account_name': '', 'balance': total_liabilities})
@@ -1030,7 +1039,7 @@ def export_balance_sheet(request):
         cls = classify_account(item['account__account_type'], item['account__name'])
         if cls == 'equity':
             balance = (item['total_credit'] or 0) - (item['total_debit'] or 0)
-            if balance != 0:
+            if round(abs(balance), 2) > 0:
                 export_data.append({'category': 'Equity', 'account_id': item['account__account_id'], 'account_name': item['account__name'], 'balance': balance})
                 total_equity += balance
     
@@ -1082,6 +1091,9 @@ def export_general_ledger_summary(request):
         is_debit_normal = cls in ['asset', 'expense']
         balance = (dr - cr) if is_debit_normal else (cr - dr)
             
+        if round(dr, 2) == 0 and round(cr, 2) == 0:
+            continue
+
         account_list.append({
             'account_id': acct.account_id, 
             'name': acct.name,

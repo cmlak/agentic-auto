@@ -567,18 +567,22 @@ def general_ledger_view(request):
     base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
     report_filter = ReportFilter(request.GET, queryset=base_qs)
 
-    # 2. Calculate total Debits and Credits per account in a single query
-    sums = report_filter.qs.values('account_id').annotate(
+    # Group identically to Trial Balance using the string account_id to merge DB duplicates
+    sums = report_filter.qs.values('account__account_id').annotate(
         total_dr=Sum('debit'),
         total_cr=Sum('credit')
     )
     
-    # Map the sums to a dictionary for quick lookup by account.id
-    sum_dict = {item['account_id']: item for item in sums}
+    sum_dict = {item['account__account_id']: item for item in sums}
 
     account_list = []
+    seen_ids = set()
     for acct in db_accounts:
-        acct_sums = sum_dict.get(acct.id, {'total_dr': 0, 'total_cr': 0})
+        # Deduplicate accounts for the list view
+        if acct.account_id in seen_ids: continue
+        seen_ids.add(acct.account_id)
+        
+        acct_sums = sum_dict.get(acct.account_id, {'total_dr': 0, 'total_cr': 0})
         dr = acct_sums['total_dr'] or 0
         cr = acct_sums['total_cr'] or 0
         
@@ -592,6 +596,7 @@ def general_ledger_view(request):
             balance = cr - dr
             
         account_list.append({
+            'id': acct.id,
             'account_id': acct.account_id, 
             'name': acct.name,
             'account_type': acct.account_type,
@@ -642,12 +647,20 @@ def account_ledger_detail_view(request, account_id):
         messages.error(request, "Please select an active client.")
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
         
-    account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
+    try:
+        account = Account.objects.get(id=account_id, client_id=client_id)
+    except (Account.DoesNotExist, ValueError):
+        account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
     
+    # Fetch ALL lines across any potential duplicate Account records using the unified string ID
     base_qs = JournalLine.objects.filter(
-        account=account, 
+        account__account_id=account.account_id, 
         journal_entry__client_id=client_id
-    ).select_related('journal_entry').order_by('journal_entry__date', 'id')
+    ).select_related('journal_entry').prefetch_related(
+        'journal_entry__purchase',
+        'journal_entry__bank',
+        'journal_entry__cash'
+    ).order_by('journal_entry__date', 'id')
 
     report_filter = ReportFilter(request.GET, queryset=base_qs)
     lines = report_filter.qs
@@ -665,13 +678,40 @@ def account_ledger_detail_view(request, account_id):
         else:
             running_balance += (line.credit - line.debit)
             
+        old_id = None
+        hist_id = None
+        ref_num = str(line.journal_entry.reference_number).strip().upper() if line.journal_entry.reference_number else ""
+        if ref_num.startswith('OLD-'):
+            try:
+                old_id = int(ref_num.replace('OLD-', '').strip())
+            except ValueError:
+                pass
+        elif ref_num.startswith('HIST-'):
+            hist_id = ref_num.replace('HIST-', '').strip()
+                
+        source_display = "Historical" if (old_id or hist_id) else line.journal_entry.source_type
+
+        # Extract safely using IDs directly from the preloaded journal_entry
+        purchase_id = line.journal_entry.purchase_id
+        bank_id = line.journal_entry.bank_id
+        cash_id = line.journal_entry.cash_id
+        
+        purchase_detail = getattr(line.journal_entry.purchase, 'company', "Details") if purchase_id and getattr(line.journal_entry, 'purchase', None) else "Details"
+        bank_detail = (getattr(line.journal_entry.bank, 'counterparty', "") or getattr(line.journal_entry.bank, 'purpose', "Details")) if bank_id and getattr(line.journal_entry, 'bank', None) else "Details"
+        cash_detail = getattr(line.journal_entry.cash, 'description', "Details") if cash_id and getattr(line.journal_entry, 'cash', None) else "Details"
+
         ledger_data.append({
             'date': line.journal_entry.date,
             'description': line.description or line.journal_entry.description,
-            'source': line.journal_entry.source_type,
-            'purchase_id': line.journal_entry.purchase_id,
-            'bank_id': line.journal_entry.bank_id,
-            'cash_id': line.journal_entry.cash_id,
+            'source': source_display,
+            'purchase_id': purchase_id,
+            'bank_id': bank_id,
+            'cash_id': cash_id,
+            'purchase_detail': purchase_detail,
+            'bank_detail': bank_detail,
+            'cash_detail': cash_detail,
+            'old_id': old_id,
+            'hist_id': hist_id,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance
@@ -1022,15 +1062,19 @@ def export_general_ledger_summary(request):
     db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
     base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
     report_filter = ReportFilter(request.GET, queryset=base_qs)
-    sums = report_filter.qs.values('account_id').annotate(
+    sums = report_filter.qs.values('account__account_id').annotate(
         total_dr=Sum('debit'),
         total_cr=Sum('credit')
     )
-    sum_dict = {item['account_id']: item for item in sums}
+    sum_dict = {item['account__account_id']: item for item in sums}
 
     account_list = []
+    seen_ids = set()
     for acct in db_accounts:
-        acct_sums = sum_dict.get(acct.id, {'total_dr': 0, 'total_cr': 0})
+        if acct.account_id in seen_ids: continue
+        seen_ids.add(acct.account_id)
+        
+        acct_sums = sum_dict.get(acct.account_id, {'total_dr': 0, 'total_cr': 0})
         dr = acct_sums['total_dr'] or 0
         cr = acct_sums['total_cr'] or 0
         
@@ -1061,13 +1105,20 @@ def export_account_ledger_detail(request, account_id):
         messages.error(request, "Please select an active client.")
         return redirect('account:general_ledger_list')
 
-    account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
+    try:
+        account = Account.objects.get(id=account_id, client_id=client_id)
+    except (Account.DoesNotExist, ValueError):
+        account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
     
     # Replicate data fetching from account_ledger_detail_view
     base_qs = JournalLine.objects.filter(
-        account=account, 
+        account__account_id=account.account_id, 
         journal_entry__client_id=client_id
-    ).select_related('journal_entry').order_by('journal_entry__date', 'id')
+    ).select_related('journal_entry').prefetch_related(
+        'journal_entry__purchase',
+        'journal_entry__bank',
+        'journal_entry__cash'
+    ).order_by('journal_entry__date', 'id')
 
     report_filter = ReportFilter(request.GET, queryset=base_qs)
     lines = report_filter.qs
@@ -1083,10 +1134,36 @@ def export_account_ledger_detail(request, account_id):
         else:
             running_balance += (line.credit - line.debit)
             
+        old_id = None
+        hist_id = None
+        ref_num = str(line.journal_entry.reference_number).strip().upper() if line.journal_entry.reference_number else ""
+        if ref_num.startswith('OLD-'):
+            try:
+                old_id = int(ref_num.replace('OLD-', '').strip())
+            except ValueError:
+                pass
+        elif ref_num.startswith('HIST-'):
+            hist_id = ref_num.replace('HIST-', '').strip()
+                
+        source_display = "Historical" if (old_id or hist_id) else line.journal_entry.source_type
+
+        purchase_id = line.journal_entry.purchase_id
+        bank_id = line.journal_entry.bank_id
+        cash_id = line.journal_entry.cash_id
+        
+        if purchase_id and getattr(line.journal_entry, 'purchase', None):
+            source_display = f"Purchase: {getattr(line.journal_entry.purchase, 'company', 'Details')}"
+        elif bank_id and getattr(line.journal_entry, 'bank', None):
+            source_display = f"Bank: {getattr(line.journal_entry.bank, 'counterparty', '') or getattr(line.journal_entry.bank, 'purpose', 'Details')}"
+        elif cash_id and getattr(line.journal_entry, 'cash', None):
+            source_display = f"Cash: {getattr(line.journal_entry.cash, 'description', 'Details')}"
+        elif hist_id:
+            source_display = f"Historical: {hist_id}"
+
         ledger_data.append({
             'date': line.journal_entry.date,
             'description': line.description or line.journal_entry.description,
-            'source': line.journal_entry.source_type,
+            'source': source_display,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance

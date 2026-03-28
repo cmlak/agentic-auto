@@ -71,7 +71,7 @@
                             {{ account.balance|floatformat:2 }}
                         </td>
                         <td class="text-end pe-4">
-                            <a href="{% url 'account:account_ledger_detail' account.account_id %}" class="btn btn-sm btn-outline-primary">
+                            <a href="{% url 'account:account_ledger_detail' account.id %}" class="btn btn-sm btn-outline-primary">
                                 View Details
                             </a>
                         </td>

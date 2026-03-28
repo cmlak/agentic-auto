@@ -36,7 +36,7 @@
             <span class="badge bg-info text-dark fs-6">Type: {{ account.account_type }}</span>
         </div>
         <div>
-            <a href="{% url 'account:export_account_ledger_detail' account.account_id %}?{{ request.GET.urlencode }}" class="btn btn-success me-2">
+            <a href="{% url 'account:export_account_ledger_detail' account.id %}?{{ request.GET.urlencode }}" class="btn btn-success me-2">
                 <i class="fas fa-file-excel"></i> Export Details
             </a>
             <a href="{% url 'account:general_ledger_list' %}" class="btn btn-outline-secondary">
@@ -65,11 +65,25 @@
                         <td>{{ line.description }}</td>
                         <td>
                             {% if line.purchase_id %}
-                                <a href="{% url 'tools:purchase_detail' line.purchase_id %}" class="badge bg-primary text-decoration-none" title="View Purchase Details">Purchase</a>
+                                <a href="{% url 'tools:purchase_detail' line.purchase_id %}" class="badge bg-primary text-decoration-none" title="View Purchase Details">
+                                    Purchase: {{ line.purchase_detail|truncatechars:15 }}
+                                </a>
                             {% elif line.bank_id %}
-                                <a href="{% url 'cash:bank_detail' line.bank_id %}" class="badge bg-success text-decoration-none" title="View Bank Transaction Details">Bank</a>
+                                <a href="{% url 'cash:bank_detail' line.bank_id %}" class="badge bg-success text-decoration-none" title="View Bank Transaction Details">
+                                    Bank: {{ line.bank_detail|truncatechars:15 }}
+                                </a>
                             {% elif line.cash_id %}
-                                <a href="{% url 'cash:cash_detail' line.cash_id %}" class="badge bg-warning text-dark text-decoration-none" title="View Cash Transaction Details">Cash Book</a>
+                                <a href="{% url 'cash:cash_detail' line.cash_id %}" class="badge bg-warning text-dark text-decoration-none" title="View Cash Transaction Details">
+                                    Cash: {{ line.cash_detail|truncatechars:15 }}
+                                </a>
+                            {% elif line.old_id %}
+                                <span class="badge bg-secondary" title="Historical Details">
+                                    Historical Details
+                                </span>
+                            {% elif line.hist_id %}
+                                <span class="badge bg-secondary" title="Historical Records List">
+                                    Historical: {{ line.hist_id|truncatechars:10 }}
+                                </span>
                             {% else %}
                                 <span class="badge bg-light text-dark border">{{ line.source }}</span>
                             {% endif %}

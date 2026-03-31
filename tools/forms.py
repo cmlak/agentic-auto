@@ -462,3 +462,35 @@ class OldEntryForm(forms.ModelForm):
             'description': forms.Textarea(attrs={'rows': 2}),
             'instruction': forms.Textarea(attrs={'rows': 2, 'placeholder': 'Optional AI/Manual Reasoning...'}),
         }
+
+from django import forms
+from datetime import date
+from tools.models import Client # Adjust import path to your Client model
+
+MONTH_CHOICES = [
+    (1, 'January'), (2, 'February'), (3, 'March'), (4, 'April'),
+    (5, 'May'), (6, 'June'), (7, 'July'), (8, 'August'),
+    (9, 'September'), (10, 'October'), (11, 'November'), (12, 'December')
+]
+
+class BalancikaExportForm(forms.Form):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold'})
+    )
+    year = forms.IntegerField(
+        initial=date.today().year,
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
+    )
+    month = forms.ChoiceField(
+        choices=MONTH_CHOICES,
+        initial=date.today().month,
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    entry_no_start = forms.IntegerField(
+        initial=1,
+        label="Starting Entry Number",
+        help_text="e.g., 1 will generate PIN00001",
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
+    )

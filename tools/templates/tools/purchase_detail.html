@@ -23,7 +23,7 @@
                         <strong>Date:&nbsp;&nbsp;</strong> {{ purchase.date }}
                     </li>
                     <li class="list-group-item">
-                        <strong>Company / Vendor:&nbsp;&nbsp;</strong> {{ purchase.company }}
+                        <strong>Company / Vendor:&nbsp;&nbsp;</strong> {{ purchase.vendor.name }}
                     </li>
                     <li class="list-group-item">
                         <strong>Invoice No:&nbsp;&nbsp;</strong> {{ purchase.invoice_no|default:"-"|cut:'="'|cut:'"' }}

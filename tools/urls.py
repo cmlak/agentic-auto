@@ -36,4 +36,7 @@ urlpatterns = [
     path('old-records/<int:pk>/', views.OldDetailView.as_view(), name='old_detail'),
     path('old-records/<int:pk>/update/', views.OldUpdateView.as_view(), name='old_update'),
     path('old-records/<int:pk>/delete/', views.OldDeleteView.as_view(), name='old_delete'),
+
+    # Balancika export
+    path('export/balancika/', views.export_balancika_view, name='balancika_export'),
 ]

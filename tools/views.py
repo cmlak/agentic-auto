@@ -1,6 +1,9 @@
 import os
 import tempfile
 import pandas as pd
+import calendar
+import io
+import re
 from collections import defaultdict
 from datetime import date, datetime
 from django.conf import settings
@@ -17,7 +20,8 @@ from django.db import transaction
 from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
-from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm, GLHistoricalFormSet, ClientSelectionForm, OldEntryForm
+from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
+GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
@@ -1293,3 +1297,153 @@ class OldDeleteView(LoginRequiredMixin, DeleteView):
         JournalEntry.objects.filter(reference_number=f"OLD-{self.object.id}").delete()
         messages.success(self.request, 'Record and associated Journal Entries deleted successfully!')
         return super().form_valid(form)
+
+############################
+
+# Export Balancika Sheets
+
+############################
+
+def clean_invoice_number(val):
+    s = str(val).strip()
+    if s.lower() in ['nan', 'none'] or s == '': 
+        return ''
+    if re.match(r'^-?\d+(\.\d+)?[eE][+\-]?\d+$', s):
+        try:
+            return '{:.0f}'.format(float(s))
+        except:
+            return s
+    return s.replace('.0', '')
+
+@login_required
+def export_balancika_view(request):
+    if request.method == 'POST':
+        form = BalancikaExportForm(request.POST)
+        if form.is_valid():
+            client = form.cleaned_data['client']
+            year = form.cleaned_data['year']
+            month = int(form.cleaned_data['month'])
+            entry_counter = form.cleaned_data['entry_no_start']
+
+            # Query the Purchase instances for the selected client, month, and year
+            purchases = Purchase.objects.filter(
+                client=client,
+                date__year=year,
+                date__month=month
+            ).order_by('date', 'id')
+
+            if not purchases.exists():
+                messages.warning(request, f"No purchases found for {client.name} in {month}/{year}.")
+                return render(request, 'tools/balancika_export.html', {'form': form})
+
+            # Calculate base month start and end dates
+            _, last_day = calendar.monthrange(year, month)
+            base_start_str = date(year, month, 1).strftime('%d-%b-%Y')
+            base_end_str = date(year, month, last_day).strftime('%d-%b-%Y')
+
+            sheet1_data = []
+            sheet2_data = []
+
+            for p in purchases:
+                entry_no = f"PIN{entry_counter:05d}"
+                entry_counter += 1
+
+                # Mappings from Django Model (Adjust field names if your model differs slightly)
+                original_acct_id = str(getattr(p, 'account_id', '')).strip()
+                original_vendor_id = str(p.vendor.vendor_id).strip() if p.vendor else ''
+                original_invoice = clean_invoice_number(getattr(p, 'invoice_no', ''))
+                description = str(getattr(p, 'description', '')).strip()
+                description_en = str(getattr(p, 'description_en', '')).strip()
+
+                # Date Formatting
+                if p.date:
+                    final_date = p.date.strftime('%d-%b-%Y')
+                    # Find the last day of the transaction's month
+                    _, p_last_day = calendar.monthrange(p.date.year, p.date.month)
+                    final_due_date = date(p.date.year, p.date.month, p_last_day).strftime('%d-%b-%Y')
+                else:
+                    final_date, final_due_date = base_start_str, base_end_str
+
+                # --- SHEET 1 POPULATION ---
+                sheet1_data.append({
+                    "Entry No": entry_no,
+                    "Date (dd-MMM-YYYY)": final_date,
+                    "Type": "Apply to GL Account",
+                    "Reference": original_invoice,
+                    "Remark": description_en if description_en else description,
+                    "Vendor ID": original_vendor_id,
+                    "Employee ID": "",
+                    "Class ID": "",
+                    "Due Date (dd-MMM-YYYY)": final_due_date,
+                    "Purchase Order": "",
+                    "Currency ID": "USD",
+                    "Exchange Rate": 1
+                })
+
+                # --- SHEET 2 SCENARIO LOGIC ---
+                # Safely get numeric amounts from the Django model
+                local_vat_amt = float(getattr(p, 'vat_usd', 0.0) or 0.0)
+                total_amt = float(getattr(p, 'total_usd', 0.0) or 0.0)
+                
+                # If your model has specific non-vat fields, use them. Otherwise, calculate.
+                local_purchase_amt = float(getattr(p, 'local_purchase_usd', total_amt - local_vat_amt) or 0.0)
+                non_vat_amt = float(getattr(p, 'non_vat_usd', 0.0) or 0.0) 
+
+                desc_lower = description.lower()
+                display_desc = description_en if description_en else description
+                rows_to_add = []
+
+                # RENTAL SCENARIO
+                if 'rental' in desc_lower:
+                    wht_val = total_amt * 0.10
+                    rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
+                    rows_to_add.append({"Desc": "10% WHT on Rental", "Cost": -wht_val, "Total": -wht_val, "Line": 2, "VAT": "None", "AcctID": "23500"})
+                    rows_to_add.append({"Desc": "10% WHT on Rental Expense", "Cost": wht_val, "Total": wht_val, "Line": 3, "VAT": "None", "AcctID": "65000"})
+
+                # NSSF SCENARIO
+                elif ("nssf" in desc_lower or "occupational risk" in desc_lower) and "pension" in desc_lower:
+                    parts = [pt.strip() for pt in re.split(r'\.\s+', description) if pt.strip()]
+                    for idx, pt in enumerate(parts[:3]):
+                        m = re.search(r"(?:--|-)\s*([\d,]+\.?\d*)", pt)
+                        amt = float(m.group(1).replace(',', '')) if m else 0.0
+                        rows_to_add.append({"Desc": pt, "Cost": amt, "Total": amt, "Line": idx+1, "VAT": "None", "AcctID": original_acct_id})
+
+                # SCENARIOS B/D/A
+                elif non_vat_amt != 0 and local_vat_amt != 0:
+                    rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
+                    rows_to_add.append({"Desc": display_desc, "Cost": non_vat_amt, "Total": non_vat_amt, "Line": 2, "VAT": "None", "AcctID": original_acct_id})
+                elif local_vat_amt != 0:
+                    rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
+                else:
+                    rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
+
+                for r in rows_to_add:
+                    f_acct = str(r["AcctID"])
+                    sheet2_data.append({
+                        "Entry No": entry_no, "Description": r["Desc"],
+                        "Account ID": f_acct,
+                        "Item ID": "", "Quantity": 1, "Unit Cost": r["Cost"], "Total Cost": r["Cost"],
+                        "Grand Total": r["Total"], "Purchase Order Line": r["Line"], "VAT Input": r["VAT"]
+                    })
+
+            # --- GENERATE EXCEL FILE IN MEMORY ---
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                pd.DataFrame(sheet1_data).to_excel(writer, sheet_name='Sheet1', index=False)
+                pd.DataFrame(sheet2_data).to_excel(writer, sheet_name='Sheet2', index=False)
+            
+            # Rewind the buffer
+            output.seek(0)
+
+            # --- RETURN AS DOWNLOADABLE ATTACHMENT ---
+            filename = f"Balancika_Export_{client.name.replace(' ', '_')}_{year}_{month:02d}.xlsx"
+            response = HttpResponse(
+                output.read(), 
+                content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            )
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            return response
+    else:
+        form = BalancikaExportForm()
+
+    return render(request, 'tools/balancika_export.html', {'form': form})

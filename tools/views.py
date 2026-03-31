@@ -373,14 +373,19 @@ def download_invoice_report(request):
 @staff_member_required
 def ai_cost_dashboard(request):
     """Dashboard to review AI processing costs."""
-    cost_logs = AICostLog.objects.all().order_by('-date')
+    cost_logs_list = AICostLog.objects.all().order_by('-date')
+
+    paginator = Paginator(cost_logs_list, 20)  # 20 items per page
+    page_number = request.GET.get('page')
+    page_obj = paginator.get_page(page_number)
+
     totals = AICostLog.objects.aggregate(
         total_flash=Sum('flash_cost'), 
         total_pro=Sum('pro_cost'), 
         grand_total=Sum('total_cost'), 
         total_pages=Sum('total_pages')
     )
-    return render(request, 'cost_dashboard.html', {'cost_logs': cost_logs, 'totals': totals})
+    return render(request, 'cost_dashboard.html', {'cost_logs': page_obj, 'totals': totals, 'page_obj': page_obj})
 
 @login_required(login_url="register:login")
 def manual_invoice_entry_view(request):
@@ -851,7 +856,7 @@ def PurchaseListView(request):
                 purchases = Purchase.objects.none()
         
         client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id)
+        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
     else:
         purchases = Purchase.objects.none()
         client_form = ClientSelectionForm()

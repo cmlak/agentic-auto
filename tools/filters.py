@@ -6,7 +6,7 @@ from .models import Purchase, Vendor # Adjust imports based on your app structur
 
 class PurchaseFilter(django_filters.FilterSet):
     vendor = django_filters.ModelChoiceFilter(
-        queryset=Vendor.objects.all(), # We will dynamically limit this in the view
+        queryset=Vendor.objects.all().order_by('vendor_id'), # We will dynamically limit this in the view
         label='Vendor',
         empty_label='All Vendors',
         widget=forms.Select(attrs={'class': 'form-select'})

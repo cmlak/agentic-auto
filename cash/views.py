@@ -1118,7 +1118,7 @@ def CashListView(request):
             except Profile.DoesNotExist:
                 cash_qs = Cash.objects.none()
         client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id)
+        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
     else:
         cash_qs = Cash.objects.none()
         client_form = ClientSelectionForm()

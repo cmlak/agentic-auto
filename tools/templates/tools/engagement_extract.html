@@ -1,0 +1,44 @@
+{% extends 'base_4_kpi.html' %} 
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card shadow-sm border-primary">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">Upload Engagement Letters / Proposals</h4>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">
+                        Select one or multiple PDF proposals. The system will use Gemini AI to extract the <strong>Date, Proposal Number, Company Name, Services, and Fees</strong>, and automatically append them to the Masterlist Excel file.
+                    </p>
+
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+
+                    <form method="POST" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        
+                        <div class="mb-4">
+                            {{ form.pdf_files.label_tag }}
+                            {{ form.pdf_files }}
+                        </div>
+                        
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-success btn-lg">
+                                <i class="fas fa-magic"></i> Parse and Update Excel
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

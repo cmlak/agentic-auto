@@ -494,3 +494,19 @@ class BalancikaExportForm(forms.Form):
         help_text="e.g., 1 will generate PIN00001",
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
+
+class MultiplePDFUploadForm(forms.Form):
+    # The widget attrs {'multiple': True} allows selecting multiple files in the browser
+    pdf_files = forms.FileField(
+        widget=forms.FileInput, # Attributes will be set in __init__
+        label="Select Proposal PDFs"
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Set widget attributes here to avoid potential module-level initialization errors
+        self.fields['pdf_files'].widget.attrs.update({
+            'multiple': True,
+            'class': 'form-control',
+            'accept': '.pdf'
+        })

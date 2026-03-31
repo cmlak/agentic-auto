@@ -168,13 +168,10 @@
                         <a class="nav-link" href="{% url 'main' %}">Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'tools:purchase_list' %}">Purchase</a>
+                        <a class="nav-link" href="{% url 'tools:gl_migration_upload' %}">Upload Historical Data</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'cash:bank_list' %}">Bank</a>
-                    </li>
-                    <li class="nav-item">
-                        <a class="nav-link" href="{% url 'account:profit_and_loss' %}">Report</a>
+                        <a class="nav-link" href="">Download Processed Data</a>
                     </li>
 
                     <li class="nav-item dropdown">
@@ -182,8 +179,8 @@
                           More
                         </a>
                         <div class="dropdown-menu" aria-labelledby="navbarDropdown">
-                            <a class="dropdown-item" href="{% url 'tools:balancika_export' %}">Tools</a>
-                            <a class="dropdown-item" href="{% url 'tools:gl_migration_upload' %}">Data Migration</a>
+                            <a class="dropdown-item" href="">Tools</a>
+                            <a class="dropdown-item" href="">Tools</a>
                         </div>
                     </li>
                 </ul>

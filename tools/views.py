@@ -5,6 +5,7 @@ import calendar
 import io
 import re
 from collections import defaultdict
+import openpyxl
 from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
@@ -21,8 +22,8 @@ from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
-GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm
-from .processors import GeminiInvoiceProcessor, GLMigrationProcessor
+GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm, MultiplePDFUploadForm
+from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -55,7 +56,7 @@ def invoice_ai_upload_view(request):
                     pass
             if not has_access:
                 messages.error(request, "You do not have permission to upload data for this client.")
-                return redirect('tools:invoice_upload')
+                return redirect('main')
 
             uploaded_pdf = form.cleaned_data['invoice_pdf']
             batch_name = form.cleaned_data['batch_name']
@@ -179,7 +180,8 @@ def review_invoices(request):
         except Profile.DoesNotExist:
             pass
     if not has_access:
-        return HttpResponseForbidden("You do not have permission to review this client's data.")
+        messages.error(request, "You do not have permission to review this client's data.")
+        return redirect('main')
     
     # --- VENDOR CHOICES ---
     # Isolate vendors exclusively to this client
@@ -370,9 +372,13 @@ def download_invoice_report(request):
     messages.error(request, "The report file has expired or could not be found.")
     return redirect('tools:invoice_upload')
 
-@staff_member_required
+@login_required(login_url="register:login")
 def ai_cost_dashboard(request):
     """Dashboard to review AI processing costs."""
+    if not (request.user.is_staff or request.user.is_superuser):
+        messages.error(request, "You do not have permission to view the AI cost dashboard.")
+        return redirect('main')
+
     cost_logs_list = AICostLog.objects.all().order_by('-date')
 
     paginator = Paginator(cost_logs_list, 20)  # 20 items per page
@@ -414,8 +420,8 @@ def manual_invoice_entry_view(request):
         if not has_access:
             messages.error(request, "You do not have permission to manage this client.")
             request.session.pop('active_client_id', None)
-            client_id = None
-            
+            return redirect('main')
+
     if not client_id:
         form = ClientSelectionForm()
         messages.error(request, "Please select an active client.")
@@ -526,7 +532,8 @@ def export_purchase_invoices(request, client_id):
         except Profile.DoesNotExist:
             pass
     if not has_access:
-        return HttpResponseForbidden("You do not have permission to export this client's data.")
+        messages.error(request, "You do not have permission to export this client's data.")
+        return redirect('main')
 
     # Base Queryset: Ensure sequential order based on entry processing instead of randomly descending
     queryset = Purchase.objects.filter(client_id=client.id).order_by('id')
@@ -596,7 +603,7 @@ def gl_migration_upload_view(request):
                     pass
             if not has_access:
                 messages.error(request, "You do not have permission to migrate data for this client.")
-                return redirect('tools:gl_migration_upload')
+                return redirect('main')
                 
             uploaded_file = form.cleaned_data['gl_file']
             batch_name = form.cleaned_data['batch_name']
@@ -673,7 +680,8 @@ def gl_review_view(request):
         except Exception:
             pass
     if not has_access:
-        return HttpResponseForbidden("You do not have permission to review this client's data.")
+        messages.error(request, "You do not have permission to review this client's data.")
+        return redirect('main')
         
     selected_client = Client.objects.get(id=client_id)
     
@@ -850,10 +858,11 @@ def PurchaseListView(request):
                 if profile.clients.filter(id=client_id).exists():
                     purchases = base_queryset
                 else:
-                    purchases = Purchase.objects.none()
                     messages.error(request, "You do not have permission to view purchases for this client.")
+                    return redirect('main')
             except Profile.DoesNotExist:
-                purchases = Purchase.objects.none()
+                messages.error(request, "You do not have permission to view purchases for this client.")
+                return redirect('main')
         
         client_form = ClientSelectionForm(initial={'client': client_id})
         vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
@@ -904,7 +913,8 @@ class PurchaseDetailView(LoginRequiredMixin, DetailView):
                 pass
         
         if not is_authorized:
-            return HttpResponseForbidden(render(request, 'messages/403_forbidden.html', {'message': "You do not have permission to view this purchase."}))
+            messages.error(request, "You do not have permission to view this purchase.")
+            return redirect('main')
 
         return super().dispatch(request, *args, **kwargs)
 
@@ -949,7 +959,8 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
                 pass
         
         if not is_authorized:
-            return HttpResponseForbidden(render(request, 'messages/403_forbidden.html', {'message': "You do not have permission to update this purchase."}))
+            messages.error(request, "You do not have permission to update this purchase.")
+            return redirect('main')
 
         return super().dispatch(request, *args, **kwargs)
 
@@ -1055,7 +1066,8 @@ class PurchaseDeleteView(LoginRequiredMixin, DeleteView):
                 pass
         
         if not is_authorized:
-            return HttpResponseForbidden(render(request, 'messages/403_forbidden.html', {'message': "You do not have permission to delete this purchase."}))
+            messages.error(request, "You do not have permission to delete this purchase.")
+            return redirect('main')
 
         return super().dispatch(request, *args, **kwargs)
 
@@ -1072,7 +1084,8 @@ def export_purchase_csv(request):
 
     # Failsafe if accessed without an active client
     if not client_id:
-        return HttpResponse("No active client selected.", status=400)
+        messages.error(request, "No active client selected.")
+        return redirect('main')
 
     # Base filtering by client
     base_queryset = Purchase.objects.filter(client_id=client_id)
@@ -1086,9 +1099,11 @@ def export_purchase_csv(request):
             if profile.clients.filter(id=client_id).exists():
                 purchases = base_queryset
             else:
-                purchases = Purchase.objects.none()
+                messages.error(request, "You do not have permission to export data for this client.")
+                return redirect('main')
         except Profile.DoesNotExist:
-            purchases = Purchase.objects.none()
+            messages.error(request, "You do not have permission to export data for this client.")
+            return redirect('main')
 
     purchases = purchases.order_by('-date')
 
@@ -1137,10 +1152,11 @@ def OldListView(request):
                 if profile.clients.filter(id=client_id).exists():
                     old_records = base_queryset
                 else:
-                    old_records = Old.objects.none()
                     messages.error(request, "You do not have permission to view records for this client.")
+                    return redirect('main')
             except Profile.DoesNotExist:
-                old_records = Old.objects.none()
+                messages.error(request, "You do not have permission to view records for this client.")
+                return redirect('main')
         
         client_form = ClientSelectionForm(initial={'client': client_id})
     else:
@@ -1188,8 +1204,8 @@ def manual_old_entry_view(request):
         if not has_access:
             messages.error(request, "You do not have permission to manage this client.")
             request.session.pop('active_client_id', None)
-            client_id = None
-            
+            return redirect('main')
+
     if not client_id:
         form = ClientSelectionForm()
         messages.error(request, "Please select an active client.")
@@ -1251,7 +1267,8 @@ class OldDetailView(LoginRequiredMixin, DetailView):
             except Profile.DoesNotExist:
                 pass
         if not is_authorized:
-            return HttpResponseForbidden(render(request, 'messages/403_forbidden.html', {'message': "Permission denied."}))
+            messages.error(request, "Permission denied.")
+            return redirect('main')
         return super().dispatch(request, *args, **kwargs)
 
     def get_context_data(self, **kwargs):
@@ -1268,6 +1285,22 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
     form_class = OldEntryForm 
     template_name = 'tools/old_form.html'
     
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        old_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=old_record.client_id).exists():
+                    is_authorized = True
+            except Profile.DoesNotExist:
+                pass
+        if not is_authorized:
+            messages.error(request, "You do not have permission to update this record.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
         db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=self.object.client_id).order_by('account_id')]
@@ -1297,6 +1330,22 @@ class OldDeleteView(LoginRequiredMixin, DeleteView):
     model = Old
     template_name = 'tools/old_confirm_delete.html'
     success_url = reverse_lazy('tools:old_list')
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        old_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=old_record.client_id).exists():
+                    is_authorized = True
+            except Profile.DoesNotExist:
+                pass
+        if not is_authorized:
+            messages.error(request, "You do not have permission to delete this record.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
         JournalEntry.objects.filter(reference_number=f"OLD-{self.object.id}").delete()
@@ -1329,6 +1378,18 @@ def export_balancika_view(request):
             year = form.cleaned_data['year']
             month = int(form.cleaned_data['month'])
             entry_counter = form.cleaned_data['entry_no_start']
+            
+            user = request.user
+            has_access = user.is_staff or user.is_superuser
+            if not has_access:
+                try:
+                    if user.profile.clients.filter(id=client.id).exists():
+                        has_access = True
+                except Profile.DoesNotExist:
+                    pass
+            if not has_access:
+                messages.error(request, "You do not have permission to export data for this client.")
+                return redirect('main')
 
             # Query the Purchase instances for the selected client, month, and year
             purchases = Purchase.objects.filter(
@@ -1450,5 +1511,140 @@ def export_balancika_view(request):
             return response
     else:
         form = BalancikaExportForm()
+        user = request.user
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Profile.DoesNotExist:
+                form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'tools/balancika_export.html', {'form': form})
+
+### Update Engagement Letter
+
+# ====================================================================
+# CONFIGURATION
+# ====================================================================
+
+
+@login_required
+def upload_proposals_view(request):
+
+    # CONFIGURATION - Use settings.py for portability, with a fallback to the original hardcoded path.
+    EXCEL_FILE = getattr(settings, 'PROPOSAL_EXCEL_FILE_PATH', r'C:\bakertilly\BakerTilly\CCKT\EL\EL_summary_draft.xlsx')
+    SHEET_NAME = getattr(settings, 'PROPOSAL_EXCEL_SHEET_NAME', 'Masterlist')
+
+    # If the setting is not configured, issue a non-blocking warning to the user.
+    if not hasattr(settings, 'PROPOSAL_EXCEL_FILE_PATH'):
+        messages.warning(request, "System Warning: Proposal export path is not configured in settings.py. Using a default path.")
+
+    # Column mapping for improved readability and maintainability
+    COLUMN_MAP = {
+        'NO': 2,
+        'PROPOSAL_DATE': 12,
+        'PROPOSAL_NO': 13,
+        'COMPANY_NAME': 14,
+        'SERVICE': 15,
+        'FEE': 16,
+    }
+    
+    if request.method == 'POST':
+        form = MultiplePDFUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            # Retrieve the list of uploaded PDF files
+            files = request.FILES.getlist('pdf_files')
+            
+            # 1. Initialize the AI Processor
+            # Make sure GEMINI_API_KEY_2 is set in your environment variables
+            api_key = os.getenv("GEMINI_API_KEY_2")
+            if not api_key:
+                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing from environment variables.")
+                return render(request, 'tools/engagement_extract.html', {'form': form})
+                
+            processor = ProposalPDFProcessor(api_key=api_key)
+
+            # 2. Load the Excel Workbook
+            try:
+                wb = openpyxl.load_workbook(EXCEL_FILE)
+                # Ensure we are writing to the correct sheet, fallback to active if missing
+                ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
+            except FileNotFoundError:
+                messages.error(request, f"❌ Excel file not found at the expected location:\n{EXCEL_FILE}")
+                return render(request, 'tools/el_upload.html', {'form': form})
+            except PermissionError:
+                messages.error(request, "❌ Permission Denied: The Excel file is currently open in another program. Please close it and try again.")
+                return render(request, 'tools/el_upload.html', {'form': form})
+
+            # 3. Find the exact starting row based on Column B ("No.")
+            last_no = 0
+            start_row = ws.max_row + 1
+            
+            # Scan from the bottom up to find the last valid entry number
+            for r in range(ws.max_row, 1, -1):
+                val = ws.cell(row=r, column=2).value
+                if isinstance(val, (int, float)):
+                    last_no = int(val)
+                    start_row = r + 1
+                    break
+
+            # If the sheet is empty or has no numbers, fallback to the requested starting point
+            if last_no == 0:
+                last_no = 80  
+                start_row = 10 # Assuming headers are at the top, it will write on row 10
+
+            current_row = start_row
+            current_no = last_no + 1
+
+            # 4. Loop through uploaded PDFs, extract data, and write to Excel
+            success_count = 0
+            total_files = len(files)
+            for pdf_file in files:
+                try:
+                    # Read the file directly from memory as bytes (No saving to hard drive)
+                    pdf_bytes = pdf_file.read()
+                    
+                    # Pass bytes to the processor (returns our guaranteed dictionary)
+                    data = processor.extract_proposal_data(pdf_bytes)
+
+                    # Write data using the readable column map
+                    ws.cell(row=current_row, column=COLUMN_MAP['NO']).value = current_no
+                    ws.cell(row=current_row, column=COLUMN_MAP['PROPOSAL_DATE']).value = data.get('proposal_date', '')
+                    ws.cell(row=current_row, column=COLUMN_MAP['PROPOSAL_NO']).value = data.get('proposal_number', '')
+                    ws.cell(row=current_row, column=COLUMN_MAP['COMPANY_NAME']).value = data.get('company_name', '')
+                    ws.cell(row=current_row, column=COLUMN_MAP['SERVICE']).value = data.get('service_proposed', '')
+                    ws.cell(row=current_row, column=COLUMN_MAP['FEE']).value = data.get('fee_detail', '')
+
+                    current_row += 1
+                    current_no += 1
+                    success_count += 1
+                    
+                except Exception as e:
+                    # If one file fails, log it but continue processing the rest
+                    print(f"Failed to process {pdf_file.name}: {str(e)}")
+                    messages.warning(request, f"⚠️ Failed to process {pdf_file.name}. Moving to next file.")
+
+            # 5. Save the Workbook
+            try:
+                wb.save(EXCEL_FILE)
+                messages.success(request, f"🎉 Successfully analyzed {success_count} of {total_files} proposal(s) and updated the Masterlist!")
+
+                # 6. Log AI Cost for auditing and consistency
+                costs = processor.cost_stats
+                total_cost = costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+                if total_cost > 0:
+                    AICostLog.objects.create(
+                        file_name=f"{total_files} proposals batch",
+                        total_pages=total_files, # Treat each PDF as a "page" for logging
+                        flash_cost=costs.get('flash_cost', 0),
+                        pro_cost=costs.get('pro_cost', 0),
+                        total_cost=total_cost
+                    )
+
+            except Exception as e:
+                messages.error(request, f"❌ Failed to save the Excel file. Please ensure it is not open in Excel. Error: {str(e)}")
+            
+    else:
+        # GET request - just render the empty form
+        form = MultiplePDFUploadForm()
+
+    return render(request, 'tools/engagement_extract.html', {'form': form})

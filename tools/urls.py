@@ -39,4 +39,7 @@ urlpatterns = [
 
     # Balancika export
     path('export/balancika/', views.export_balancika_view, name='balancika_export'),
+
+    # Engagement Letter
+    path('proposals/upload/', views.upload_proposals_view, name='upload_proposals'),
 ]

@@ -1,5 +1,6 @@
 import os
 import time
+import json
 import threading
 import re
 import difflib
@@ -408,3 +409,110 @@ class GLMigrationProcessor:
         print(f"💰 Total Staging AI Cost: ${total_cost:.5f}")
         
         return results, self.cost_stats
+
+
+# --------------------------------------------------------------------
+# Engagement Letter Processor
+# 1. DEFINE THE STRICT DATA SCHEMA (Pydantic)
+# --------------------------------------------------------------------
+class ProposalData(BaseModel):
+    proposal_date: str = Field(description="The date of the proposal. E.g., '11-March-26' or '11 March 2026'.")
+    proposal_number: str = Field(description="The unique proposal code or number. E.g., 'Proposal code: AC-2026-0014'.")
+    company_name: str = Field(description="The exact name of the client company receiving the proposal.")
+    service_proposed: str = Field(description="A numbered list of the professional services offered, separated by newlines.")
+    fee_detail: str = Field(description="A numbered list of the proposed fees corresponding exactly to the services, separated by newlines.")
+
+# --------------------------------------------------------------------
+# 2. THE PROCESSOR CLASS
+# --------------------------------------------------------------------
+class ProposalPDFProcessor:
+    def __init__(self, api_key: str):
+        """Initialize the Gemini client using the new unified SDK."""
+        self.client = genai.Client(api_key=api_key)
+        # Using gemini-2.5-flash as it excels at fast, structured document extraction
+        self.model_name = 'gemini-2.5-flash'
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def _calculate_cost(self, usage):
+        """
+        Calculates the cost of a Gemini API call.
+        Rates are based on gemini-3-flash-preview as a reasonable proxy.
+        """
+        # Input: $0.10 / 1M tokens, Output: $0.40 / 1M tokens
+        if usage:
+            return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
+        return 0.0
+
+    def extract_proposal_data(self, pdf_bytes: bytes) -> dict:
+        """
+        Reads PDF bytes, prompts Gemini with detailed examples, 
+        and returns a strictly formatted dictionary.
+        """
+        document_part = types.Part.from_bytes(
+            data=pdf_bytes,
+            mime_type="application/pdf"
+        )
+
+        # --------------------------------------------------------------------
+        # THE ENHANCED PROMPT (Few-Shot Prompting)
+        # --------------------------------------------------------------------
+        prompt = """
+        You are an expert financial auditor, administrative assistant, and data extractor. 
+        Your task is to carefully read the attached Engagement Letter / Client Service Proposal 
+        and extract key business information into a highly structured format.
+
+        CRITICAL INSTRUCTIONS:
+        1. Accuracy: Extract the text exactly as it appears in the document. Do not summarize or paraphrase services.
+        2. Alignment: Ensure that the numbering in the 'service_proposed' perfectly matches the numbering in the 'fee_detail'.
+        3. Line Breaks: You MUST separate different services and different fees using newlines (\n). Do not combine them into a single paragraph.
+        4. Missing Data: If a piece of information is missing, return an empty string ("").
+
+        --- EXAMPLES OF EXPECTED FORMATTING ---
+        
+        Example 1:
+        - proposal_date: "11-March-26"
+        - proposal_number: "Proposal code: AC-2026-0014"
+        - company_name: "SUREWIN WORLDWIDE LIMITED (CAMBODIA) CO., LTD."
+        - service_proposed: "1. Preparation of request to open the ACAR e-filing system for submission of Unaudited Financial Statements for FY2024\n2. Fulfilling Accounting and Auditing Regulator’s (ACAR’s) Requirement for FY2024"
+        - fee_detail: "1. $550/year\n2. $660/year"
+
+        Example 2:
+        - proposal_date: "25th March 2026"
+        - proposal_number: "Proposal code: AC-2026-0013"
+        - company_name: "SUNWAY SOTHEAROS CO., LTD."
+        - service_proposed: "1. Monthly Bookkeeping service\n2. ACAR"
+        - fee_detail: "1. $440 (set up)\n$330\n2. $440"
+
+        Now, read the attached document and extract the required fields using the exact same formatting principles shown above.
+        """
+
+        # Enforce the Pydantic schema so we are guaranteed a perfect JSON structure
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=ProposalData,
+            temperature=0.0 # Strict accuracy, zero creativity or hallucination
+        )
+
+        try:
+            # Send to Gemini
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, document_part],
+                config=config
+            )
+            
+            # Cost Calculation
+            cost = self._calculate_cost(response.usage_metadata)
+            self.cost_stats["flash_cost"] += cost # It's a flash model
+            
+            # The response.text is guaranteed to be a JSON string matching our schema
+            return json.loads(response.text)
+            
+        except Exception as e:
+            print(f"AI Extraction Error: {str(e)}")
+            # Return empty defaults if the AI fails, preventing the view from crashing
+            return {
+                "proposal_date": "", "proposal_number": "", 
+                "company_name": "ERROR PARSING FILE", 
+                "service_proposed": "", "fee_detail": ""
+            }

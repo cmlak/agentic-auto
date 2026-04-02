@@ -1520,9 +1520,10 @@ def export_balancika_view(request):
 
     return render(request, 'tools/balancika_export.html', {'form': form})
 
-### Update Engagement Letter
+
 
 # ====================================================================
+# UPDATE ENGAGEMENT LETTER
 # CONFIGURATION
 # ====================================================================
 
@@ -1530,13 +1531,7 @@ def export_balancika_view(request):
 @login_required
 def upload_proposals_view(request):
 
-    # CONFIGURATION - Use settings.py for portability, with a fallback to the original hardcoded path.
-    EXCEL_FILE = getattr(settings, 'PROPOSAL_EXCEL_FILE_PATH', r'C:\bakertilly\BakerTilly\CCKT\EL\EL_summary_draft.xlsx')
     SHEET_NAME = getattr(settings, 'PROPOSAL_EXCEL_SHEET_NAME', 'Masterlist')
-
-    # If the setting is not configured, issue a non-blocking warning to the user.
-    if not hasattr(settings, 'PROPOSAL_EXCEL_FILE_PATH'):
-        messages.warning(request, "System Warning: Proposal export path is not configured in settings.py. Using a default path.")
 
     # Column mapping for improved readability and maintainability
     COLUMN_MAP = {
@@ -1553,6 +1548,7 @@ def upload_proposals_view(request):
         if form.is_valid():
             # Retrieve the list of uploaded PDF files
             files = request.FILES.getlist('pdf_files')
+            excel_file = form.cleaned_data.get('excel_file')
             
             # 1. Initialize the AI Processor
             # Make sure GEMINI_API_KEY_2 is set in your environment variables
@@ -1565,19 +1561,17 @@ def upload_proposals_view(request):
 
             # 2. Load the Excel Workbook
             try:
-                wb = openpyxl.load_workbook(EXCEL_FILE)
+                wb = openpyxl.load_workbook(excel_file)
                 # Ensure we are writing to the correct sheet, fallback to active if missing
                 ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
-            except FileNotFoundError:
-                messages.error(request, f"❌ Excel file not found at the expected location:\n{EXCEL_FILE}")
-                return render(request, 'tools/el_upload.html', {'form': form})
-            except PermissionError:
-                messages.error(request, "❌ Permission Denied: The Excel file is currently open in another program. Please close it and try again.")
-                return render(request, 'tools/el_upload.html', {'form': form})
+            except Exception as e:
+                messages.error(request, f"❌ Failed to load the uploaded Excel file: {str(e)}")
+                return render(request, 'tools/engagement_extract.html', {'form': form})
 
             # 3. Find the exact starting row based on Column B ("No.")
             last_no = 0
             start_row = ws.max_row + 1
+            last_proposal_no = ""
             
             # Scan from the bottom up to find the last valid entry number
             for r in range(ws.max_row, 1, -1):
@@ -1585,6 +1579,11 @@ def upload_proposals_view(request):
                 if isinstance(val, (int, float)):
                     last_no = int(val)
                     start_row = r + 1
+                    
+                    # Extract the last proposal number from the exact same row
+                    p_val = ws.cell(row=r, column=COLUMN_MAP['PROPOSAL_NO']).value
+                    if p_val and str(p_val).strip():
+                        last_proposal_no = str(p_val).strip()
                     break
 
             # If the sheet is empty or has no numbers, fallback to the requested starting point
@@ -1598,21 +1597,33 @@ def upload_proposals_view(request):
             # 4. Loop through uploaded PDFs, extract data, and write to Excel
             success_count = 0
             total_files = len(files)
-            for pdf_file in files:
+            print(f"\n{'='*50}\n🚀 STARTING BATCH PROPOSAL EXTRACTION ({total_files} files)\n{'='*50}")
+            
+            for i, pdf_file in enumerate(files, 1):
                 try:
+                    print(f"⏳ [{i}/{total_files}] Processing '{pdf_file.name}'...")
                     # Read the file directly from memory as bytes (No saving to hard drive)
                     pdf_bytes = pdf_file.read()
                     
                     # Pass bytes to the processor (returns our guaranteed dictionary)
-                    data = processor.extract_proposal_data(pdf_bytes)
+                    data = processor.extract_proposal_data(pdf_bytes, last_proposal_number=last_proposal_no)
 
                     # Write data using the readable column map
                     ws.cell(row=current_row, column=COLUMN_MAP['NO']).value = current_no
                     ws.cell(row=current_row, column=COLUMN_MAP['PROPOSAL_DATE']).value = data.get('proposal_date', '')
-                    ws.cell(row=current_row, column=COLUMN_MAP['PROPOSAL_NO']).value = data.get('proposal_number', '')
+                    extracted_proposal_no = data.get('proposal_number', '')
+                    ws.cell(row=current_row, column=COLUMN_MAP['PROPOSAL_NO']).value = extracted_proposal_no
                     ws.cell(row=current_row, column=COLUMN_MAP['COMPANY_NAME']).value = data.get('company_name', '')
                     ws.cell(row=current_row, column=COLUMN_MAP['SERVICE']).value = data.get('service_proposed', '')
                     ws.cell(row=current_row, column=COLUMN_MAP['FEE']).value = data.get('fee_detail', '')
+
+                    print(f"   ✅ Extracted: {data.get('company_name')} | No: {extracted_proposal_no}")
+                    current_cost = processor.cost_stats.get('flash_cost', 0) + processor.cost_stats.get('pro_cost', 0)
+                    print(f"   💲 Acc. Cost: ${current_cost:.5f}")
+
+                    # Update sequence trackers for the next iteration in the loop
+                    if extracted_proposal_no:
+                        last_proposal_no = extracted_proposal_no
 
                     current_row += 1
                     current_no += 1
@@ -1620,17 +1631,18 @@ def upload_proposals_view(request):
                     
                 except Exception as e:
                     # If one file fails, log it but continue processing the rest
-                    print(f"Failed to process {pdf_file.name}: {str(e)}")
+                    print(f"   ❌ Failed to process {pdf_file.name}: {str(e)}")
                     messages.warning(request, f"⚠️ Failed to process {pdf_file.name}. Moving to next file.")
 
-            # 5. Save the Workbook
+            # 5. Return the Workbook as an HTTP response
             try:
-                wb.save(EXCEL_FILE)
-                messages.success(request, f"🎉 Successfully analyzed {success_count} of {total_files} proposal(s) and updated the Masterlist!")
-
                 # 6. Log AI Cost for auditing and consistency
                 costs = processor.cost_stats
                 total_cost = costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+                
+                print(f"\n🎉 BATCH COMPLETE! Successfully processed {success_count}/{total_files} files.")
+                print(f"💰 Total AI Cost for this batch: ${total_cost:.5f}\n{'='*50}\n")
+
                 if total_cost > 0:
                     AICostLog.objects.create(
                         file_name=f"{total_files} proposals batch",
@@ -1639,9 +1651,24 @@ def upload_proposals_view(request):
                         pro_cost=costs.get('pro_cost', 0),
                         total_cost=total_cost
                     )
+                
+                output = io.BytesIO()
+                wb.save(output)
+                output.seek(0)
+                
+                filename = f"Updated_Masterlist_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                response = HttpResponse(
+                    output.read(), 
+                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                
+                # Set a cookie to signal the frontend JavaScript that the file is ready
+                response.set_cookie('download_complete', 'true', path='/', max_age=60)
+                return response
 
             except Exception as e:
-                messages.error(request, f"❌ Failed to save the Excel file. Please ensure it is not open in Excel. Error: {str(e)}")
+                messages.error(request, f"❌ Failed to generate the Excel file. Error: {str(e)}")
             
     else:
         # GET request - just render the empty form

@@ -496,6 +496,10 @@ class BalancikaExportForm(forms.Form):
     )
 
 class MultiplePDFUploadForm(forms.Form):
+    excel_file = forms.FileField(
+        label="Upload Masterlist Excel File",
+        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.xlsx, .xls'})
+    )
     # The widget attrs {'multiple': True} allows selecting multiple files in the browser
     pdf_files = forms.FileField(
         widget=forms.FileInput, # Attributes will be set in __init__

@@ -410,17 +410,16 @@ class GLMigrationProcessor:
         
         return results, self.cost_stats
 
-
 # --------------------------------------------------------------------
-# Engagement Letter Processor
+# ENGAGEMENT LETTER PROCESSOR
 # 1. DEFINE THE STRICT DATA SCHEMA (Pydantic)
 # --------------------------------------------------------------------
 class ProposalData(BaseModel):
-    proposal_date: str = Field(description="The date of the proposal. E.g., '11-March-26' or '11 March 2026'.")
-    proposal_number: str = Field(description="The unique proposal code or number. E.g., 'Proposal code: AC-2026-0014'.")
-    company_name: str = Field(description="The exact name of the client company receiving the proposal.")
-    service_proposed: str = Field(description="A numbered list of the professional services offered, separated by newlines.")
-    fee_detail: str = Field(description="A numbered list of the proposed fees corresponding exactly to the services, separated by newlines.")
+    proposal_date: str = Field(description="The date of the proposal strictly formatted as 'DD-MMM-YY'. E.g., '21-Mar-26'.")
+    proposal_number: str = Field(description="The unique proposal code ONLY. Remove 'Proposal code:'. E.g., 'AC-2026-0014'.")
+    company_name: str = Field(description="The exact name of the client company receiving the proposal in English.")
+    service_proposed: str = Field(description="A numbered list of ALL professional services and reimbursements offered in English, separated by newlines.")
+    fee_detail: str = Field(description="A numbered list of the proposed fees. Replace 'USD' with '$' and 'per' with '/'. E.g., '$75/year'. Must correspond exactly to the services, separated by newlines.")
 
 # --------------------------------------------------------------------
 # 2. THE PROCESSOR CLASS
@@ -443,7 +442,7 @@ class ProposalPDFProcessor:
             return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
         return 0.0
 
-    def extract_proposal_data(self, pdf_bytes: bytes) -> dict:
+    def extract_proposal_data(self, pdf_bytes: bytes, last_proposal_number: str = None) -> dict:
         """
         Reads PDF bytes, prompts Gemini with detailed examples, 
         and returns a strictly formatted dictionary.
@@ -454,34 +453,56 @@ class ProposalPDFProcessor:
         )
 
         # --------------------------------------------------------------------
-        # THE ENHANCED PROMPT (Few-Shot Prompting)
+        # THE ENHANCED PROMPT (Few-Shot Prompting with Strict Formatting Rules)
         # --------------------------------------------------------------------
-        prompt = """
+        
+        # Deterministically calculate the next proposal number in Python
+        next_proposal_number = None
+        if last_proposal_number:
+            match = re.search(r'(\d+)$', str(last_proposal_number).strip())
+            if match:
+                suffix = match.group(1)
+                next_num = int(suffix) + 1
+                next_proposal_number = str(last_proposal_number)[:match.start()] + f"{next_num:0{len(suffix)}d}"
+            else:
+                next_proposal_number = f"{str(last_proposal_number).strip()}-1"
+
+        if next_proposal_number:
+            proposal_rule = f"3. Proposal Number (SEQUENTIAL): You MUST strictly output the exact value '{next_proposal_number}' for the `proposal_number` field, IGNORING what is printed on the document."
+        else:
+            proposal_rule = '3. Proposal Number: Extract the alphanumeric code ONLY. Strip out prefixes like "Proposal code:" or "Ref:" (e.g., return "AC-2026-0016", NOT "Proposal code: AC-2026-0016").'
+
+        prompt = f"""
         You are an expert financial auditor, administrative assistant, and data extractor. 
         Your task is to carefully read the attached Engagement Letter / Client Service Proposal 
         and extract key business information into a highly structured format.
 
-        CRITICAL INSTRUCTIONS:
-        1. Accuracy: Extract the text exactly as it appears in the document. Do not summarize or paraphrase services.
-        2. Alignment: Ensure that the numbering in the 'service_proposed' perfectly matches the numbering in the 'fee_detail'.
-        3. Line Breaks: You MUST separate different services and different fees using newlines (\n). Do not combine them into a single paragraph.
-        4. Missing Data: If a piece of information is missing, return an empty string ("").
+        CRITICAL INSTRUCTIONS & FORMATTING RULES:
+        1. English Only: Extract and parse English information ONLY. Ignore Khmer, Chinese, or any other translations.
+        2. Proposal Date: Convert all dates strictly to the 'DD-MMM-YY' format (e.g., "21st March 2026" becomes "21-Mar-26").
+        {proposal_rule}
+        4. Exhaustive Extraction (ALL Services): You MUST thoroughly scan the ENTIRE document. Proposals often contain multiple tables (e.g., "Professional Services" followed by "Reimbursements" or "Government Fees"). You must extract EVERY service and fee listed. Do not stop after the first item.
+        5. Fee Formatting ($ and /): Extract the fee amount, but you MUST replace the word 'USD' with '$', and replace 'per' or '/ per' with '/'. (e.g., "USD 660 per year" becomes "$660/year", and "USD 75 / per year" becomes "$75/year"). Ignore KHR amounts.
+        6. Fee Integrity: Double-check that all fees actually contain the monetary value. NEVER return an empty number like "1." without the corresponding fee.
+        7. Alignment: Ensure that the numbering in 'service_proposed' perfectly matches the numbering in 'fee_detail'.
+        8. Line Breaks: You MUST separate different services and different fees using newlines (\n). Do not combine them into a single paragraph.
+        9. Missing Data: If a piece of information is missing entirely, return an empty string ("").
 
         --- EXAMPLES OF EXPECTED FORMATTING ---
         
-        Example 1:
-        - proposal_date: "11-March-26"
-        - proposal_number: "Proposal code: AC-2026-0014"
+        Example 1 (Standard Format):
+        - proposal_date: "11-Mar-26"
+        - proposal_number: "AC-2026-0014"
         - company_name: "SUREWIN WORLDWIDE LIMITED (CAMBODIA) CO., LTD."
         - service_proposed: "1. Preparation of request to open the ACAR e-filing system for submission of Unaudited Financial Statements for FY2024\n2. Fulfilling Accounting and Auditing Regulator’s (ACAR’s) Requirement for FY2024"
         - fee_detail: "1. $550/year\n2. $660/year"
 
-        Example 2:
-        - proposal_date: "25th March 2026"
-        - proposal_number: "Proposal code: AC-2026-0013"
+        Example 2 (Complex Formatting: Multiple Tables, Prefix Stripping, $ and / conversion):
+        - proposal_date: "21-Mar-26"
+        - proposal_number: "AC-2026-0013"
         - company_name: "SUNWAY SOTHEAROS CO., LTD."
-        - service_proposed: "1. Monthly Bookkeeping service\n2. ACAR"
-        - fee_detail: "1. $440 (set up)\n$330\n2. $440"
+        - service_proposed: "1. Monthly Bookkeeping service\n2. ACAR Registration\n3. Reimbursement for government fee"
+        - fee_detail: "1. $440 (set up)\n$330/month\n2. $75/year\n3. $300"
 
         Now, read the attached document and extract the required fields using the exact same formatting principles shown above.
         """
@@ -506,7 +527,13 @@ class ProposalPDFProcessor:
             self.cost_stats["flash_cost"] += cost # It's a flash model
             
             # The response.text is guaranteed to be a JSON string matching our schema
-            return json.loads(response.text)
+            data = json.loads(response.text)
+            
+            # Failsafe: Enforce the sequence calculation in case the AI hallucinates
+            if next_proposal_number:
+                data['proposal_number'] = next_proposal_number
+                
+            return data
             
         except Exception as e:
             print(f"AI Extraction Error: {str(e)}")

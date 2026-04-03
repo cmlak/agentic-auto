@@ -1,0 +1,55 @@
+{% extends 'base_4_kpi.html' %} 
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card shadow border-primary">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">Process Tax on Salary (TOS)</h4>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted">
+                        Upload the monthly TOS declaration PDF and input the total Salary Payable. The system will extract the calculation bases, convert KHR to USD, calculate meal expenses, and automatically generate balanced Journal Voucher records.
+                    </p>
+
+                    {% if messages %}
+                        {% for message in messages %}
+                            <div class="alert alert-{{ message.tags }} alert-dismissible fade show" role="alert">
+                                {{ message }}
+                                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                            </div>
+                        {% endfor %}
+                    {% endif %}
+
+                    <form method="POST" enctype="multipart/form-data">
+                        {% csrf_token %}
+                        <div class="mb-3">
+                            {{ form.client.label_tag }}
+                            {{ form.client }}
+                        </div>
+                        <div class="mb-3">
+                            {{ form.date.label_tag }}
+                            {{ form.date }}
+                        </div>
+                        <div class="mb-3">
+                            {{ form.pdf_file.label_tag }}
+                            {{ form.pdf_file }}
+                        </div>
+                        <div class="mb-4">
+                            {{ form.salary_payable.label_tag }}
+                            {{ form.salary_payable }}
+                            <small class="form-text text-muted">{{ form.salary_payable.help_text }}</small>
+                        </div>
+                        <div class="d-grid">
+                            <button type="submit" class="btn btn-success btn-lg">
+                                Process Document & Generate JVs
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

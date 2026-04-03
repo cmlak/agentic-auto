@@ -2,7 +2,7 @@ from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
-from .models import Purchase, Vendor, Client, Old
+from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog
 
 class BatchUploadForm(forms.Form):
     client = forms.ModelChoiceField(
@@ -514,3 +514,23 @@ class MultiplePDFUploadForm(forms.Form):
             'class': 'form-control',
             'accept': '.pdf'
         })
+
+class TOSUploadForm(forms.Form):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold'})
+    )
+    date = forms.DateField(
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+        label="Voucher Date"
+    )
+    pdf_file = forms.FileField(
+        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}),
+        label="Tax on Salary Declaration (PDF)"
+    )
+    salary_payable = forms.FloatField(
+        widget=forms.NumberInput(attrs={'class': 'form-control'}),
+        label="Total Salary Payable (USD)",
+        help_text="Enter the total salary payable to calculate staff meal expenses (e.g., 7663.00)."
+    )

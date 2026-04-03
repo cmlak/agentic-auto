@@ -22,9 +22,10 @@ from django.core.paginator import Paginator
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
-GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm, MultiplePDFUploadForm
-from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor
-from .models import Purchase, AICostLog, Vendor, Client, Old
+GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm, MultiplePDFUploadForm,\
+TOSUploadForm
+from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor
+from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
 from .filters import PurchaseFilter
@@ -1675,3 +1676,178 @@ def upload_proposals_view(request):
         form = MultiplePDFUploadForm()
 
     return render(request, 'tools/engagement_extract.html', {'form': form})
+
+@login_required
+def process_tos_view(request):
+    if request.method == 'POST':
+        form = TOSUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            client = form.cleaned_data['client']
+            date = form.cleaned_data['date']
+            pdf_file = form.cleaned_data['pdf_file']
+            salary_payable_usd = form.cleaned_data['salary_payable']
+
+            # 1. Initialize Processor
+            api_key = getattr(settings, "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY_2"))
+            if not api_key:
+                messages.error(request, "API Key missing.")
+                return render(request, 'tools/tos_upload.html', {'form': form})
+                
+            print(f"\n{'='*50}\n🚀 STARTING TAX ON SALARY (TOS) PROCESSING\n{'='*50}")
+            print(f"🏢 Target Client: {client.name}")
+            print(f"📄 Uploaded File: {pdf_file.name}")
+            print(f"💵 User Input - Salary Payable: ${salary_payable_usd}")
+            print("⏳ Extracting data via Gemini AI...")
+
+            processor = TOSPDFProcessor(api_key=api_key)
+            
+            # 2. Extract Data via AI
+            pdf_bytes = pdf_file.read()
+            data = processor.extract_tax_data(pdf_bytes)
+
+            if data.get("error"):
+                print("❌ AI Extraction Failed.")
+                messages.error(request, "Failed to parse the PDF. Please check the document format.")
+                return render(request, 'tools/tos_upload.html', {'form': form})
+
+            # Log AI Cost
+            costs = processor.cost_stats
+            total_cost = costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+            if total_cost > 0:
+                AICostLog.objects.create(
+                    file_name=pdf_file.name,
+                    total_pages=1,
+                    flash_cost=costs.get('flash_cost', 0),
+                    pro_cost=costs.get('pro_cost', 0),
+                    total_cost=total_cost
+                )
+
+            # 3. Deterministic Python Calculations
+            exchange_rate = data['exchange_rate']
+            period = data['declaration_period'] # e.g. "Jan'26"
+            
+            print(f"✅ AI Extraction Complete.")
+            print(f"   📅 Period: {period} | 💱 Exchange Rate: {exchange_rate}")
+
+            if exchange_rate <= 0:
+                print("❌ Invalid Exchange Rate (<= 0). Aborting.")
+                messages.error(request, "Invalid exchange rate extracted (0). Cannot convert currencies.")
+                return render(request, 'tools/tos_upload.html', {'form': form})
+
+            salary_expense_usd = data['net_salary_usd']
+            meal_expense_usd = round(salary_payable_usd - salary_expense_usd, 2)
+            
+            tax_resident_usd = round(data['tos_base_resident_khr'] / exchange_rate, 2)
+            tax_non_resident_usd = round(data['tos_base_non_resident_khr'] / exchange_rate, 2)
+            
+            total_tax_expense_usd = round(tax_resident_usd + tax_non_resident_usd, 2)
+
+            print(f"📊 FINANCIAL CALCULATIONS & COSTS (USD):")
+            print(f"   - Salary Expense: ${salary_expense_usd}")
+            print(f"   - Meal Expense:   ${meal_expense_usd}")
+            print(f"   - Resident Tax:   ${tax_resident_usd}")
+            print(f"   - Non-Res Tax:    ${tax_non_resident_usd}")
+            print(f"   - Total Tax Exp:  ${total_tax_expense_usd}")
+            print("💾 Saving records to database...")
+
+            # 4. Fetch or Create Vendors
+            vendor_staff, _ = Vendor.objects.get_or_create(name='Staff')
+            vendor_tax, _ = Vendor.objects.get_or_create(name='General Department of Taxation')
+
+            # 5. Define the common line-item logic
+            # This makes it easy to generate both Vouchers and Journal Lines
+            transaction_lines = [
+                {
+                    "vendor": vendor_staff, "instruction": "705000", 
+                    "description": f"Salary expense {period}", 
+                    "debit": salary_expense_usd, "credit": 0.0
+                },
+                {
+                    "vendor": vendor_staff, "instruction": "705070", 
+                    "description": f"Meal expense {period}", 
+                    "debit": meal_expense_usd, "credit": 0.0
+                },
+                {
+                    "vendor": vendor_tax, "instruction": "725410", 
+                    "description": f"Salary tax expense {period}", 
+                    "debit": total_tax_expense_usd, "credit": 0.0
+                },
+                {
+                    "vendor": vendor_tax, "instruction": "210030", 
+                    "description": f"Salary tax expense {period}", 
+                    "debit": 0.0, "credit": tax_resident_usd
+                },
+                {
+                    "vendor": vendor_tax, "instruction": "210030", 
+                    "description": f"NR Salary tax expense {period}", 
+                    "debit": 0.0, "credit": tax_non_resident_usd
+                },
+                {
+                    "vendor": vendor_staff, "instruction": "225070", 
+                    "description": f"Being accrued for salary expense {period}", 
+                    "debit": 0.0, "credit": salary_payable_usd
+                }
+            ]
+
+            # Filter out any lines where the amount is 0 (e.g., if there's no Non-Resident tax or Meal Expense)
+            transaction_lines = [line for line in transaction_lines if line['debit'] > 0 or line['credit'] > 0]
+
+            # 6. Database Transaction (Atomic)
+            try:
+                with transaction.atomic():
+                    
+                    # 6A. Create the Journal Vouchers
+                    jv_records = []
+                    for line_data in transaction_lines:
+                        jv_records.append(JournalVoucher(
+                            client=client,
+                            date=date,
+                            vendor=line_data['vendor'],
+                            account_id=int(line_data['instruction']), # Map string to integer account_id
+                            description=line_data['description'],
+                            debit=line_data['debit'],
+                            credit=line_data['credit']
+                        ))
+                    JournalVoucher.objects.bulk_create(jv_records)
+
+                    # 6B. Create the Header Journal Entry
+                    journal_entry = JournalEntry.objects.create(
+                        client=client,
+                        date=date,
+                        description=f"Payroll & TOS Accrual for {period}"
+                    )
+
+                    # 6C. Create the related Journal Lines
+                    jl_records = []
+                    for line_data in transaction_lines:
+                        account_id_str = line_data['instruction']
+                        account_instance, _ = Account.objects.get_or_create(
+                            client=client,
+                            account_id=account_id_str,
+                            defaults={'name': 'System Gen TOS Acct', 'account_type': 'Expense'}
+                        )
+                        jl_records.append(JournalLine(
+                            journal_entry=journal_entry,      # Correct FK field name
+                            account=account_instance,         # Must be an Account object
+                            description=line_data['description'],
+                            debit=line_data['debit'],
+                            credit=line_data['credit']
+                        ))
+                    JournalLine.objects.bulk_create(jl_records)
+
+                # If we reach this point, the transaction was 100% successful
+                print(f"🎉 SUCCESS: {len(jv_records)} Vouchers and 1 Journal Entry ({len(jl_records)} lines) posted.")
+                print(f"{'='*50}\n")
+                messages.success(request, f"Successfully processed {period}. Created {len(jv_records)} Vouchers and 1 Journal Entry with {len(jl_records)} lines.")
+                return redirect('tools:tos_upload')
+
+            except Exception as db_error:
+                # If anything fails (Voucher, Entry, or Line), the DB rolls back automatically
+                print(f"❌ Database Error: {str(db_error)}")
+                messages.error(request, f"Database Error while saving records: {str(db_error)}")
+                return render(request, 'tools/tos_upload.html', {'form': form})
+
+    else:
+        form = TOSUploadForm()
+
+    return render(request, 'tools/tos_upload.html', {'form': form})

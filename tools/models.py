@@ -102,19 +102,10 @@ class Old(models.Model):
 class JournalVoucher(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
     date = models.DateField(blank=True, null=True)
+    account_id = models.IntegerField(blank=True, null=True)
     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
-    debit_id = models.IntegerField(blank=True, null=True)
-    credit_id = models.IntegerField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
-    
-    PAYMENT_STATUS_CHOICES = [
-        ('Tax', 'Tax'),
-        ('Exchange Rate', 'Exchange Rate'),
-    ]
-
-    payment_status = models.CharField(max_length=50, choices=PAYMENT_STATUS_CHOICES, default='Open')
-
     debit = models.FloatField(blank=True, null=True)
     credit = models.FloatField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)

@@ -13,7 +13,7 @@ from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from .models import Vendor, Client 
+from .models import Vendor, Client, JournalVoucher
 from account.models import Account, AccountMappingRule
 
 class RoutingDecision(BaseModel):
@@ -542,4 +542,79 @@ class ProposalPDFProcessor:
                 "proposal_date": "", "proposal_number": "", 
                 "company_name": "ERROR PARSING FILE", 
                 "service_proposed": "", "fee_detail": ""
+            }
+
+# --------------------------------------------------------------------
+# Journal Voucher Creation
+# PHASE 1: STRICT DATA SCHEMA
+# Define the exact shape of the extracted data. No calculations here.
+# --------------------------------------------------------------------
+class TaxOnSalaryData(BaseModel):
+    declaration_period: str = Field(description="The month and year of the declaration formatted as 'MMM''YY' (e.g., \"Jan'26\").")
+    exchange_rate: float = Field(description="The official exchange rate printed on the declaration. (e.g., 4050.0)")
+    net_salary_usd: float = Field(description="The Total Net Salary. Return a clean float (e.g., 7443.0).")
+    tos_base_resident_khr: float = Field(description="The Total TOS Calculation Base (Resident) in KHR. Strip currency symbols and commas. (e.g., 4388340.0)")
+    tos_base_non_resident_khr: float = Field(description="The Total TOS Calculation Base (Non-resident) in KHR. Strip currency symbols and commas. (e.g., 877668.0)")
+
+# --------------------------------------------------------------------
+# PHASE 2 & 3: THE PROCESSOR & PROMPT CONSTRUCTION
+# --------------------------------------------------------------------
+class TOSPDFProcessor:
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def _calculate_cost(self, usage):
+        """Calculates the cost of a Gemini API call for flash model."""
+        if usage:
+            return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
+        return 0.0
+
+    def extract_tax_data(self, pdf_bytes: bytes) -> dict:
+        document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+
+        prompt = """
+        You are an expert tax accountant. Read the attached Tax on Salary (TOS) declaration 
+        and extract the required numerical values perfectly.
+
+        CRITICAL INSTRUCTIONS (EXHAUSTIVE EXTRACTION):
+        1. Exhaustive Extraction: Scan the ENTIRE document to find the total calculation bases for both Residents and Non-Residents.
+        2. Float Formatting: Return purely numeric floats. Remove all commas and currency symbols (e.g., 'KHR 4,388,340' MUST become 4388340.0).
+        3. Exchange Rate: Locate the official exchange rate for the period on the form.
+        4. Date Formatting: Extract the declaration period and format it exactly as "MMM'YY" (e.g., "Jan'26").
+        5. Missing Data Default: If a non-resident base doesn't exist, return 0.0.
+
+        Extract the data exactly matching the JSON schema provided.
+        """
+
+        # PHASE 4: CONSTRAINED AI EXECUTION
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=TaxOnSalaryData,
+            temperature=0.0 # Absolute deterministic extraction
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, document_part],
+                config=config
+            )
+            
+            cost = self._calculate_cost(response.usage_metadata)
+            self.cost_stats["flash_cost"] += cost
+            
+            return json.loads(response.text)
+            
+        except Exception as e:
+            print(f"AI Extraction Error: {str(e)}")
+            # PHASE 6: GRACEFUL DEGRADATION
+            return {
+                "error": True,
+                "declaration_period": "",
+                "exchange_rate": 0.0,
+                "net_salary_usd": 0.0,
+                "tos_base_resident_khr": 0.0,
+                "tos_base_non_resident_khr": 0.0
             }

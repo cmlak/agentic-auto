@@ -16,31 +16,32 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from .models import Vendor, Client, JournalVoucher
 from account.models import Account, AccountMappingRule
 
+# ====================================================================
+# PHASE 1: STRICT DATA SCHEMA
+# ====================================================================
 class RoutingDecision(BaseModel):
     page_type: Literal["invoice", "bank_slip", "empty"]
     complexity: Literal["low", "medium", "high"]
 
 class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
-    invoice_no: str = Field("Unknown")
     
-    # ENHANCED: Strict instruction against amending VATTIN
-    vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize, autocorrect, or apply patterns (e.g., keep 'B107' as is, do not change to 'L001').")
+    # ENHANCED: Explicit instructions for the AI on invoice extraction
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If completely missing, output 'NEEDS_SEQ'.")
     
+    vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
     description: str = Field(..., description="Detailed description of the items in the original language.")
     description_en: str = Field(..., description="Summarize the detailed description in English ONLY. Maximum 25 words.")
     
-    # ENHANCED: Full 5-Leg Account Assignment Fields
-    account_id: Optional[int] = Field(None, description="Main Debit Account ID (e.g., Expense or Asset).")
-    vat_account_id: Optional[int] = Field(None, description="Debit Account ID for VAT Input (e.g., 115010). Leave null if no VAT.")
-    wht_debit_account_id: Optional[int] = Field(None, description="Debit Account ID for WHT Expense (e.g., 725420) if company bears the tax. Leave null if no WHT.")
+    account_id: Optional[int] = Field(None, description="Main Debit Account ID.")
+    vat_account_id: Optional[int] = Field(None, description="Debit Account ID for VAT Input. Leave null if no VAT.")
+    wht_debit_account_id: Optional[int] = Field(None, description="Debit Account ID for WHT Expense. Leave null if no WHT.")
     credit_account_id: int = Field(200000, description="Main Credit Account ID (Default: 200000 for Trade Payable).")
-    wht_account_id: Optional[int] = Field(None, description="Credit Account ID for WHT Payable (e.g., 210040). Leave null if no WHT.")
+    wht_account_id: Optional[int] = Field(None, description="Credit Account ID for WHT Payable. Leave null if no WHT.")
     
-    account_reasoning: str = Field("", description="Brief reason for assigning these accounts and ensuring they balance based on the rules.")
+    account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
     
-    # ENHANCED: Renamed for clean database architecture
     unreg_usd: float = Field(0.0, description="Amount from unregistered vendors without a VAT TIN.")
     exempt_usd: float = Field(0.0, description="Amount from registered vendors (has TIN) but no VAT is charged.")
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
@@ -71,13 +72,14 @@ class AccountingBatch(BaseModel):
 class GeminiInvoiceProcessor:
     def __init__(self, api_key):
         print("\n" + "="*50)
-        print("🚀 INITIALIZING GEMINI INVOICE PROCESSOR (WITH GL ASSIGNMENT)")
+        print("🚀 INITIALIZING GEMINI INVOICE PROCESSOR")
         print("="*50)
         self.client = genai.Client(api_key=api_key)
         self.TRIAGE_MODEL = "gemini-3-flash-preview"
         self.AUDIT_MODEL = "gemini-3.1-pro-preview"
         self.cost_lock = threading.Lock()
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+        
         self.vendor_lock = threading.Lock()
         self.batch_new_vendors = {} 
 
@@ -88,9 +90,10 @@ class GeminiInvoiceProcessor:
         return 0.0
 
     def resolve_and_assign_vendor(self, raw_name, vattin, vat_amount, client_id):
+        """Maps vendor strictly within the selected client's isolated database."""
         general_vendor, _ = Vendor.objects.get_or_create(
             client_id=client_id,
-            vendor_id='V-00001', 
+            vendor_id='V001', 
             defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
@@ -107,18 +110,17 @@ class GeminiInvoiceProcessor:
         if exact_match:
             return {'db_id': exact_match.id, 'is_new': False, 'temp_vid': None}
 
-        best_vendor, best_ratio = None, 0.85 
-        vendors_to_check = Vendor.objects.filter(client_id=client_id)
-        if target_norm:
-             vendors_to_check = vendors_to_check.filter(normalized_name__startswith=target_norm[0])
+        best_vendor, best_coverage = None, 0.0
+        for v in Vendor.objects.filter(client_id=client_id):
+            if not v.normalized_name or v.normalized_name[0] != target_norm[0]: continue
+            matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
+            match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
+            if match.a == 0 and match.b == 0:
+                coverage = match.size / len(target_norm)
+                if coverage >= 0.6 and coverage > best_coverage:
+                    best_coverage = coverage
+                    best_vendor = v
 
-        for v in vendors_to_check:
-            if not v.normalized_name: continue
-            ratio = difflib.SequenceMatcher(None, target_norm, v.normalized_name).ratio()
-            if ratio > best_ratio:
-                best_ratio = ratio
-                best_vendor = v
-        
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
 
@@ -126,100 +128,19 @@ class GeminiInvoiceProcessor:
             if target_norm in self.batch_new_vendors:
                 return self.batch_new_vendors[target_norm]
 
-            vendor_ids = Vendor.objects.filter(client_id=client_id, vendor_id__regex=r'^V-\d+').values_list('vendor_id', flat=True)
-            max_num = 0
-            for vid in vendor_ids:
-                match = re.search(r'V-(\d+)', vid)
-                if match:
-                    max_num = max(max_num, int(match.group(1)))
-            
-            next_num = max(2, max_num + 1)
+            last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
+            next_num = 2
+            if last_vendor and re.search(r'V(\d+)', last_vendor.vendor_id):
+                next_num = int(re.search(r'V(\d+)', last_vendor.vendor_id).group(1)) + 1
             
             current_seq = next_num + len(self.batch_new_vendors)
-            new_vid = f"V-{current_seq:05d}"
+            new_vid = f"V{current_seq:03d}"
             
             vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
             self.batch_new_vendors[target_norm] = vendor_data
             return vendor_data
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def process_page(self, file_obj, pg_num, custom_prompt="", rules_context="", memo_context=""):
-        try:
-            print(f"📄 [Page {pg_num}] Starting Triage...")
-            t_resp = self.client.models.generate_content(
-                model=self.TRIAGE_MODEL,
-                contents=[file_obj, f"Analyze Page {pg_num}. Is it an invoice or bank slip?"],
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=RoutingDecision)
-            )
-            with self.cost_lock: self.cost_stats["flash_cost"] += self.calculate_cost(t_resp.usage_metadata, self.TRIAGE_MODEL)
-            if not t_resp.parsed or t_resp.parsed.page_type == "empty": return None
-
-            print(f"🧠 [Page {pg_num}] Audit & GL Assignment starting...")
-            
-            # ENHANCED PROMPT: 3-Tier XML Structure & VATTIN Isolation
-            prompt = f"""
-            TASK: Extract accounting data strictly from Page {pg_num}.
-            
-            <CRITICAL_VATTIN_INSTRUCTION>
-            Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect, standardize, or apply regex patterns. 
-            If it prints 'B107', extraction MUST be 'B107', NEVER change it to 'L001'.
-            </CRITICAL_VATTIN_INSTRUCTION>
-            
-            <ACCOUNTING_HIERARCHY_RULES>
-            Follow these instructions in order of strict priority (1 is highest):
-            
-            1. [BATCH LEVEL] USER CUSTOM INSTRUCTION:
-            {custom_prompt if custom_prompt else "No custom instruction provided."}
-            
-            2. [COMPANY LEVEL] CLIENT ANTI-PATTERNS & MEMOS:
-            {memo_context if memo_context else "No client memos."}
-            
-            3. [INDUSTRY LEVEL] ACCOUNT ID ASSIGNMENT MANUAL:
-            {rules_context}
-            </ACCOUNTING_HIERARCHY_RULES>
-
-            <OUTPUT_INSTRUCTIONS>
-            1. AGGREGATION: Output exactly ONE PurchaseEntry per page. COMBINE items.
-            2. DATE: Format strictly as YYYY-MM-DD. Return null if missing.
-            3. VENDOR NAME: Extract the company/shop name.
-            4. DESCRIPTION: Original language detail.
-            5. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
-            6. TAX AMOUNTS: 
-               - If no VAT TIN, put amount in 'unreg_usd'.
-               - If VAT TIN exists but no VAT charged, put amount in 'exempt_usd'.
-               - If VAT is charged, put base in 'vat_base_usd' and tax in 'vat_usd'.
-            7. BALANCED ASSIGNMENT: Assign IDs so the transaction mathematically balances.
-               - account_id: Main Debit (Expense/Asset).
-               - vat_account_id: VAT Input Debit (e.g., 115010) if VAT exists.
-               - wht_debit_account_id: WHT Expense Debit (e.g., 725420) if company bears the WHT.
-               - credit_account_id: Main Credit (Payable/Cash).
-               - wht_account_id: WHT Payable Credit (e.g., 210040) if WHT is triggered.
-            </OUTPUT_INSTRUCTIONS>
-            
-            DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
-            """
-            
-            a_resp = self.client.models.generate_content(
-                model=self.AUDIT_MODEL,
-                contents=[file_obj, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AccountingBatch,
-                    temperature=0.0, # CRITICAL: Forces strict obedience to VATTIN rules
-                    thinking_config=types.ThinkingConfig(thinking_level=t_resp.parsed.complexity.upper())
-                )
-            )
-            
-            page_cost = self.calculate_cost(a_resp.usage_metadata, self.AUDIT_MODEL)
-            with self.cost_lock: self.cost_stats["pro_cost"] += page_cost
-            print(f"🕵️ [Page {pg_num}] AI Check: {a_resp.parsed.self_verification_step}")
-            print(f"💲 [Page {pg_num}] AI Cost Log: ${page_cost:.5f}")
-            return a_resp.parsed, pg_num
-        except Exception as e:
-            print(f"❌ [Page {pg_num}] ERROR: {str(e)}")
-            raise e 
-
-    def process(self, pdf_path, client_id, custom_prompt="", batch_name="", rules_context="", memo_context=""):
+    def process(self, pdf_path, client_id, custom_prompt="", batch_name="", rules_context="", memo_context="", start_seq=1, date_prefix="20260226"):
         with pdfplumber.open(pdf_path) as pdf:
             total_pages = len(pdf.pages)
             if total_pages > 20:
@@ -231,28 +152,97 @@ class GeminiInvoiceProcessor:
             f = self.client.files.get(name=f.name)
 
         ledgers = []
+        current_invoice_seq = start_seq # Track the sequence across the batch
         
-        # Sequential processing to guarantee order
         for pg in range(1, total_pages + 1):
             try:
-                res = self.process_page(f, pg, custom_prompt, rules_context, memo_context)
-                if res:
-                    audit, _ = res
-                    for entry in audit.purchase_entries:
+                # ---------------------------------------------------------
+                # DYNAMIC PROMPT (Notice the updated AGGREGATION rule)
+                # ---------------------------------------------------------
+                prompt = f"""
+                TASK: Extract accounting data strictly from Page {pg}.
+                
+                <CRITICAL_VATTIN_INSTRUCTION>
+                Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect or apply regex patterns. 
+                </CRITICAL_VATTIN_INSTRUCTION>
+                
+                <ACCOUNTING_HIERARCHY_RULES>
+                1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
+                2. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
+                3. [INDUSTRY LEVEL] RULES: {rules_context}
+                </ACCOUNTING_HIERARCHY_RULES>
+
+                <OUTPUT_INSTRUCTIONS>
+                1. AGGREGATION & SPLITTING: Normally, output ONE PurchaseEntry per page by combining items. 
+                   **CRITICAL EXCEPTION:** If the invoice contains BOTH Equipment/Machinery Rental AND a Driver/Operator fee, you MUST split them into exactly TWO PurchaseEntry items.
+                2. DATE: Format strictly as YYYY-MM-DD.
+                3. VENDOR NAME: Extract the company/shop name.
+                4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
+                5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
+                6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+                </OUTPUT_INSTRUCTIONS>
+                
+                DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
+                """
+                
+                # --- EXECUTE AI ---
+                a_resp = self.client.models.generate_content(
+                    model=self.AUDIT_MODEL,
+                    contents=[f, prompt], # f is the uploaded file object
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=AccountingBatch,
+                        temperature=0.0 
+                    )
+                )
+                
+                page_cost = self.calculate_cost(a_resp.usage_metadata, self.AUDIT_MODEL)
+                with self.cost_lock: self.cost_stats["pro_cost"] += page_cost
+                
+                audit = a_resp.parsed
+                
+                if audit.purchase_entries:
+                    # ==========================================================
+                    # PHASE 5: DETERMINISTIC PYTHON POST-PROCESSING
+                    # ==========================================================
+                    
+                    # 1. Determine the BASE invoice number for this specific page
+                    first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
+                    
+                    if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7:
+                        base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
+                        # Increment sequence ONLY once per page, not per split item
+                        current_invoice_seq += 1 
+                    else:
+                        base_inv_no = first_entry_inv
+
+                    # 2. Check if the AI split the invoice into multiple entries (Rental vs Driver)
+                    is_split_invoice = len(audit.purchase_entries) > 1
+
+                    # 3. Process each entry for this page
+                    for idx, entry in enumerate(audit.purchase_entries, 1):
                         entry_dict = entry.model_dump()
                         
+                        # Apply the -1, -2 suffix ONLY if the invoice was split
+                        if is_split_invoice:
+                            entry_dict['invoice_no'] = f"{base_inv_no}-{idx}"
+                        else:
+                            entry_dict['invoice_no'] = base_inv_no
+                        
+                        # Map fields
                         if 'vendor_name' in entry_dict:
                             entry_dict['company'] = entry_dict.pop('vendor_name')
                         
                         reasoning = entry_dict.pop('account_reasoning', '')
                         entry_dict['instruction'] = f"AI Reason: {reasoning}" if reasoning else ""
                         
-                        raw_name = entry_dict.get('company', '')
-                        vattin = entry_dict.get('vattin', '')
-                        # Uses new vat_usd field
-                        vat_amount = entry_dict.get('vat_usd', 0.0) 
-                        
-                        vendor_data = self.resolve_and_assign_vendor(raw_name, vattin, vat_amount, client_id)
+                        # Resolve Vendor (Uses your existing function)
+                        vendor_data = self.resolve_and_assign_vendor(
+                            entry_dict.get('company', ''), 
+                            entry_dict.get('vattin', ''), 
+                            entry_dict.get('vat_usd', 0.0), 
+                            client_id
+                        )
                         if not vendor_data:
                             vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
                         
@@ -265,12 +255,114 @@ class GeminiInvoiceProcessor:
                         entry_dict['page'] = pg
                         
                         ledgers.append(entry_dict)
+
             except Exception as e:
                 print(f"❌ [Page {pg}] processing failed: {e}")
 
         ledgers.sort(key=lambda x: x.get('page', 0))
 
-        return ledgers, total_pages, self.cost_stats
+        # Return the next sequence number so the View can save it for the next batch
+        return ledgers, total_pages, self.cost_stats, current_invoice_seq
+
+    def process_page(self, gemini_file_name, pg, client_id, custom_prompt="", batch_name="", rules_context="", memo_context="", current_invoice_seq=1, date_prefix="20260226"):
+        try:
+            f = self.client.files.get(name=gemini_file_name)
+        except Exception as e:
+            return [], 0.0, current_invoice_seq, f"Could not retrieve file: {e}"
+
+        ledgers = []
+        page_cost = 0.0
+        try:
+            prompt = f"""
+            TASK: Extract accounting data strictly from Page {pg}.
+            
+            <CRITICAL_VATTIN_INSTRUCTION>
+            Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect or apply regex patterns. 
+            </CRITICAL_VATTIN_INSTRUCTION>
+            
+            <ACCOUNTING_HIERARCHY_RULES>
+            1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
+            2. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
+            3. [INDUSTRY LEVEL] RULES: {rules_context}
+            </ACCOUNTING_HIERARCHY_RULES>
+
+            <OUTPUT_INSTRUCTIONS>
+            1. AGGREGATION & SPLITTING: Normally, output ONE PurchaseEntry per page by combining items. 
+               **CRITICAL EXCEPTION:** If the invoice contains BOTH Equipment/Machinery Rental AND a Driver/Operator fee, you MUST split them into exactly TWO PurchaseEntry items.
+            2. DATE: Format strictly as YYYY-MM-DD.
+            3. VENDOR NAME: Extract the company/shop name.
+            4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
+            5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
+            6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+            </OUTPUT_INSTRUCTIONS>
+            
+            DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
+            """
+            
+            a_resp = self.client.models.generate_content(
+                model=self.AUDIT_MODEL,
+                contents=[f, prompt],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=AccountingBatch,
+                    temperature=0.0 
+                )
+            )
+            
+            page_cost = self.calculate_cost(a_resp.usage_metadata, self.AUDIT_MODEL)
+            with self.cost_lock: self.cost_stats["pro_cost"] += page_cost
+            
+            audit = a_resp.parsed
+            
+            if audit.purchase_entries:
+                first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
+                
+                if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7:
+                    base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
+                    current_invoice_seq += 1 
+                else:
+                    base_inv_no = first_entry_inv
+
+                is_split_invoice = len(audit.purchase_entries) > 1
+
+                for idx, entry in enumerate(audit.purchase_entries, 1):
+                    entry_dict = entry.model_dump()
+                    
+                    if is_split_invoice:
+                        entry_dict['invoice_no'] = f"{base_inv_no}-{idx}"
+                    else:
+                        entry_dict['invoice_no'] = base_inv_no
+                    
+                    if 'vendor_name' in entry_dict:
+                        entry_dict['company'] = entry_dict.pop('vendor_name')
+                    
+                    reasoning = entry_dict.pop('account_reasoning', '')
+                    entry_dict['instruction'] = f"AI Reason: {reasoning}" if reasoning else ""
+                    
+                    vendor_data = self.resolve_and_assign_vendor(
+                        entry_dict.get('company', ''), 
+                        entry_dict.get('vattin', ''), 
+                        entry_dict.get('vat_usd', 0.0), 
+                        client_id
+                    )
+                    if not vendor_data:
+                        vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
+                    
+                    entry_dict['vendor_db_id'] = vendor_data.get('db_id')
+                    entry_dict['is_new_vendor'] = vendor_data.get('is_new', False)
+                    entry_dict['temp_vid'] = vendor_data.get('temp_vid')
+                    entry_dict['temp_id'] = vendor_data.get('temp_id')
+                    entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
+                    entry_dict['batch'] = batch_name
+                    entry_dict['page'] = pg
+                    
+                    ledgers.append(entry_dict)
+
+        except Exception as e:
+            print(f"❌ [Page {pg}] processing failed: {e}")
+            return [], page_cost, current_invoice_seq, str(e)
+
+        return ledgers, page_cost, current_invoice_seq, None
 
 # ====================================================================
 # --- PYDANTIC SCHEMAS FOR HISTORICAL DATA MIGRATION ---

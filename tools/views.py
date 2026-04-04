@@ -5,12 +5,13 @@ import calendar
 import io
 import re
 from collections import defaultdict
+import time
 import openpyxl
 from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
-from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect
+from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect, JsonResponse
 from django.urls import reverse, reverse_lazy
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
@@ -19,6 +20,7 @@ from django.views.generic import DetailView, UpdateView, DeleteView
 from django.db.models import Sum
 from django.db import transaction
 from django.core.paginator import Paginator
+import pdfplumber
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
@@ -42,7 +44,55 @@ def invoice_ai_upload_view(request):
     user = request.user
 
     if request.method == 'POST':
-        # Clear previous session data safely to prevent data bleed
+        action = request.POST.get('action')
+        
+        if action == 'process_page':
+            job = request.session.get('invoice_job')
+            if not job:
+                return JsonResponse({"status": "error", "message": "Job session not found."})
+                
+            page = int(request.POST.get('page', 1))
+            api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+            processor = GeminiInvoiceProcessor(api_key=api_key)
+            
+            ledgers, page_cost, next_seq, err = processor.process_page(
+                gemini_file_name=job['gemini_file_name'],
+                pg=page,
+                client_id=job['client_id'],
+                custom_prompt=job['custom_prompt'],
+                batch_name=job['batch_name'],
+                rules_context=job['rules_context'],
+                memo_context=job['memo_context'],
+                current_invoice_seq=job['current_seq'],
+                date_prefix=job['date_prefix']
+            )
+            
+            if ledgers:
+                job['results'].extend(ledgers)
+            job['current_seq'] = next_seq
+            job['costs']['pro_cost'] += page_cost
+            request.session['invoice_job'] = job
+            request.session.save()
+            
+            return JsonResponse({"status": "success", "page": page, "ledgers_count": len(ledgers), "error": err})
+            
+        if action == 'finalize':
+            job = request.session.get('invoice_job')
+            if not job:
+                return JsonResponse({"status": "error", "message": "Job session not found."})
+                
+            request.session[f'invoice_seq_{job["client_id"]}'] = job['current_seq']
+            
+            try:
+                AICostLog.objects.create(file_name=job['file_name'], total_pages=job['total_pages'], flash_cost=job['costs']['flash_cost'], pro_cost=job['costs']['pro_cost'], total_cost=job['costs']['flash_cost'] + job['costs']['pro_cost'])
+            except NameError:
+                pass
+                
+            request.session['extracted_invoices'] = job['results']
+            request.session['ai_metadata'] = {'file_name': job['file_name'], 'batch_name': job['batch_name'], 'client_id': job['client_id'], 'client_name': Client.objects.get(id=job['client_id']).name, 'total_pages': job['total_pages'], 'costs': job['costs']}
+            request.session.pop('invoice_job', None)
+            return JsonResponse({"status": "success", "redirect_url": reverse('tools:review_invoices')})
+
         request.session.pop('invoice_report_path', None)
         
         form = BatchUploadForm(request.POST, request.FILES)
@@ -54,28 +104,46 @@ def invoice_ai_upload_view(request):
                 try:
                     if user.profile.clients.filter(id=selected_client.id).exists():
                         has_access = True
-                except Profile.DoesNotExist:
+                except Exception:
                     pass
             if not has_access:
-                messages.error(request, "You do not have permission to upload data for this client.")
-                return redirect('main')
+                if request.headers.get('x-requested-with') == 'XMLHttpRequest':
+                    return JsonResponse({"status": "error", "message": "Permission denied."})
+                else:
+                    messages.error(request, "You do not have permission to upload data for this client.")
+                    return redirect('main')
 
             uploaded_pdf = form.cleaned_data['invoice_pdf']
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
             
             # ==========================================================
+            # SEQUENCE & DATE RESOLUTION (Deterministic Processing)
+            # ==========================================================
+            # 1. Fetch the global sequence tracker from the user's session (Defaults to 1 for new sessions)
+            current_seq = request.session.get(f'invoice_seq_{selected_client.id}', 1)
+            
+            # 2. Extract YYYYMMDD date from user's custom prompt (e.g., looks for 20260226)
+            date_match = re.search(r'\b(202\d[0-1]\d[0-3]\d)\b', custom_prompt)
+            if date_match:
+                date_prefix = date_match.group(1)
+            else:
+                # Fallback to today's date if the user didn't provide a valid YYYYMMDD string
+                date_prefix = datetime.now().strftime("%Y%m%d")
+
+            print(f"🔢 Target Sequence Starting at: {current_seq} | Prefix: INV-{date_prefix}-")
+
+            # ==========================================================
             # --- DYNAMIC MULTI-TENANT RULE INJECTION ---
             # ==========================================================
             rules_context = ""
             memo_context = ""
 
-            # 1. Fetch the Anti-Pattern Memo for this specific client
             client_memo = ClientPromptMemo.objects.filter(client=selected_client).first()
             if client_memo:
+                # Make sure the new Invoice Extraction rules are appended here if not physically in the DB yet
                 memo_context = client_memo.memo_text
 
-            # 2. Fetch the Mapping Rules and compile them into a CSV format in memory
             rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
             if rules.exists():
                 rules_data = []
@@ -86,7 +154,6 @@ def invoice_ai_upload_view(request):
                         'Description / Trigger Keywords': rule.trigger_keywords,
                         'Reasoning / AI Guidelines': rule.ai_guideline
                     })
-                # Convert the database query directly into a CSV string for the AI prompt
                 df_rules = pd.DataFrame(rules_data)
                 rules_context = df_rules.to_csv(index=False)
             else:
@@ -101,55 +168,52 @@ def invoice_ai_upload_view(request):
                 tmp_pdf_path = tmp_pdf.name
 
             try:
-                # Initialize Processor
-                api_key = os.getenv("GEMINI_API_KEY_2") 
+                # Strict Environment Variable Validation
+                api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+                if not api_key:
+                    return JsonResponse({"status": "error", "message": "System Error: GEMINI_API_KEY_2 is missing or not configured."})
+
                 processor = GeminiInvoiceProcessor(api_key=api_key)
                 
-                # Execute One-Pass AI Strategy (Extraction + GL Assignment)
-                extracted_data, total_pages, costs = processor.process(
-                    pdf_path=tmp_pdf_path, 
-                    client_id=selected_client.id,
-                    custom_prompt=custom_prompt, 
-                    batch_name=batch_name,
-                    rules_context=rules_context,  # Passing the dynamic DB rules!
-                    memo_context=memo_context     # Passing the dynamic DB memo!
-                )
+                with pdfplumber.open(tmp_pdf_path) as pdf:
+                    total_pages = len(pdf.pages)
+                    if total_pages > 20:
+                        return JsonResponse({"status": "error", "message": f"Limit exceeded. PDF has {total_pages} pages, max is 20."})
                 
-                # --- LOG COST IMMEDIATELY ---
-                # Save the cost now, so it is recorded even if the user abandons the review step.
-                AICostLog.objects.create(
-                    file_name=uploaded_pdf.name, 
-                    total_pages=total_pages, 
-                    flash_cost=costs.get('flash_cost', 0), 
-                    pro_cost=costs.get('pro_cost', 0), 
-                    total_cost=costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
-                )
+                f = processor.client.files.upload(file=tmp_pdf_path)
+                while f.state.name == "PROCESSING": 
+                    time.sleep(2)
+                    f = processor.client.files.get(name=f.name)
                 
-                # Save results and context to the session for the review screen
-                request.session['extracted_invoices'] = extracted_data
-                request.session['ai_metadata'] = {
+                request.session['invoice_job'] = {
+                    'gemini_file_name': f.name,
                     'file_name': uploaded_pdf.name,
-                    'batch_name': batch_name, 
-                    'client_id': selected_client.id,
-                    'client_name': selected_client.name,
                     'total_pages': total_pages,
-                    'costs': costs
+                    'client_id': selected_client.id,
+                    'batch_name': batch_name,
+                    'custom_prompt': custom_prompt,
+                    'rules_context': rules_context,
+                    'memo_context': memo_context,
+                    'current_seq': current_seq,
+                    'date_prefix': date_prefix,
+                    'results': [],
+                    'costs': {'flash_cost': 0.0, 'pro_cost': 0.0}
                 }
+                request.session.save()
                 
-                return redirect('tools:review_invoices')
+                return JsonResponse({"status": "init_success", "total_pages": total_pages})
                 
             except ValueError as ve:
-                messages.error(request, str(ve))
+                return JsonResponse({"status": "error", "message": str(ve)})
             except Exception as e:
-                messages.error(request, f"AI Processing Error: {str(e)}")
+                return JsonResponse({"status": "error", "message": f"AI Initialization Error: {str(e)}"})
             finally:
-                # Always clean up the temporary PDF file to prevent storage leaks
                 if os.path.exists(tmp_pdf_path):
                     os.remove(tmp_pdf_path)
+        else:
+            return JsonResponse({"status": "error", "message": "Form validation failed. Check required fields."})
     else:
         form = BatchUploadForm()
-        
-        # Dynamically limit the dropdown to ONLY the clients the user manages
         if not (user.is_staff or user.is_superuser):
             try:
                 form.fields['client'].queryset = user.profile.clients.all()
@@ -157,7 +221,6 @@ def invoice_ai_upload_view(request):
                 form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'invoice_upload.html', {'form': form})
-
 
 # ====================================================================
 # --- 2. HITL REVIEW & AUTOMATIC GL POSTING ---

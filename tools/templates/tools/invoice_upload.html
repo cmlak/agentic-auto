@@ -62,29 +62,91 @@
 </div>
 
 <script>
-    document.getElementById('upload-form').addEventListener('submit', function() {
-        // Show the overlay
-        document.getElementById('loading-overlay').style.display = 'flex';
+    document.getElementById('upload-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
         
+        let overlay = document.getElementById('loading-overlay');
         let bar = document.getElementById('loading-bar');
         let text = document.getElementById('loading-text');
         
-        // Simulate stages while waiting for the server response
-        let stages = [
-            { width: '25%', msg: "Triage: Identifying document types..." },
-            { width: '50%', msg: "Audit: Extracting financial data..." },
-            { width: '75%', msg: "Validating vendors and currencies..." },
-            { width: '90%', msg: "Finalizing AI Output..." }
-        ];
+        let detailText = document.getElementById('progress-detail');
+        if (!detailText) {
+            detailText = document.createElement('p');
+            detailText.className = "text-muted mt-2 fw-bold";
+            detailText.id = "progress-detail";
+            text.parentNode.insertBefore(detailText, text.nextSibling);
+        }
 
-        let i = 0;
-        setInterval(() => {
-            if (i < stages.length) {
-                bar.style.width = stages[i].width;
-                text.innerText = stages[i].msg;
-                i++;
+        overlay.style.display = 'flex';
+        bar.style.width = '5%';
+        text.innerText = "Initializing and Uploading Document...";
+        detailText.innerText = "Please wait while we prepare the AI...";
+
+        let formData = new FormData(this);
+        
+        try {
+            let initResponse = await fetch('', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            let initData = await initResponse.json();
+            
+            if (initData.status === 'error') {
+                alert(initData.message);
+                overlay.style.display = 'none';
+                return;
             }
-        }, 8000); // Advances stage every 8 seconds
+            
+            let totalPages = initData.total_pages;
+            text.innerText = "Processing Invoices...";
+            
+            for (let pg = 1; pg <= totalPages; pg++) {
+                bar.style.width = Math.round((pg / totalPages) * 100) + '%';
+                detailText.innerText = `Extracting Page ${pg} of ${totalPages}...`;
+                
+                let pageForm = new FormData();
+                pageForm.append('action', 'process_page');
+                pageForm.append('page', pg);
+                pageForm.append('csrfmiddlewaretoken', formData.get('csrfmiddlewaretoken'));
+                
+                let pageResponse = await fetch('', {
+                    method: 'POST',
+                    body: pageForm,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                let pageData = await pageResponse.json();
+                if (pageData.status === 'error') {
+                    console.error("Page processing error:", pageData.message);
+                }
+            }
+            
+            text.innerText = "Finalizing AI Output...";
+            detailText.innerText = "Saving extracted data...";
+            
+            let finForm = new FormData();
+            finForm.append('action', 'finalize');
+            finForm.append('csrfmiddlewaretoken', formData.get('csrfmiddlewaretoken'));
+            
+            let finResponse = await fetch('', {
+                method: 'POST',
+                body: finForm,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            let finData = await finResponse.json();
+            
+            if (finData.status === 'success') {
+                window.location.href = finData.redirect_url;
+            } else {
+                alert("Finalization error: " + finData.message);
+                overlay.style.display = 'none';
+            }
+            
+        } catch (error) {
+            console.error(error);
+            alert("A network error occurred. Please try again.");
+            overlay.style.display = 'none';
+        }
     });
 </script>
 {% endblock %}

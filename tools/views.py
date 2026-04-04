@@ -23,8 +23,9 @@ from django.core.paginator import Paginator
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm, MultiplePDFUploadForm,\
-TOSUploadForm
-from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor
+MonthlyClosingForm, AccrualFormSet, FXFormSet
+from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
+TaxLiabilitiesProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -1678,176 +1679,233 @@ def upload_proposals_view(request):
     return render(request, 'tools/engagement_extract.html', {'form': form})
 
 @login_required
-def process_tos_view(request):
+def monthly_closing_view(request):
     if request.method == 'POST':
-        form = TOSUploadForm(request.POST, request.FILES)
-        if form.is_valid():
+        form = MonthlyClosingForm(request.POST, request.FILES)
+        accrual_formset = AccrualFormSet(request.POST, prefix='accrual')
+        fx_formset = FXFormSet(request.POST, prefix='fx')
+
+        if form.is_valid() and accrual_formset.is_valid() and fx_formset.is_valid():
             client = form.cleaned_data['client']
             date = form.cleaned_data['date']
-            pdf_file = form.cleaned_data['pdf_file']
-            salary_payable_usd = form.cleaned_data['salary_payable']
-
-            # 1. Initialize Processor
-            api_key = getattr(settings, "GEMINI_API_KEY", os.getenv("GEMINI_API_KEY_2"))
+            
+            # =========================================================
+            # 1. Initialize the AI Processor
+            # =========================================================
+            # Make sure GEMINI_API_KEY_2 is set in your environment variables
+            api_key = os.getenv("GEMINI_API_KEY_2")
             if not api_key:
-                messages.error(request, "API Key missing.")
-                return render(request, 'tools/tos_upload.html', {'form': form})
-                
-            print(f"\n{'='*50}\n🚀 STARTING TAX ON SALARY (TOS) PROCESSING\n{'='*50}")
-            print(f"🏢 Target Client: {client.name}")
-            print(f"📄 Uploaded File: {pdf_file.name}")
-            print(f"💵 User Input - Salary Payable: ${salary_payable_usd}")
-            print("⏳ Extracting data via Gemini AI...")
-
-            processor = TOSPDFProcessor(api_key=api_key)
+                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing from environment variables.")
+                return render(request, 'tools/monthly_closing.html', {
+                    'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
+                })
             
-            # 2. Extract Data via AI
-            pdf_bytes = pdf_file.read()
-            data = processor.extract_tax_data(pdf_bytes)
-
-            if data.get("error"):
-                print("❌ AI Extraction Failed.")
-                messages.error(request, "Failed to parse the PDF. Please check the document format.")
-                return render(request, 'tools/tos_upload.html', {'form': form})
-
-            # Log AI Cost
-            costs = processor.cost_stats
-            total_cost = costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
-            if total_cost > 0:
-                AICostLog.objects.create(
-                    file_name=pdf_file.name,
-                    total_pages=1,
-                    flash_cost=costs.get('flash_cost', 0),
-                    pro_cost=costs.get('pro_cost', 0),
-                    total_cost=total_cost
-                )
-
-            # 3. Deterministic Python Calculations
-            exchange_rate = data['exchange_rate']
-            period = data['declaration_period'] # e.g. "Jan'26"
-            
-            print(f"✅ AI Extraction Complete.")
-            print(f"   📅 Period: {period} | 💱 Exchange Rate: {exchange_rate}")
-
-            if exchange_rate <= 0:
-                print("❌ Invalid Exchange Rate (<= 0). Aborting.")
-                messages.error(request, "Invalid exchange rate extracted (0). Cannot convert currencies.")
-                return render(request, 'tools/tos_upload.html', {'form': form})
-
-            salary_expense_usd = data['net_salary_usd']
-            meal_expense_usd = round(salary_payable_usd - salary_expense_usd, 2)
-            
-            tax_resident_usd = round(data['tos_base_resident_khr'] / exchange_rate, 2)
-            tax_non_resident_usd = round(data['tos_base_non_resident_khr'] / exchange_rate, 2)
-            
-            total_tax_expense_usd = round(tax_resident_usd + tax_non_resident_usd, 2)
-
-            print(f"📊 FINANCIAL CALCULATIONS & COSTS (USD):")
-            print(f"   - Salary Expense: ${salary_expense_usd}")
-            print(f"   - Meal Expense:   ${meal_expense_usd}")
-            print(f"   - Resident Tax:   ${tax_resident_usd}")
-            print(f"   - Non-Res Tax:    ${tax_non_resident_usd}")
-            print(f"   - Total Tax Exp:  ${total_tax_expense_usd}")
-            print("💾 Saving records to database...")
-
-            # 4. Fetch or Create Vendors
-            vendor_staff, _ = Vendor.objects.get_or_create(name='Staff')
             vendor_tax, _ = Vendor.objects.get_or_create(name='General Department of Taxation')
+            vendor_staff, _ = Vendor.objects.get_or_create(name='Staff')
 
-            # 5. Define the common line-item logic
-            # This makes it easy to generate both Vouchers and Journal Lines
-            transaction_lines = [
-                {
-                    "vendor": vendor_staff, "instruction": "705000", 
-                    "description": f"Salary expense {period}", 
-                    "debit": salary_expense_usd, "credit": 0.0
-                },
-                {
-                    "vendor": vendor_staff, "instruction": "705070", 
-                    "description": f"Meal expense {period}", 
-                    "debit": meal_expense_usd, "credit": 0.0
-                },
-                {
-                    "vendor": vendor_tax, "instruction": "725410", 
-                    "description": f"Salary tax expense {period}", 
-                    "debit": total_tax_expense_usd, "credit": 0.0
-                },
-                {
-                    "vendor": vendor_tax, "instruction": "210030", 
-                    "description": f"Salary tax expense {period}", 
-                    "debit": 0.0, "credit": tax_resident_usd
-                },
-                {
-                    "vendor": vendor_tax, "instruction": "210030", 
-                    "description": f"NR Salary tax expense {period}", 
-                    "debit": 0.0, "credit": tax_non_resident_usd
-                },
-                {
-                    "vendor": vendor_staff, "instruction": "225070", 
-                    "description": f"Being accrued for salary expense {period}", 
-                    "debit": 0.0, "credit": salary_payable_usd
-                }
-            ]
+            transaction_lines = [] 
+            period_label = "Current Month"
+            total_ai_cost = 0.0 # Initialize aggregate cost tracker
 
-            # Filter out any lines where the amount is 0 (e.g., if there's no Non-Resident tax or Meal Expense)
+            print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
+            print(f"🏢 Target Client: {client.name}")
+            print(f"📅 Voucher Date: {date}")
+
+            # =========================================================
+            # SCENARIO A (Part 1): Tax on Salary (TOS)
+            # =========================================================
+            if form.cleaned_data.get('tos_pdf') and form.cleaned_data.get('salary_payable'):
+                print("\n[ MODULE 1 ] Processing Tax on Salary (TOS)...")
+                pdf_bytes = form.cleaned_data['tos_pdf'].read()
+                salary_payable_usd = form.cleaned_data['salary_payable']
+                
+                print(f"💵 User Input - Salary Payable: ${salary_payable_usd}")
+                print("⏳ Extracting data via Gemini AI...")
+                
+                processor = TOSPDFProcessor(api_key=api_key)
+                data = processor.extract_tax_data(pdf_bytes)
+
+                if not data.get('error') and data.get('exchange_rate', 0) > 0:
+                    period_label = data['declaration_period']
+                    
+                    print(f"✅ AI Extraction Complete. (Period: {period_label} | FX: {data['exchange_rate']})")
+                    print(f"💲 AI Cost for TOS: ${processor.cost_stats['flash_cost']:.6f}")
+                    total_ai_cost += processor.cost_stats['flash_cost']
+                    
+                    # Deterministic Math
+                    salary_expense_usd = data['net_salary_usd']
+                    meal_expense_usd = round(salary_payable_usd - salary_expense_usd, 2)
+                    tax_res_usd = round(data['tos_base_resident_khr'] / data['exchange_rate'], 2)
+                    tax_non_res_usd = round(data['tos_base_non_resident_khr'] / data['exchange_rate'], 2)
+                    total_tax = round(tax_res_usd + tax_non_res_usd, 2)
+
+                    print(f"📊 Derived Python Calculations (USD):")
+                    print(f"   - Salary Expense: ${salary_expense_usd}")
+                    print(f"   - Meal Expense:   ${meal_expense_usd}")
+                    print(f"   - Total TOS Tax:  ${total_tax}")
+
+                    transaction_lines.extend([
+                        {"vendor": vendor_staff, "instruction": "705000", "desc": f"Salary expense {period_label}", "debit": salary_expense_usd, "credit": 0.0},
+                        {"vendor": vendor_staff, "instruction": "705070", "desc": f"Meal expense {period_label}", "debit": meal_expense_usd, "credit": 0.0},
+                        {"vendor": vendor_tax, "instruction": "725410", "desc": f"Salary tax expense {period_label}", "debit": total_tax, "credit": 0.0},
+                        {"vendor": vendor_tax, "instruction": "210030", "desc": f"Salary tax expense {period_label}", "debit": 0.0, "credit": tax_res_usd},
+                        {"vendor": vendor_tax, "instruction": "210030", "desc": f"NR Salary tax expense {period_label}", "debit": 0.0, "credit": tax_non_res_usd},
+                        {"vendor": vendor_staff, "instruction": "225070", "desc": f"Being accrued for salary expense {period_label}", "debit": 0.0, "credit": salary_payable_usd}
+                    ])
+                else:
+                    print("❌ TOS Processing Failed (AI Error or Zero FX Rate).")
+
+            # =========================================================
+            # SCENARIO A (Part 2): Tax Liabilities (WHT & FBT)
+            # =========================================================
+            if form.cleaned_data.get('tax_liabilities_pdf'):
+                print("\n[ MODULE 2 ] Processing Tax Liabilities (WHT & FBT)...")
+                pdf_bytes = form.cleaned_data['tax_liabilities_pdf'].read()
+                print("⏳ Extracting data via Gemini AI...")
+                
+                processor = TaxLiabilitiesProcessor(api_key=api_key)
+                data = processor.extract_liabilities_data(pdf_bytes)
+
+                if not data.get('error'):
+                    period = data.get('declaration_period', period_label)
+                    print(f"✅ AI Extraction Complete. (Period: {period})")
+                    print(f"💲 AI Cost for Liabilities: ${processor.cost_stats['flash_cost']:.6f}")
+                    total_ai_cost += processor.cost_stats['flash_cost']
+                    
+                    # WHT Math
+                    total_wht = round(data['wht_10_usd'] + data['wht_15_usd'], 2)
+                    if total_wht > 0:
+                        print(f"📊 Derived Python Calculation - Total WHT: ${total_wht}")
+                        desc = f"Being accrued for Withholding tax expenses in {period}"
+                        transaction_lines.extend([
+                            {"vendor": vendor_tax, "instruction": "725420", "desc": desc, "debit": total_wht, "credit": 0.0},
+                            {"vendor": vendor_tax, "instruction": "210040", "desc": desc, "debit": 0.0, "credit": total_wht}
+                        ])
+
+                    # FBT Math
+                    fbt = round(data['fbt_usd'], 2)
+                    if fbt > 0:
+                        print(f"📊 Extracted FBT: ${fbt}")
+                        desc = f"Being accrued for Fringe Benefit tax expenses in {period}"
+                        transaction_lines.extend([
+                            {"vendor": vendor_tax, "instruction": "705010", "desc": desc, "debit": fbt, "credit": 0.0},
+                            {"vendor": vendor_tax, "instruction": "210031", "desc": desc, "debit": 0.0, "credit": fbt}
+                        ])
+                else:
+                    print("❌ Tax Liabilities Processing Failed.")
+
+            # =========================================================
+            # SCENARIO B: Accrued Expenses
+            # =========================================================
+            print("\n[ MODULE 3 ] Processing Manual Accruals...")
+            accrual_count = 0
+            for a_form in accrual_formset:
+                if a_form.cleaned_data and not a_form.cleaned_data.get('DELETE', False) and a_form.cleaned_data.get('debit', 0) > 0:
+                    debit_amt = round(a_form.cleaned_data['debit'], 2)
+                    vendor = a_form.cleaned_data['vendor']
+                    desc = a_form.cleaned_data['description']
+                    
+                    transaction_lines.extend([
+                        {"vendor": vendor, "instruction": a_form.cleaned_data['account_id'], "desc": desc, "debit": debit_amt, "credit": 0.0},
+                        {"vendor": vendor, "instruction": "215090", "desc": desc, "debit": 0.0, "credit": debit_amt}
+                    ])
+                    accrual_count += 1
+            print(f"✅ Processed {accrual_count} User Accrual entries.")
+
+            # =========================================================
+            # SCENARIO C: FX Gain/Loss
+            # =========================================================
+            print("\n[ MODULE 4 ] Processing FX Gain/Loss...")
+            fx_count = 0
+            for f_form in fx_formset:
+                if f_form.cleaned_data and not f_form.cleaned_data.get('DELETE', False) and f_form.cleaned_data.get('exchange_rate', 0) > 0:
+                    open_bal = f_form.cleaned_data['openning_balance']
+                    end_bal = f_form.cleaned_data['ending_balance']
+                    fx_rate = f_form.cleaned_data['exchange_rate']
+                    vendor = f_form.cleaned_data['vendor']
+                    desc = f_form.cleaned_data['description']
+
+                    # Deterministic FX Formula
+                    fx_diff = abs(round((end_bal / fx_rate) - open_bal, 2))
+                    
+                    if fx_diff > 0:
+                        transaction_lines.extend([
+                            {"vendor": vendor, "instruction": f_form.cleaned_data['account_id'], "desc": desc, "debit": fx_diff, "credit": 0.0},
+                            {"vendor": vendor, "instruction": "100210", "desc": desc, "debit": 0.0, "credit": fx_diff}
+                        ])
+                        fx_count += 1
+            print(f"✅ Calculated {fx_count} FX Adjustments.")
+
+            # =========================================================
+            # ATOMIC DATABASE SAVE & COST LOGGING
+            # =========================================================
+            print("\n[ FINALIZING ] Initiating Database Transaction...")
             transaction_lines = [line for line in transaction_lines if line['debit'] > 0 or line['credit'] > 0]
 
-            # 6. Database Transaction (Atomic)
-            try:
-                with transaction.atomic():
-                    
-                    # 6A. Create the Journal Vouchers
-                    jv_records = []
-                    for line_data in transaction_lines:
-                        jv_records.append(JournalVoucher(
-                            client=client,
-                            date=date,
-                            vendor=line_data['vendor'],
-                            account_id=int(line_data['instruction']), # Map string to integer account_id
-                            description=line_data['description'],
-                            debit=line_data['debit'],
-                            credit=line_data['credit']
-                        ))
-                    JournalVoucher.objects.bulk_create(jv_records)
-
-                    # 6B. Create the Header Journal Entry
-                    journal_entry = JournalEntry.objects.create(
-                        client=client,
-                        date=date,
-                        description=f"Payroll & TOS Accrual for {period}"
-                    )
-
-                    # 6C. Create the related Journal Lines
-                    jl_records = []
-                    for line_data in transaction_lines:
-                        account_id_str = line_data['instruction']
-                        account_instance, _ = Account.objects.get_or_create(
-                            client=client,
-                            account_id=account_id_str,
-                            defaults={'name': 'System Gen TOS Acct', 'account_type': 'Expense'}
+            if transaction_lines:
+                try:
+                    with transaction.atomic():
+                        # 1. Create Header Entry
+                        journal_entry = JournalEntry.objects.create(
+                            client=client, date=date, description=f"Monthly Closing Automation - {period_label}"
                         )
-                        jl_records.append(JournalLine(
-                            journal_entry=journal_entry,      # Correct FK field name
-                            account=account_instance,         # Must be an Account object
-                            description=line_data['description'],
-                            debit=line_data['debit'],
-                            credit=line_data['credit']
-                        ))
-                    JournalLine.objects.bulk_create(jl_records)
 
-                # If we reach this point, the transaction was 100% successful
-                print(f"🎉 SUCCESS: {len(jv_records)} Vouchers and 1 Journal Entry ({len(jl_records)} lines) posted.")
-                print(f"{'='*50}\n")
-                messages.success(request, f"Successfully processed {period}. Created {len(jv_records)} Vouchers and 1 Journal Entry with {len(jl_records)} lines.")
-                return redirect('tools:tos_upload')
+                        # 2. Bulk Create Vouchers and Journal Lines
+                        jv_records = []
+                        jl_records = []
+                        
+                        for line in transaction_lines:
+                            jv_records.append(
+                                JournalVoucher(client=client, date=date, vendor=line['vendor'], instruction=line['instruction'], description=line['desc'], debit=line['debit'], credit=line['credit']) 
+                            )
+                            
+                            # Ensure the mapped Account exists for the client
+                            account, _ = Account.objects.get_or_create(
+                                client=client,
+                                account_id=str(line['instruction']),
+                                defaults={'name': 'System Gen Acct', 'account_type': 'Expense'}
+                            )
+                            
+                            jl_records.append(
+                                JournalLine(
+                                    journal_entry=journal_entry, account=account,
+                                    debit=line['debit'], credit=line['credit'], description=line['desc'][:255]
+                                )
+                            )
+                            
+                        JournalVoucher.objects.bulk_create(jv_records)
+                        JournalLine.objects.bulk_create(jl_records)
 
-            except Exception as db_error:
-                # If anything fails (Voucher, Entry, or Line), the DB rolls back automatically
-                print(f"❌ Database Error: {str(db_error)}")
-                messages.error(request, f"Database Error while saving records: {str(db_error)}")
-                return render(request, 'tools/tos_upload.html', {'form': form})
+                        # 3. Save Total Cost to DB Log (if model exists)
+                        if total_ai_cost > 0:
+                            try:
+                                AICostLog.objects.create(
+                                    file_name=f"Monthly Closing Batch - {period_label}",
+                                    total_pages=2, # Assuming 2 PDFs processed max
+                                    flash_cost=total_ai_cost,
+                                    total_cost=total_ai_cost
+                                )
+                            except NameError:
+                                pass # AICostLog model not imported/used
+
+                    print(f"🎉 SUCCESS: {len(jv_records)} Journal Vouchers Generated.")
+                    print(f"💰 TOTAL BATCH AI COST: ${total_ai_cost:.6f}")
+                    print(f"{'='*60}\n")
+                    
+                    messages.success(request, f"Successfully processed {period_label}. Created {len(jv_records)} Journal Voucher records.")
+                    return redirect('tools:monthly_closing')
+                except Exception as db_error:
+                    print(f"❌ DATABASE ERROR: {str(db_error)}")
+                    messages.error(request, f"Database Error: {str(db_error)}")
+            else:
+                print("⚠️ WARNING: No valid transactions were extracted or entered. Transaction Aborted.")
+                messages.warning(request, "No valid transactions were extracted or entered.")
 
     else:
-        form = TOSUploadForm()
+        form = MonthlyClosingForm()
+        accrual_formset = AccrualFormSet(prefix='accrual')
+        fx_formset = FXFormSet(prefix='fx')
 
-    return render(request, 'tools/tos_upload.html', {'form': form})
+    return render(request, 'tools/monthly_closing.html', {
+        'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
+    })

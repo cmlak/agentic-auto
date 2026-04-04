@@ -44,5 +44,5 @@ urlpatterns = [
     path('proposals/upload/', views.upload_proposals_view, name='upload_proposals'),
 
     # Journal Voucher
-    path('upload/tos/', views.process_tos_view, name='tos_upload'),
+    path('journal-vouchers/upload/', views.monthly_closing_view, name='monthly_closing'),
 ]

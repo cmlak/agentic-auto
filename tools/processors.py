@@ -544,21 +544,16 @@ class ProposalPDFProcessor:
                 "service_proposed": "", "fee_detail": ""
             }
 
-# --------------------------------------------------------------------
-# Journal Voucher Creation
-# PHASE 1: STRICT DATA SCHEMA
-# Define the exact shape of the extracted data. No calculations here.
-# --------------------------------------------------------------------
+# ====================================================================
+# SCHEMA 1: Tax on Salary (TOS)
+# ====================================================================
 class TaxOnSalaryData(BaseModel):
-    declaration_period: str = Field(description="The month and year of the declaration formatted as 'MMM''YY' (e.g., \"Jan'26\").")
-    exchange_rate: float = Field(description="The official exchange rate printed on the declaration. (e.g., 4050.0)")
-    net_salary_usd: float = Field(description="The Total Net Salary. Return a clean float (e.g., 7443.0).")
-    tos_base_resident_khr: float = Field(description="The Total TOS Calculation Base (Resident) in KHR. Strip currency symbols and commas. (e.g., 4388340.0)")
-    tos_base_non_resident_khr: float = Field(description="The Total TOS Calculation Base (Non-resident) in KHR. Strip currency symbols and commas. (e.g., 877668.0)")
+    declaration_period: str = Field(description="The declaration period formatted as 'MMM''YY' (e.g., \"Jan'26\").")
+    exchange_rate: float = Field(description="Official exchange rate. (e.g., 4050.0)")
+    net_salary_usd: float = Field(description="Total Net Salary. Clean float (e.g., 7443.0).")
+    tos_base_resident_khr: float = Field(description="Total TOS Base (Resident) in KHR. Strip commas. (e.g., 4388340.0)")
+    tos_base_non_resident_khr: float = Field(description="Total TOS Base (Non-resident) in KHR. Strip commas. (e.g., 877668.0)")
 
-# --------------------------------------------------------------------
-# PHASE 2 & 3: THE PROCESSOR & PROMPT CONSTRUCTION
-# --------------------------------------------------------------------
 class TOSPDFProcessor:
     def __init__(self, api_key: str):
         self.client = genai.Client(api_key=api_key)
@@ -566,55 +561,74 @@ class TOSPDFProcessor:
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
 
     def _calculate_cost(self, usage):
-        """Calculates the cost of a Gemini API call for flash model."""
+        """Calculates the cost of a Gemini API call based on token usage."""
+        # Input: $0.075 / 1M tokens, Output: $0.30 / 1M tokens (Updated Flash pricing)
         if usage:
-            return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
+            return ((usage.prompt_token_count / 1e6) * 0.075) + ((usage.candidates_token_count / 1e6) * 0.30)
         return 0.0
 
     def extract_tax_data(self, pdf_bytes: bytes) -> dict:
         document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
-
         prompt = """
-        You are an expert tax accountant. Read the attached Tax on Salary (TOS) declaration 
-        and extract the required numerical values perfectly.
-
+        You are an expert tax accountant. Read the attached Tax on Salary (TOS) declaration.
         CRITICAL INSTRUCTIONS (EXHAUSTIVE EXTRACTION):
-        1. Exhaustive Extraction: Scan the ENTIRE document to find the total calculation bases for both Residents and Non-Residents.
-        2. Float Formatting: Return purely numeric floats. Remove all commas and currency symbols (e.g., 'KHR 4,388,340' MUST become 4388340.0).
-        3. Exchange Rate: Locate the official exchange rate for the period on the form.
-        4. Date Formatting: Extract the declaration period and format it exactly as "MMM'YY" (e.g., "Jan'26").
-        5. Missing Data Default: If a non-resident base doesn't exist, return 0.0.
-
-        Extract the data exactly matching the JSON schema provided.
+        1. Exhaustive Extraction: Scan the ENTIRE document to find calculation bases for Residents and Non-Residents.
+        2. Float Formatting: Return purely numeric floats without commas or currency symbols.
+        3. Exchange Rate: Locate the official exchange rate.
+        4. Date Formatting: Extract period exactly as "MMM'YY" (e.g., "Jan'26").
+        5. Missing Data: If a base doesn't exist, return 0.0.
         """
-
-        # PHASE 4: CONSTRAINED AI EXECUTION
-        config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=TaxOnSalaryData,
-            temperature=0.0 # Absolute deterministic extraction
-        )
-
+        config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=TaxOnSalaryData, temperature=0.0)
         try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
+            response = self.client.models.generate_content(model=self.model_name, contents=[prompt, document_part], config=config)
             
+            # Cost Tracking
             cost = self._calculate_cost(response.usage_metadata)
             self.cost_stats["flash_cost"] += cost
             
             return json.loads(response.text)
-            
         except Exception as e:
-            print(f"AI Extraction Error: {str(e)}")
-            # PHASE 6: GRACEFUL DEGRADATION
-            return {
-                "error": True,
-                "declaration_period": "",
-                "exchange_rate": 0.0,
-                "net_salary_usd": 0.0,
-                "tos_base_resident_khr": 0.0,
-                "tos_base_non_resident_khr": 0.0
-            }
+            print(f"TOS AI Error: {str(e)}")
+            return {"error": True}
+
+# ====================================================================
+# SCHEMA 2: Tax Liabilities (WHT & FBT)
+# ====================================================================
+class TaxLiabilitiesData(BaseModel):
+    declaration_period: str = Field(description="The declaration period formatted as 'MMM''YY' (e.g., \"Jan'26\").")
+    fbt_usd: float = Field(description="Total 20% Fringe Benefit Tax in USD. Clean float (e.g., 65.82). Return 0.0 if missing.")
+    wht_10_usd: float = Field(description="Total 10% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
+    wht_15_usd: float = Field(description="Total 15% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
+
+class TaxLiabilitiesProcessor:
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def _calculate_cost(self, usage):
+        if usage:
+            return ((usage.prompt_token_count / 1e6) * 0.075) + ((usage.candidates_token_count / 1e6) * 0.30)
+        return 0.0
+
+    def extract_liabilities_data(self, pdf_bytes: bytes) -> dict:
+        document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+        prompt = """
+        You are an expert tax accountant. Read the attached Tax Liabilities Declaration.
+        CRITICAL INSTRUCTIONS (EXHAUSTIVE EXTRACTION):
+        1. Exhaustive Extraction: Scan the ENTIRE document. Find Fringe Benefit Tax and Withholding Taxes (10% and 15%).
+        2. Float Formatting: Return purely numeric floats in USD ONLY. Remove commas/symbols.
+        3. Missing Data: If a tax category does not exist, return 0.0.
+        """
+        config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=TaxLiabilitiesData, temperature=0.0)
+        try:
+            response = self.client.models.generate_content(model=self.model_name, contents=[prompt, document_part], config=config)
+            
+            # Cost Tracking
+            cost = self._calculate_cost(response.usage_metadata)
+            self.cost_stats["flash_cost"] += cost
+            
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Liabilities AI Error: {str(e)}")
+            return {"error": True}

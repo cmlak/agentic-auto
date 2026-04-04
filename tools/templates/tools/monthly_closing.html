@@ -1,0 +1,168 @@
+{% extends 'base_4_kpi.html' %} 
+{% block content %}
+<div class="container mt-4">
+    <h2 class="mb-4">Unified Monthly Closing & Automation</h2>
+    
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }} alert-dismissible fade show">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <form method="POST" enctype="multipart/form-data">
+        {% csrf_token %}
+        
+        <div class="card mb-4 shadow-sm border-primary">
+            <div class="card-header bg-primary text-white"><h5>Scenario A: Automated Tax Extractions</h5></div>
+            <div class="card-body row">
+                <div class="col-md-6 mb-3">{{ form.client.label_tag }} {{ form.client }}</div>
+                <div class="col-md-6 mb-3">{{ form.date.label_tag }} {{ form.date }}</div>
+                
+                <hr class="mt-2 mb-3">
+                <div class="col-md-6 mb-3">
+                    {{ form.tos_pdf.label_tag }} {{ form.tos_pdf }}
+                    <small class="text-muted mt-1 d-block">Upload 'Tax on Salary' Declaration</small>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label class="form-label">Salary Payable (Required if TOS uploaded)</label>
+                    {{ form.salary_payable }}
+                </div>
+
+                <div class="col-md-12 mb-2">
+                    {{ form.tax_liabilities_pdf.label_tag }} {{ form.tax_liabilities_pdf }}
+                    <small class="text-muted mt-1 d-block">Upload 'Tax Liabilities' Declaration (WHT/FBT)</small>
+                </div>
+            </div>
+        </div>
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-success text-white"><h5>Scenario B: Accrued Expenses (Auto-Credits to 215090)</h5></div>
+            <div class="card-body p-0">
+                {{ accrual_formset.management_form }}
+                <div class="table-responsive">
+                    <table class="table table-striped mb-0">
+                        <thead class="table-light">
+                            <tr><th>Account ID</th><th>Vendor</th><th>Description</th><th>Debit Amount ($)</th><th class="text-center">Del</th></tr>
+                        </thead>
+                        <tbody id="accrual-tbody">
+                            {% for a_form in accrual_formset %}
+                            <tr>
+                                <td>{{ a_form.account_id }}</td>
+                                <td>{{ a_form.vendor }}</td>
+                                <td>{{ a_form.description }}</td>
+                                <td>{{ a_form.debit }}</td>
+                                <td class="text-center align-middle">
+                                    {% if accrual_formset.can_delete %}{{ a_form.DELETE }}{% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="p-2 bg-light border-top d-flex justify-content-end">
+                    <button type="button" id="add-accrual-btn" class="btn btn-sm btn-outline-success">➕ Add Accrual</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Hidden empty form template for Javascript cloning (Accrual) -->
+        <table style="display: none;">
+            <tbody id="empty-accrual-form">
+                <tr>
+                    <td>{{ accrual_formset.empty_form.account_id }}</td>
+                    <td>{{ accrual_formset.empty_form.vendor }}</td>
+                    <td>{{ accrual_formset.empty_form.description }}</td>
+                    <td>{{ accrual_formset.empty_form.debit }}</td>
+                    <td class="text-center align-middle">{% if accrual_formset.can_delete %}{{ accrual_formset.empty_form.DELETE }}{% endif %}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <div class="card mb-4 shadow-sm">
+            <div class="card-header bg-warning text-dark"><h5>Scenario C: FX Gain/Loss (Auto-Credits to 100210)</h5></div>
+            <div class="card-body p-0">
+                {{ fx_formset.management_form }}
+                <div class="table-responsive">
+                    <table class="table table-striped mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Account ID</th><th>Vendor</th><th>Description</th>
+                                <th>Open Bal (USD)</th><th>End Bal (KHR)</th><th>FX Rate</th><th class="text-center">Del</th>
+                            </tr>
+                        </thead>
+                        <tbody id="fx-tbody">
+                            {% for f_form in fx_formset %}
+                            <tr>
+                                <td>{{ f_form.account_id }}</td>
+                                <td>{{ f_form.vendor }}</td>
+                                <td>{{ f_form.description }}</td>
+                                <td>{{ f_form.openning_balance }}</td>
+                                <td>{{ f_form.ending_balance }}</td>
+                                <td>{{ f_form.exchange_rate }}</td>
+                                <td class="text-center align-middle">
+                                    {% if fx_formset.can_delete %}{{ f_form.DELETE }}{% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <div class="p-2 bg-light border-top d-flex justify-content-end">
+                    <button type="button" id="add-fx-btn" class="btn btn-sm btn-outline-warning text-dark">➕ Add FX Row</button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Hidden empty form template for Javascript cloning (FX) -->
+        <table style="display: none;">
+            <tbody id="empty-fx-form">
+                <tr>
+                    <td>{{ fx_formset.empty_form.account_id }}</td>
+                    <td>{{ fx_formset.empty_form.vendor }}</td>
+                    <td>{{ fx_formset.empty_form.description }}</td>
+                    <td>{{ fx_formset.empty_form.openning_balance }}</td>
+                    <td>{{ fx_formset.empty_form.ending_balance }}</td>
+                    <td>{{ fx_formset.empty_form.exchange_rate }}</td>
+                    <td class="text-center align-middle">{% if fx_formset.can_delete %}{{ fx_formset.empty_form.DELETE }}{% endif %}</td>
+                </tr>
+            </tbody>
+        </table>
+
+        <button type="submit" class="btn btn-primary btn-lg w-100 mb-5 shadow">
+            <i class="fas fa-magic me-2"></i> Process Documents & Generate Vouchers
+        </button>
+    </form>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", function() {
+    function setupDynamicFormset(addBtnId, tbodyId, emptyFormId, totalFormsId) {
+        const addBtn = document.getElementById(addBtnId);
+        const tbody = document.getElementById(tbodyId);
+        const emptyFormHtml = document.getElementById(emptyFormId).innerHTML;
+        const totalForms = document.getElementById(totalFormsId);
+
+        if (addBtn && tbody && emptyFormHtml && totalForms) {
+            addBtn.addEventListener("click", function(e) {
+                e.preventDefault();
+                const currentFormCount = parseInt(totalForms.value);
+                
+                // Replace the __prefix__ placeholder inside the hidden template with the next available index
+                const newRowHtml = emptyFormHtml.replace(/__prefix__/g, currentFormCount);
+                
+                // Append to the table and increment the management form's index tracker
+                tbody.insertAdjacentHTML('beforeend', newRowHtml);
+                totalForms.value = currentFormCount + 1;
+            });
+        }
+    }
+
+    // Initialize both formsets using their specific prefixes matching the Django backend view
+    setupDynamicFormset("add-accrual-btn", "accrual-tbody", "empty-accrual-form", "id_accrual-TOTAL_FORMS");
+    setupDynamicFormset("add-fx-btn", "fx-tbody", "empty-fx-form", "id_fx-TOTAL_FORMS");
+});
+</script>
+{% endblock %}

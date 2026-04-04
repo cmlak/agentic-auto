@@ -3,6 +3,7 @@ from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
 from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog
+from account.models import Account
 
 class BatchUploadForm(forms.Form):
     client = forms.ModelChoiceField(
@@ -515,7 +516,7 @@ class MultiplePDFUploadForm(forms.Form):
             'accept': '.pdf'
         })
 
-class TOSUploadForm(forms.Form):
+class MonthlyClosingForm(forms.Form):
     client = forms.ModelChoiceField(
         queryset=Client.objects.all(),
         empty_label="--- Select Client ---",
@@ -525,12 +526,53 @@ class TOSUploadForm(forms.Form):
         widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
         label="Voucher Date"
     )
-    pdf_file = forms.FileField(
-        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}),
-        label="Tax on Salary Declaration (PDF)"
-    )
-    salary_payable = forms.FloatField(
-        widget=forms.NumberInput(attrs={'class': 'form-control'}),
-        label="Total Salary Payable (USD)",
-        help_text="Enter the total salary payable to calculate staff meal expenses (e.g., 7663.00)."
-    )
+    # TOS Section
+    tos_pdf = forms.FileField(required=False, widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}), label="Tax on Salary PDF")
+    salary_payable = forms.FloatField(required=False, widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Total Salary Payable (USD)'}))
+    
+    # Liabilities Section
+    tax_liabilities_pdf = forms.FileField(required=False, widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}), label="Tax Liabilities PDF")
+
+class AccrualForm(forms.Form):
+    account_id = forms.ChoiceField(widget=forms.Select(attrs={'class': 'form-select'}))
+    vendor = forms.ModelChoiceField(queryset=Vendor.objects.all(), required=False, widget=forms.Select(attrs={'class': 'form-select'}))
+    description = forms.CharField(max_length=255, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'}))
+    debit = forms.FloatField(widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Amount (USD)'}))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        try:
+            choices = [('', '--- Select Account ---')]
+            seen = set()
+            for acc_id, name in Account.objects.values_list('account_id', 'name'):
+                if acc_id not in seen:
+                    seen.add(acc_id)
+                    choices.append((acc_id, f"{acc_id} - {name}"))
+            self.fields['account_id'].choices = choices
+        except Exception:
+            self.fields['account_id'].choices = [('', '--- Select Account ---')]
+
+class FXForm(forms.Form):
+    account_id = forms.ChoiceField(widget=forms.Select(attrs={'class': 'form-select'}))
+    vendor = forms.ModelChoiceField(queryset=Vendor.objects.all(), required=False, widget=forms.Select(attrs={'class': 'form-select'}))
+    description = forms.CharField(max_length=255, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'}))
+    openning_balance = forms.FloatField(label="Opening Bal (USD)", widget=forms.NumberInput(attrs={'class': 'form-control'}))
+    ending_balance = forms.FloatField(label="Ending Bal (KHR)", widget=forms.NumberInput(attrs={'class': 'form-control'}))
+    exchange_rate = forms.FloatField(label="FX Rate", widget=forms.NumberInput(attrs={'class': 'form-control'}))
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        try:
+            choices = [('', '--- Select Account ---')]
+            seen = set()
+            for acc_id, name in Account.objects.values_list('account_id', 'name'):
+                if acc_id not in seen:
+                    seen.add(acc_id)
+                    choices.append((acc_id, f"{acc_id} - {name}"))
+            self.fields['account_id'].choices = choices
+        except Exception:
+            self.fields['account_id'].choices = [('', '--- Select Account ---')]
+
+# Formsets requiring a minimum of 3 blank forms, with deletion enabled for dynamically added ones
+AccrualFormSet = formset_factory(AccrualForm, extra=3, can_delete=True)
+FXFormSet = formset_factory(FXForm, extra=3, can_delete=True)

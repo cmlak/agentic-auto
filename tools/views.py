@@ -55,6 +55,7 @@ def invoice_ai_upload_view(request):
             api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
             processor = GeminiInvoiceProcessor(api_key=api_key)
             
+            print(f"\n[PAGE {page}] EXTRACTING KEY INVOICE DATA FROM AI...")
             ledgers, page_cost, next_seq, err = processor.process_page(
                 gemini_file_name=job['gemini_file_name'],
                 pg=page,
@@ -67,14 +68,23 @@ def invoice_ai_upload_view(request):
                 date_prefix=job['date_prefix']
             )
             
+            print(f"✅ [Page {page}] Extraction Complete | AI Cost: ${page_cost:.5f}")
             if ledgers:
+                print(f"   🎉 Extracted {len(ledgers)} invoices from Page {page}.")
+                for item in ledgers:
+                    print(f"      🔹 Inv No: {item.get('invoice_no', 'N/A')} | Vendor: {str(item.get('company', 'N/A'))[:30]} | Total: ${item.get('total_usd', 0.0)} | VAT: ${item.get('vat_usd', 0.0)}")
                 job['results'].extend(ledgers)
+            else:
+                print(f"   ⚠️ No invoices extracted from Page {page}.")
+                if err:
+                    print(f"      ❌ Error: {err}")
+
             job['current_seq'] = next_seq
             job['costs']['pro_cost'] += page_cost
             request.session['invoice_job'] = job
             request.session.save()
             
-            return JsonResponse({"status": "success", "page": page, "ledgers_count": len(ledgers), "error": err})
+            return JsonResponse({"status": "success", "page": page, "ledgers_count": len(ledgers) if ledgers else 0, "error": err})
             
         if action == 'finalize':
             job = request.session.get('invoice_job')
@@ -83,14 +93,24 @@ def invoice_ai_upload_view(request):
                 
             request.session[f'invoice_seq_{job["client_id"]}'] = job['current_seq']
             
+            print("\n[FINALIZING] LOGGING AI COSTS AND SAVING STATE...")
+            total_flash = job['costs']['flash_cost']
+            total_pro = job['costs']['pro_cost']
+            total_cost = total_flash + total_pro
+            print(f"💰 Total AI Cost for this batch: ${total_cost:.5f}")
+            
             try:
-                AICostLog.objects.create(file_name=job['file_name'], total_pages=job['total_pages'], flash_cost=job['costs']['flash_cost'], pro_cost=job['costs']['pro_cost'], total_cost=job['costs']['flash_cost'] + job['costs']['pro_cost'])
+                AICostLog.objects.create(file_name=job['file_name'], total_pages=job['total_pages'], flash_cost=total_flash, pro_cost=total_pro, total_cost=total_cost)
             except NameError:
                 pass
                 
             request.session['extracted_invoices'] = job['results']
             request.session['ai_metadata'] = {'file_name': job['file_name'], 'batch_name': job['batch_name'], 'client_id': job['client_id'], 'client_name': Client.objects.get(id=job['client_id']).name, 'total_pages': job['total_pages'], 'costs': job['costs']}
             request.session.pop('invoice_job', None)
+            
+            print("✅ Process complete. Redirecting to review screen.")
+            print("="*50 + "\n")
+            
             return JsonResponse({"status": "success", "redirect_url": reverse('tools:review_invoices')})
 
         request.session.pop('invoice_report_path', None)
@@ -168,6 +188,11 @@ def invoice_ai_upload_view(request):
                 tmp_pdf_path = tmp_pdf.name
 
             try:
+                print("\n" + "="*50)
+                print(f"🚀 STARTING INVOICE AI PROCESSING for {selected_client.name}")
+                print("="*50)
+                print("\n[INITIALIZING] UPLOADING PDF TO GEMINI...")
+                
                 # Strict Environment Variable Validation
                 api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
                 if not api_key:
@@ -184,6 +209,8 @@ def invoice_ai_upload_view(request):
                 while f.state.name == "PROCESSING": 
                     time.sleep(2)
                     f = processor.client.files.get(name=f.name)
+                    
+                print(f"✅ Uploaded {total_pages} pages successfully. Ready for extraction.")
                 
                 request.session['invoice_job'] = {
                     'gemini_file_name': f.name,

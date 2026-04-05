@@ -27,7 +27,7 @@ class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
     
     # ENHANCED: Explicit instructions for the AI on invoice extraction
-    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If completely missing, output 'NEEDS_SEQ'.")
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If explicitly instructed by rules to generate a sequence, output that generated value. If completely missing and no rules apply, output 'NEEDS_SEQ'.")
     
     vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
@@ -47,7 +47,7 @@ class PurchaseEntry(BaseModel):
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
     vat_usd: float = Field(0.0, description="The 10% VAT amount.")
     total_usd: float
-    page: int
+    page: int = Field(..., description="The physical page number. Strictly follow any rule instructing a specific starting sequence.")
 
     @model_validator(mode='after')
     def validate_tax_integrity(self):
@@ -168,8 +168,8 @@ class GeminiInvoiceProcessor:
                 
                 <ACCOUNTING_HIERARCHY_RULES>
                 1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
-                2. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
-                3. [INDUSTRY LEVEL] RULES: {rules_context}
+                2. [INDUSTRY LEVEL] RULES: {rules_context}
+                3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
                 </ACCOUNTING_HIERARCHY_RULES>
 
                 <OUTPUT_INSTRUCTIONS>
@@ -180,6 +180,7 @@ class GeminiInvoiceProcessor:
                 4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
                 5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
                 6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+                7. INVOICE & PAGE NUMBERS: Strictly follow any starting sequence or formatting rules defined in [INDUSTRY LEVEL] or [BATCH LEVEL]. If no rule exists, extract the exact printed invoice number, or use 'NEEDS_SEQ' if missing.
                 </OUTPUT_INSTRUCTIONS>
                 
                 DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
@@ -209,7 +210,7 @@ class GeminiInvoiceProcessor:
                     # 1. Determine the BASE invoice number for this specific page
                     first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
                     
-                    if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7:
+                    if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN":
                         base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
                         # Increment sequence ONLY once per page, not per split item
                         current_invoice_seq += 1 
@@ -252,7 +253,6 @@ class GeminiInvoiceProcessor:
                         entry_dict['temp_id'] = vendor_data.get('temp_id')
                         entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
                         entry_dict['batch'] = batch_name
-                        entry_dict['page'] = pg
                         
                         ledgers.append(entry_dict)
 
@@ -282,8 +282,8 @@ class GeminiInvoiceProcessor:
             
             <ACCOUNTING_HIERARCHY_RULES>
             1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
-            2. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
-            3. [INDUSTRY LEVEL] RULES: {rules_context}
+            2. [INDUSTRY LEVEL] RULES: {rules_context}
+            3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
             </ACCOUNTING_HIERARCHY_RULES>
 
             <OUTPUT_INSTRUCTIONS>
@@ -294,6 +294,7 @@ class GeminiInvoiceProcessor:
             4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
             5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
             6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+            7. INVOICE & PAGE NUMBERS: Strictly follow any starting sequence or formatting rules defined in [INDUSTRY LEVEL] or [BATCH LEVEL]. If no rule exists, extract the exact printed invoice number, or use 'NEEDS_SEQ' if missing.
             </OUTPUT_INSTRUCTIONS>
             
             DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
@@ -317,7 +318,7 @@ class GeminiInvoiceProcessor:
             if audit.purchase_entries:
                 first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
                 
-                if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7:
+                if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN":
                     base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
                     current_invoice_seq += 1 
                 else:
@@ -354,7 +355,6 @@ class GeminiInvoiceProcessor:
                     entry_dict['temp_id'] = vendor_data.get('temp_id')
                     entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
                     entry_dict['batch'] = batch_name
-                    entry_dict['page'] = pg
                     
                     ledgers.append(entry_dict)
 

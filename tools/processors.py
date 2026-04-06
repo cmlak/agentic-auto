@@ -34,11 +34,11 @@ class PurchaseEntry(BaseModel):
     description: str = Field(..., description="Detailed description of the items in the original language.")
     description_en: str = Field(..., description="Summarize the detailed description in English ONLY. Maximum 25 words.")
     
-    account_id: Optional[int] = Field(None, description="Main Debit Account ID.")
-    vat_account_id: Optional[int] = Field(None, description="Debit Account ID for VAT Input. Leave null if no VAT.")
-    wht_debit_account_id: Optional[int] = Field(None, description="Debit Account ID for WHT Expense. Leave null if no WHT.")
-    credit_account_id: int = Field(200000, description="Main Credit Account ID (Default: 200000 for Trade Payable).")
-    wht_account_id: Optional[int] = Field(None, description="Credit Account ID for WHT Payable. Leave null if no WHT.")
+    account_id: Optional[str] = Field(None, description="Main Debit Account ID strictly from the Chart of Accounts.")
+    vat_account_id: Optional[str] = Field(None, description="Debit Account ID for VAT Input strictly from the Chart of Accounts. Leave null if no VAT.")
+    wht_debit_account_id: Optional[str] = Field(None, description="Debit Account ID for WHT Expense strictly from the Chart of Accounts. Leave null if no WHT.")
+    credit_account_id: Optional[str] = Field(None, description="Main Credit Account ID strictly from the Chart of Accounts (e.g., Trade Payable).")
+    wht_account_id: Optional[str] = Field(None, description="Credit Account ID for WHT Payable strictly from the Chart of Accounts. Leave null if no WHT.")
     
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
     
@@ -93,7 +93,7 @@ class GeminiInvoiceProcessor:
         """Maps vendor strictly within the selected client's isolated database."""
         general_vendor, _ = Vendor.objects.get_or_create(
             client_id=client_id,
-            vendor_id='V001', 
+            vendor_id='V-00001', 
             defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
@@ -128,13 +128,18 @@ class GeminiInvoiceProcessor:
             if target_norm in self.batch_new_vendors:
                 return self.batch_new_vendors[target_norm]
 
-            last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
-            next_num = 2
-            if last_vendor and re.search(r'V(\d+)', last_vendor.vendor_id):
-                next_num = int(re.search(r'V(\d+)', last_vendor.vendor_id).group(1)) + 1
+            # Safely find the absolute highest numeric vendor_id in the database
+            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+            max_num = 1
+            for vid in all_vids:
+                if vid:
+                    match = re.search(r'V-?(\d+)', str(vid))
+                    if match:
+                        max_num = max(max_num, int(match.group(1)))
+            next_num = max_num + 1
             
             current_seq = next_num + len(self.batch_new_vendors)
-            new_vid = f"V{current_seq:03d}"
+            new_vid = f"V-{current_seq:05d}"
             
             vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
             self.batch_new_vendors[target_norm] = vendor_data
@@ -154,6 +159,10 @@ class GeminiInvoiceProcessor:
         ledgers = []
         current_invoice_seq = start_seq # Track the sequence across the batch
         
+        # Fetch Chart of Accounts for dynamic mapping
+        coa_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
+        coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
+        
         for pg in range(1, total_pages + 1):
             try:
                 # ---------------------------------------------------------
@@ -165,6 +174,10 @@ class GeminiInvoiceProcessor:
                 <CRITICAL_VATTIN_INSTRUCTION>
                 Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect or apply regex patterns. 
                 </CRITICAL_VATTIN_INSTRUCTION>
+                
+                <CHART_OF_ACCOUNTS>
+                {coa_context}
+                </CHART_OF_ACCOUNTS>
                 
                 <ACCOUNTING_HIERARCHY_RULES>
                 1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
@@ -179,7 +192,11 @@ class GeminiInvoiceProcessor:
                 3. VENDOR NAME: Extract the company/shop name.
                 4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
                 5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
-                6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+                6. BALANCED ASSIGNMENT (ACCOUNT IDS): Assign ALL appropriate account IDs strictly from the <CHART_OF_ACCOUNTS> (Main Debit, VAT Debit, WHT Debit, Main Credit, WHT Credit). 
+                   - The Main Credit Account is typically Trade Payable.
+                   - Find the precise IDs for VAT Input, WHT Expense, and WHT Payable from the <CHART_OF_ACCOUNTS> if those taxes apply.
+                   - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
+                   - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
                 7. INVOICE & PAGE NUMBERS: Strictly follow any starting sequence or formatting rules defined in [INDUSTRY LEVEL] or [BATCH LEVEL]. If no rule exists, extract the exact printed invoice number, or use 'NEEDS_SEQ' if missing.
                 </OUTPUT_INSTRUCTIONS>
                 
@@ -272,6 +289,11 @@ class GeminiInvoiceProcessor:
 
         ledgers = []
         page_cost = 0.0
+        
+        # Fetch Chart of Accounts for dynamic mapping
+        coa_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
+        coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
+        
         try:
             prompt = f"""
             TASK: Extract accounting data strictly from Page {pg}.
@@ -279,6 +301,10 @@ class GeminiInvoiceProcessor:
             <CRITICAL_VATTIN_INSTRUCTION>
             Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect or apply regex patterns. 
             </CRITICAL_VATTIN_INSTRUCTION>
+            
+            <CHART_OF_ACCOUNTS>
+            {coa_context}
+            </CHART_OF_ACCOUNTS>
             
             <ACCOUNTING_HIERARCHY_RULES>
             1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
@@ -293,7 +319,11 @@ class GeminiInvoiceProcessor:
             3. VENDOR NAME: Extract the company/shop name.
             4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
             5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately.
-            6. BALANCED ASSIGNMENT: Assign debit/credit account IDs to ensure mathematical balance.
+            6. BALANCED ASSIGNMENT (ACCOUNT IDS): Assign ALL appropriate account IDs strictly from the <CHART_OF_ACCOUNTS> (Main Debit, VAT Debit, WHT Debit, Main Credit, WHT Credit). 
+               - The Main Credit Account is typically Trade Payable.
+               - Find the precise IDs for VAT Input, WHT Expense, and WHT Payable from the <CHART_OF_ACCOUNTS> if those taxes apply.
+               - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
+               - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
             7. INVOICE & PAGE NUMBERS: Strictly follow any starting sequence or formatting rules defined in [INDUSTRY LEVEL] or [BATCH LEVEL]. If no rule exists, extract the exact printed invoice number, or use 'NEEDS_SEQ' if missing.
             </OUTPUT_INSTRUCTIONS>
             
@@ -370,7 +400,7 @@ class GeminiInvoiceProcessor:
 class HistoricalLine(BaseModel):
     gl_no: str = Field(..., description="The ID or Voucher No. from the original file.")
     date: str = Field(..., description="Transaction Date in YYYY-MM-DD format.")
-    account_id: int = Field(..., description="The matched 6-digit GL Account code from the TIER_1 Chart of Accounts.")
+    account_id: str = Field(..., description="The matched 6-digit GL Account code from the TIER_1 Chart of Accounts.")
     description: str = Field(..., description="Combined entity name and transaction description.")
     instruction: str = Field(..., description="Brief AI reasoning for why this specific account_id was chosen.")
     debit: float = Field(default=0.0, description="Debit amount (0 if empty).")
@@ -534,7 +564,7 @@ class ProposalPDFProcessor:
             return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
         return 0.0
 
-    def extract_proposal_data(self, pdf_bytes: bytes, last_proposal_number: str = None) -> dict:
+    def extract_proposal_data(self, pdf_bytes: bytes) -> dict:
         """
         Reads PDF bytes, prompts Gemini with detailed examples, 
         and returns a strictly formatted dictionary.
@@ -548,21 +578,7 @@ class ProposalPDFProcessor:
         # THE ENHANCED PROMPT (Few-Shot Prompting with Strict Formatting Rules)
         # --------------------------------------------------------------------
         
-        # Deterministically calculate the next proposal number in Python
-        next_proposal_number = None
-        if last_proposal_number:
-            match = re.search(r'(\d+)$', str(last_proposal_number).strip())
-            if match:
-                suffix = match.group(1)
-                next_num = int(suffix) + 1
-                next_proposal_number = str(last_proposal_number)[:match.start()] + f"{next_num:0{len(suffix)}d}"
-            else:
-                next_proposal_number = f"{str(last_proposal_number).strip()}-1"
-
-        if next_proposal_number:
-            proposal_rule = f"3. Proposal Number (SEQUENTIAL): You MUST strictly output the exact value '{next_proposal_number}' for the `proposal_number` field, IGNORING what is printed on the document."
-        else:
-            proposal_rule = '3. Proposal Number: Extract the alphanumeric code ONLY. Strip out prefixes like "Proposal code:" or "Ref:" (e.g., return "AC-2026-0016", NOT "Proposal code: AC-2026-0016").'
+        proposal_rule = '3. Proposal Number: Extract the specific value printed in document. Strip out prefixes like "Proposal code:", "Ref:" or "Our ref:" (e.g. If "Our ref: AC-2026-0026-D016" was found in the document, you must formulate the proposal_number as "AC-2026-0026-D016").'
 
         prompt = f"""
         You are an expert financial auditor, administrative assistant, and data extractor. 
@@ -621,9 +637,6 @@ class ProposalPDFProcessor:
             # The response.text is guaranteed to be a JSON string matching our schema
             data = json.loads(response.text)
             
-            # Failsafe: Enforce the sequence calculation in case the AI hallucinates
-            if next_proposal_number:
-                data['proposal_number'] = next_proposal_number
                 
             return data
             

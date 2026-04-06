@@ -279,17 +279,53 @@ def review_invoices(request):
     # Isolate vendors exclusively to this client
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     
-    temp_vendors = []
+    # Re-sequence new vendors so they group correctly and have unique temp_ids
+    all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+    max_num = 1
+    for vid in all_vids:
+        if vid:
+            match = re.search(r'V-?(\d+)', str(vid))
+            if match:
+                max_num = max(max_num, int(match.group(1)))
+    next_num = max_num + 1
+
+    new_vendor_map = {}
     for item in extracted_data:
         if item.get('is_new_vendor'):
-            temp_vendors.append((item['temp_id'], f"✨ NEW: {item.get('company', 'Unknown')} ({item.get('temp_vid', '')})"))
-    
-    temp_vendors = list(dict.fromkeys(temp_vendors))
+            raw_name = item.get('company', 'Unknown')
+            name_str = str(raw_name).lower().replace('&', ' and ')
+            target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
+            
+            if target_norm not in new_vendor_map:
+                current_seq = next_num + len(new_vendor_map)
+                new_vid = f"V-{current_seq:05d}"
+                new_temp_id = f"TEMP_{new_vid}"
+                new_vendor_map[target_norm] = {
+                    'temp_vid': new_vid,
+                    'temp_id': new_temp_id,
+                    'company': raw_name
+                }
+            
+            mapped = new_vendor_map[target_norm]
+            item['temp_vid'] = mapped['temp_vid']
+            item['temp_id'] = mapped['temp_id']
+            item['vendor_choice'] = mapped['temp_id']
+
+    temp_vendors = []
+    for mapped in new_vendor_map.values():
+        temp_vendors.append((mapped['temp_id'], f"✨ NEW: {mapped['company']} ({mapped['temp_vid']})"))
+        
     dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
 
     # --- ACCOUNT CHOICES ---
-    # Fetch accounts formatted nicely: "100000 - Cash on Hand"
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    # Fetch all global accounts to allow users to select correct accounts if they aren't explicitly mapped to this client yet
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     if request.method == 'POST':
@@ -523,7 +559,13 @@ def manual_invoice_entry_view(request):
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
 
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     if request.method == 'POST':
@@ -777,7 +819,13 @@ def gl_review_view(request):
         
     selected_client = Client.objects.get(id=client_id)
     
-    db_accounts = [(str(a.account_id), f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     # We process a maximum of 30 items per page to prevent browser lag (Higher since it's single lines now)
@@ -1303,7 +1351,13 @@ def manual_old_entry_view(request):
         messages.error(request, "Please select an active client.")
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     if request.method == 'POST':
@@ -1663,7 +1717,6 @@ def upload_proposals_view(request):
             # 3. Find the exact starting row based on Column B ("No.")
             last_no = 0
             start_row = ws.max_row + 1
-            last_proposal_no = ""
             
             # Scan from the bottom up to find the last valid entry number
             for r in range(ws.max_row, 1, -1):
@@ -1672,10 +1725,6 @@ def upload_proposals_view(request):
                     last_no = int(val)
                     start_row = r + 1
                     
-                    # Extract the last proposal number from the exact same row
-                    p_val = ws.cell(row=r, column=COLUMN_MAP['PROPOSAL_NO']).value
-                    if p_val and str(p_val).strip():
-                        last_proposal_no = str(p_val).strip()
                     break
 
             # If the sheet is empty or has no numbers, fallback to the requested starting point
@@ -1698,7 +1747,7 @@ def upload_proposals_view(request):
                     pdf_bytes = pdf_file.read()
                     
                     # Pass bytes to the processor (returns our guaranteed dictionary)
-                    data = processor.extract_proposal_data(pdf_bytes, last_proposal_number=last_proposal_no)
+                    data = processor.extract_proposal_data(pdf_bytes)
 
                     # Write data using the readable column map
                     ws.cell(row=current_row, column=COLUMN_MAP['NO']).value = current_no
@@ -1712,10 +1761,6 @@ def upload_proposals_view(request):
                     print(f"   ✅ Extracted: {data.get('company_name')} | No: {extracted_proposal_no}")
                     current_cost = processor.cost_stats.get('flash_cost', 0) + processor.cost_stats.get('pro_cost', 0)
                     print(f"   💲 Acc. Cost: ${current_cost:.5f}")
-
-                    # Update sequence trackers for the next iteration in the loop
-                    if extracted_proposal_no:
-                        last_proposal_no = extracted_proposal_no
 
                     current_row += 1
                     current_no += 1

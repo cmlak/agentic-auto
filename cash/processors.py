@@ -161,7 +161,7 @@ class CashStandardExcelProcessor:
         """Matches vendor strictly within the selected client's isolated database."""
         general_vendor, _ = Vendor.objects.get_or_create(
             client_id=client_id,
-            vendor_id='V001', 
+            vendor_id='V-00001', 
             defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
@@ -197,13 +197,18 @@ class CashStandardExcelProcessor:
             if target_norm in self.batch_new_vendors:
                 return self.batch_new_vendors[target_norm]
 
-            last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
-            next_num = 2
-            if last_vendor and re.search(r'V(\d+)', last_vendor.vendor_id):
-                next_num = int(re.search(r'V(\d+)', last_vendor.vendor_id).group(1)) + 1
+            # Safely find the absolute highest numeric vendor_id in the database
+            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+            max_num = 1
+            for vid in all_vids:
+                if vid:
+                    match = re.search(r'V-?(\d+)', str(vid))
+                    if match:
+                        max_num = max(max_num, int(match.group(1)))
+            next_num = max_num + 1
             
             current_seq = next_num + len(self.batch_new_vendors)
-            new_vid = f"V{current_seq:03d}"
+            new_vid = f"V-{current_seq:05d}"
             
             vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
             self.batch_new_vendors[target_norm] = vendor_data

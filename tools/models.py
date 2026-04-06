@@ -31,7 +31,7 @@ class Vendor(models.Model):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.vendor_id} - {self.name}"
+        return f"{self.client.name} - {self.vendor_id} - {self.name}"
 
 # ====================================================================
 # --- 3. PURCHASE MODEL ---

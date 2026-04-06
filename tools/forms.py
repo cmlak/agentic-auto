@@ -5,6 +5,10 @@ from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
 from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog
 from account.models import Account
 
+# ====================================================================
+# 1. INITIAL UPLOAD FORMS
+# ====================================================================
+
 class BatchUploadForm(forms.Form):
     client = forms.ModelChoiceField(
         queryset=Client.objects.all(), 
@@ -12,14 +16,18 @@ class BatchUploadForm(forms.Form):
         label="Client / Company",
         widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
     )
-    invoice_pdf = forms.FileField(label="Upload Invoice Batch (PDF)")
+    invoice_pdf = forms.FileField(
+        label="Upload Invoice Batch (PDF)",
+        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'})
+    )
     batch_name = forms.CharField(
         label="Batch Name", max_length=255, required=True,
-        help_text="e.g., CCKT Batch 1 - 10 March 2026"
+        help_text="e.g., CCKT Batch 1 - 10 March 2026",
+        widget=forms.TextInput(attrs={'class': 'form-control'})
     )
     ai_prompt = forms.CharField(
         label="Custom AI Instructions (Optional)",
-        widget=forms.Textarea(attrs={'rows': 3}),
+        widget=forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'e.g., Extract sequences starting from 20260305...'}),
         required=False
     )
 
@@ -46,13 +54,17 @@ class ClientSelectionForm(forms.Form):
             Submit('submit', 'Select Client', css_class='btn btn-primary w-100 mt-3')
         )
 
+# ====================================================================
+# 2. HITL (HUMAN-IN-THE-LOOP) REVIEW FORM (WITH ACCRUALS)
+# ====================================================================
+
 class PurchaseReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
-    vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False)
+    vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold'}))
     
-    # DEBITS
+    # --- DEBITS ---
     account_id = forms.ChoiceField(
-        label="Main Debit Account", required=False, 
+        label="Main Debit Account (Current Month)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select text-primary fw-bold'})
     )
     vat_account_id = forms.ChoiceField(
@@ -64,9 +76,22 @@ class PurchaseReviewForm(forms.ModelForm):
         widget=forms.Select(attrs={'class': 'form-select text-primary'})
     )
     
-    # CREDITS
+    # --- MULTIPLE DEBIT COLUMNS FOR ACCRUALS (PAST MONTHS) ---
+    debit_account_id_2 = forms.ChoiceField(label="Accrual Acct 1", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_2 = forms.CharField(label="Accrual Description 1", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Tax filing Jan26'}))
+    debit_amount_2 = forms.CharField(label="Amount 1 ($)", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
+    debit_account_id_3 = forms.ChoiceField(label="Accrual Acct 2", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_3 = forms.CharField(label="Accrual Description 2", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Tax filing Feb26'}))
+    debit_amount_3 = forms.CharField(label="Amount 2 ($)", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
+    debit_account_id_4 = forms.ChoiceField(label="Accrual Acct 3", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_4 = forms.CharField(label="Accrual Description 3", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g. Setup Fee'}))
+    debit_amount_4 = forms.CharField(label="Amount 3 ($)", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
+    # --- CREDITS ---
     credit_account_id = forms.ChoiceField(
-        label="Main Credit Account", required=False, 
+        label="Main Credit Account (Payable)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
     wht_account_id = forms.ChoiceField(
@@ -74,10 +99,10 @@ class PurchaseReviewForm(forms.ModelForm):
         widget=forms.Select(attrs={'class': 'form-select text-danger'})
     )
     
-    # VISUAL AMOUNT FIELDS - UNLOCKED FOR MANUAL EDITING
+    # --- VISUAL AMOUNT FIELDS (UNLOCKED FOR EDITING) ---
     net_amount = forms.CharField(
-        label="Net Amount (Dr)", required=False, 
-        widget=forms.TextInput(attrs={'class': 'number-format text-end'})
+        label="Net Amount (Main Dr)", required=False, 
+        widget=forms.TextInput(attrs={'class': 'number-format text-end fw-bold text-primary'})
     )
     wht_amount_dr = forms.CharField(
         label="WHT Amount (Dr)", required=False, 
@@ -88,34 +113,62 @@ class PurchaseReviewForm(forms.ModelForm):
         widget=forms.TextInput(attrs={'class': 'number-format text-end', 'placeholder': 'Optional override'})
     )
 
+    class Meta:
+        model = Purchase
+        fields = [
+            'batch', 'date', 'invoice_no', 'company', 'vendor', 'vattin', 
+            'account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id',
+            'description', 'description_en', 'instruction',
+            'unreg_usd', 'exempt_usd',
+            'vat_base_usd', 'vat_usd', 'total_usd', 'page'
+        ]
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date', 'class': 'form-control'}),
+            'invoice_no': forms.TextInput(attrs={'class': 'form-control fw-bold'}),
+            'vattin': forms.TextInput(attrs={'class': 'form-control'}),
+            'company': forms.TextInput(attrs={'class': 'form-control fw-bold'}),
+            'page': forms.NumberInput(attrs={'class': 'form-control'}),
+            'description': forms.Textarea(attrs={'rows': 1, 'class': 'form-control auto-expand'}),
+            'description_en': forms.Textarea(attrs={'rows': 1, 'class': 'form-control auto-expand'}),
+            'instruction': forms.Textarea(attrs={'rows': 1, 'placeholder': 'Optional AI or manual notes...', 'class': 'form-control auto-expand text-muted'}), 
+            'vendor': forms.HiddenInput(), 
+            'unreg_usd': forms.TextInput(attrs={'class': 'form-control number-format text-end'}),
+            'exempt_usd': forms.TextInput(attrs={'class': 'form-control number-format text-end'}),
+            'vat_base_usd': forms.TextInput(attrs={'class': 'form-control number-format text-end'}),
+            'vat_usd': forms.TextInput(attrs={'class': 'form-control number-format text-end text-primary fw-bold'}),
+            'total_usd': forms.TextInput(attrs={'class': 'form-control number-format text-end text-danger fw-bold'}),
+        }
+        labels = {
+            'unreg_usd': 'Unregistered (WHT Base)',
+            'exempt_usd': 'Exempt (No VAT)',
+            'vat_base_usd': 'VAT Base Amount',
+            'vat_usd': 'VAT Amount (Dr)',
+            'total_usd': 'Gross Payable (Cr)',
+        }
+
     def __init__(self, *args, **kwargs):
         dynamic_choices = kwargs.pop('dynamic_choices', None)
         account_choices = kwargs.pop('account_choices', None) 
         super().__init__(*args, **kwargs)
         
+        # 1. Populate dynamic dropdowns (Vendors & Accounts)
         if dynamic_choices:
             self.fields['vendor_choice'].choices = dynamic_choices
         if self.initial.get('vendor_choice'):
             self.fields['vendor_choice'].initial = self.initial.get('vendor_choice')
 
         if account_choices:
-            self.fields['account_id'].choices = account_choices
-            self.fields['vat_account_id'].choices = account_choices
-            self.fields['wht_debit_account_id'].choices = account_choices
-            self.fields['credit_account_id'].choices = account_choices
-            self.fields['wht_account_id'].choices = account_choices
-            
-        if self.initial.get('account_id'):
-            self.fields['account_id'].initial = self.initial.get('account_id')
-        if self.initial.get('vat_account_id'):
-            self.fields['vat_account_id'].initial = self.initial.get('vat_account_id')
-        if self.initial.get('wht_debit_account_id'):
-            self.fields['wht_debit_account_id'].initial = self.initial.get('wht_debit_account_id')
-        if self.initial.get('credit_account_id'):
-            self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
-        if self.initial.get('wht_account_id'):
-            self.fields['wht_account_id'].initial = self.initial.get('wht_account_id')
+            account_fields = [
+                'account_id', 'vat_account_id', 'wht_debit_account_id', 
+                'credit_account_id', 'wht_account_id',
+                'debit_account_id_2', 'debit_account_id_3', 'debit_account_id_4'
+            ]
+            for field in account_fields:
+                self.fields[field].choices = account_choices
+                if self.initial.get(field):
+                    self.fields[field].initial = self.initial.get(field)
 
+        # 2. Numbering the formset rows
         if self.prefix:
             try:
                 form_index = int(self.prefix.split('-')[-1]) + 1
@@ -127,23 +180,66 @@ class PurchaseReviewForm(forms.ModelForm):
 
         self.fields['batch'].disabled = True
 
+        # 3. Calculate "Main Net Amount" (Gross - VAT - Accruals)
         t_val = float(self.initial.get('total_usd') or 0)
         v_val = float(self.initial.get('vat_usd') or 0)
+        dr2_val = float(self.initial.get('debit_amount_2') or 0)
+        dr3_val = float(self.initial.get('debit_amount_3') or 0)
+        dr4_val = float(self.initial.get('debit_amount_4') or 0)
         
-        # We only set the initial value if one isn't already provided by POST data
         if not self.initial.get('net_amount'):
-            self.fields['net_amount'].initial = f"{t_val - v_val:,.2f}"
+            calculated_net = t_val - v_val - dr2_val - dr3_val - dr4_val
+            self.fields['net_amount'].initial = f"{calculated_net:,.2f}"
 
-        # --- DYNAMIC UI LAYOUT ---
+        # ==========================================================
+        # 4. CRISPY FORMS DYNAMIC UI LAYOUT
+        # ==========================================================
         account_rows = []
 
-        # 1. Main Debit Row
+        # Row 1: Main Debit (Current Month Expense)
         account_rows.append(Row(
             Column('account_id', css_class='form-group col-md-9'),
             Column('net_amount', css_class='form-group col-md-3'),
         ))
 
-        # 2. VAT Debit Row
+        # Row 2-4: Accrual/Secondary Debits (Distinct visual block)
+        if dr2_val > 0 or self.initial.get('debit_account_id_2'):
+            account_rows.append(Row(
+                Column('debit_account_id_2', css_class='form-group col-md-4'),
+                Column('debit_desc_2', css_class='form-group col-md-5'),
+                Column('debit_amount_2', css_class='form-group col-md-3'),
+                css_class='bg-light border-start border-3 border-primary p-2 mb-1 mt-2'
+            ))
+        else:
+            self.fields['debit_account_id_2'].widget = forms.HiddenInput()
+            self.fields['debit_desc_2'].widget = forms.HiddenInput()
+            self.fields['debit_amount_2'].widget = forms.HiddenInput()
+
+        if dr3_val > 0 or self.initial.get('debit_account_id_3'):
+            account_rows.append(Row(
+                Column('debit_account_id_3', css_class='form-group col-md-4'),
+                Column('debit_desc_3', css_class='form-group col-md-5'),
+                Column('debit_amount_3', css_class='form-group col-md-3'),
+                css_class='bg-light border-start border-3 border-primary p-2 mb-1'
+            ))
+        else:
+            self.fields['debit_account_id_3'].widget = forms.HiddenInput()
+            self.fields['debit_desc_3'].widget = forms.HiddenInput()
+            self.fields['debit_amount_3'].widget = forms.HiddenInput()
+
+        if dr4_val > 0 or self.initial.get('debit_account_id_4'):
+            account_rows.append(Row(
+                Column('debit_account_id_4', css_class='form-group col-md-4'),
+                Column('debit_desc_4', css_class='form-group col-md-5'),
+                Column('debit_amount_4', css_class='form-group col-md-3'),
+                css_class='bg-light border-start border-3 border-primary p-2 mb-2'
+            ))
+        else:
+            self.fields['debit_account_id_4'].widget = forms.HiddenInput()
+            self.fields['debit_desc_4'].widget = forms.HiddenInput()
+            self.fields['debit_amount_4'].widget = forms.HiddenInput()
+
+        # Row 5: VAT Debit
         has_vat = float(self.initial.get('vat_usd', 0) or 0) > 0
         if has_vat or self.initial.get('vat_account_id'):
             account_rows.append(Row(
@@ -153,7 +249,7 @@ class PurchaseReviewForm(forms.ModelForm):
         else:
             self.fields['vat_account_id'].widget = forms.HiddenInput()
 
-        # 3. WHT Expense Debit Row
+        # Row 6: WHT Expense (Debit)
         if self.initial.get('wht_debit_account_id') or self.initial.get('wht_account_id'):
             account_rows.append(Row(
                 Column('wht_debit_account_id', css_class='form-group col-md-9'),
@@ -162,22 +258,22 @@ class PurchaseReviewForm(forms.ModelForm):
         else:
             self.fields['wht_debit_account_id'].widget = forms.HiddenInput()
 
-        # 4. Main Credit Row
+        # Row 7: Main Credit (Payables)
         account_rows.append(Row(
             Column('credit_account_id', css_class='form-group col-md-9'),
             Column('total_usd', css_class='form-group col-md-3'), 
         ))
 
-        # 5. WHT Payable Credit Row
+        # Row 8: WHT Payable (Credit)
         if self.initial.get('wht_account_id') or self.initial.get('wht_debit_account_id'):
             account_rows.append(Row(
-                Column('wht_account_id', css_class='form-group col-md-6'),
+                Column('wht_account_id', css_class='form-group col-md-9'),
                 Column('wht_amount_cr', css_class='form-group col-md-3'), 
             ))
         else:
             self.fields['wht_account_id'].widget = forms.HiddenInput()
 
-        # --- CRISPY FORMS LAYOUT ---
+        # --- ASSEMBLE FULL FORM LAYOUT ---
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.disable_csrf = True
@@ -194,10 +290,10 @@ class PurchaseReviewForm(forms.ModelForm):
                 Column('company', css_class='form-group col-md-5'),
                 Column('vendor_choice', css_class='form-group col-md-4'),
                 Column('page', css_class='form-group col-md-1'),
-                Column('DELETE', css_class='form-group col-md-1 text-center bg-light rounded'),
+                Column('DELETE', css_class='form-group col-md-2 text-center bg-danger bg-opacity-10 text-danger fw-bold rounded pt-2 pb-2'),
             ),
             
-            # Inject perfectly aligned double-entry block
+            # Inject the perfectly aligned double-entry block (Main, Accruals, VAT, Credits)
             *account_rows,
             
             Row(   
@@ -209,7 +305,7 @@ class PurchaseReviewForm(forms.ModelForm):
                 Column('unreg_usd', css_class='form-group col-md-4'),
                 Column('exempt_usd', css_class='form-group col-md-4'),
                 Column('vat_base_usd', css_class='form-group col-md-4'),
-                css_class='bg-light p-2 rounded mt-2 mb-2' 
+                css_class='bg-light p-2 rounded mt-2 mb-2 border' 
             ),
             Row(
                 Column('instruction', css_class='form-group col-md-12'),
@@ -217,35 +313,35 @@ class PurchaseReviewForm(forms.ModelForm):
             Field('vendor', type="hidden")
         )
 
-    class Meta:
-        model = Purchase
-        fields = [
-            'batch', 'date', 'invoice_no', 'company', 'vendor', 'vattin', 
-            'account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id',
-            'description', 'description_en', 'instruction',
-            'unreg_usd', 'exempt_usd',
-            'vat_base_usd', 'vat_usd', 'total_usd', 'page'
-        ]
-        widgets = {
-            'date': forms.DateInput(attrs={'type': 'date'}),
-            'description': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            'description_en': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
-            'instruction': forms.Textarea(attrs={'rows': 1, 'placeholder': 'Optional notes...', 'class': 'auto-expand'}), 
-            'vendor': forms.HiddenInput(), 
-            'unreg_usd': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'exempt_usd': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'vat_base_usd': forms.TextInput(attrs={'class': 'number-format text-end'}),
-            'vat_usd': forms.TextInput(attrs={'class': 'number-format text-end text-primary fw-bold'}),
-            'total_usd': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
-        }
-        labels = {
-            'unreg_usd': 'Unregistered (WHT Base)',
-            'exempt_usd': 'Exempt (No VAT)',
-            'vat_base_usd': 'VAT Base Amount',
-            'vat_usd': 'VAT Amount (Dr)',
-            'total_usd': 'Gross Payable (Cr)',
-        }
+    def clean(self):
+        """Ensure formatting from visual inputs (like commas or $) are stripped before DB save."""
+        cleaned_data = super().clean()
+        
+        # Clean standard money fields if needed
+        for f in ['unreg_usd', 'exempt_usd', 'vat_base_usd', 'vat_usd', 'total_usd']:
+            val = cleaned_data.get(f)
+            if val:
+                try:
+                    cleaned_data[f] = float(str(val).replace(',', '').replace('$', '').strip())
+                except ValueError:
+                    cleaned_data[f] = 0.0
 
+        # Clean the new secondary/accrual money fields
+        for f in ['debit_amount_2', 'debit_amount_3', 'debit_amount_4']:
+            val = cleaned_data.get(f)
+            if val:
+                try:
+                    cleaned_data[f] = float(str(val).replace(',', '').replace('$', '').strip())
+                except ValueError:
+                    cleaned_data[f] = None
+            else:
+                cleaned_data[f] = None
+                
+        return cleaned_data
+
+# ====================================================================
+# 3. FORMSET FACTORY
+# ====================================================================
 PurchaseFormSet = formset_factory(PurchaseReviewForm, extra=0, can_delete=True)
 
 
@@ -282,6 +378,18 @@ class ManualPurchaseEntryForm(forms.ModelForm):
         widget=forms.Select(attrs={'class': 'form-select text-danger'})
     )
 
+    debit_account_id_2 = forms.ChoiceField(label="Accrual/Other Acct 1", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_2 = forms.CharField(label="Description 1", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Accrual Description'}))
+    debit_amount_2 = forms.CharField(label="Amount 1", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
+    debit_account_id_3 = forms.ChoiceField(label="Accrual/Other Acct 2", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_3 = forms.CharField(label="Description 2", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Accrual Description'}))
+    debit_amount_3 = forms.CharField(label="Amount 2", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
+    debit_account_id_4 = forms.ChoiceField(label="Accrual/Other Acct 3", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
+    debit_desc_4 = forms.CharField(label="Description 3", required=False, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Accrual Description'}))
+    debit_amount_4 = forms.CharField(label="Amount 3", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end'}))
+
     def __init__(self, *args, **kwargs):
         vendor_choices = kwargs.pop('vendor_choices', [])
         account_choices = kwargs.pop('account_choices', [])
@@ -293,6 +401,9 @@ class ManualPurchaseEntryForm(forms.ModelForm):
         self.fields['wht_debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
         self.fields['wht_account_id'].choices = account_choices
+        self.fields['debit_account_id_2'].choices = account_choices
+        self.fields['debit_account_id_3'].choices = account_choices
+        self.fields['debit_account_id_4'].choices = account_choices
 
         # Set default values for manual entry
         self.fields['credit_account_id'].initial = '200000' # Default Trade Payable
@@ -316,6 +427,21 @@ class ManualPurchaseEntryForm(forms.ModelForm):
             
             # ACCOUNT ROUTING
             Row(Column('account_id', css_class='form-group col-md-12')),
+            Row(
+                Column('debit_account_id_2', css_class='form-group col-md-4'),
+                Column('debit_desc_2', css_class='form-group col-md-5'),
+                Column('debit_amount_2', css_class='form-group col-md-3'),
+            ),
+            Row(
+                Column('debit_account_id_3', css_class='form-group col-md-4'),
+                Column('debit_desc_3', css_class='form-group col-md-5'),
+                Column('debit_amount_3', css_class='form-group col-md-3'),
+            ),
+            Row(
+                Column('debit_account_id_4', css_class='form-group col-md-4'),
+                Column('debit_desc_4', css_class='form-group col-md-5'),
+                Column('debit_amount_4', css_class='form-group col-md-3'),
+            ),
             Row(Column('vat_account_id', css_class='form-group col-md-12')),
             Row(Column('wht_debit_account_id', css_class='form-group col-md-12')),
             Row(Column('credit_account_id', css_class='form-group col-md-12')),
@@ -356,6 +482,19 @@ class ManualPurchaseEntryForm(forms.ModelForm):
             'vat_usd': forms.TextInput(attrs={'class': 'number-format text-end text-primary fw-bold'}),
             'total_usd': forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}),
         }
+
+    def clean(self):
+        cleaned_data = super().clean()
+        for f in ['debit_amount_2', 'debit_amount_3', 'debit_amount_4']:
+            val = cleaned_data.get(f)
+            if val:
+                try:
+                    cleaned_data[f] = float(str(val).replace(',', '').replace('$', '').strip())
+                except ValueError:
+                    cleaned_data[f] = None
+            else:
+                cleaned_data[f] = None
+        return cleaned_data
 
 class GLMigrationUploadForm(forms.Form):
     client = forms.ModelChoiceField(

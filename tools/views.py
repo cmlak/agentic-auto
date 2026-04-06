@@ -426,8 +426,13 @@ def review_invoices(request):
                                     description="Input VAT", debit=vat_amount
                                 )
 
-                            # DEBIT: Expense Account (Net Amount)
-                            if net_amount > 0:
+                            dr2_val = form.cleaned_data.get('debit_amount_2') or 0.0
+                            dr3_val = form.cleaned_data.get('debit_amount_3') or 0.0
+                            dr4_val = form.cleaned_data.get('debit_amount_4') or 0.0
+                            other_debits = dr2_val + dr3_val + dr4_val
+                            main_net = net_amount - other_debits
+
+                            if main_net > 0:
                                 ai_account_id = str(form_debit_acct) if form_debit_acct else '725080'
                                 exp_account, _ = Account.objects.get_or_create(
                                     client_id=client_id, account_id=ai_account_id, 
@@ -436,8 +441,20 @@ def review_invoices(request):
                                 JournalLine.objects.create(
                                     journal_entry=je, account=exp_account, 
                                     description=purchase_instance.description_en or purchase_instance.description or "Expense", 
-                                    debit=net_amount
+                                    debit=main_net
                                 )
+
+                            if dr2_val > 0 and form.cleaned_data.get('debit_account_id_2'):
+                                acc2, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_2')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                                JournalLine.objects.create(journal_entry=je, account=acc2, description=form.cleaned_data.get('debit_desc_2') or "Expense", debit=dr2_val)
+                                
+                            if dr3_val > 0 and form.cleaned_data.get('debit_account_id_3'):
+                                acc3, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_3')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                                JournalLine.objects.create(journal_entry=je, account=acc3, description=form.cleaned_data.get('debit_desc_3') or "Expense", debit=dr3_val)
+
+                            if dr4_val > 0 and form.cleaned_data.get('debit_account_id_4'):
+                                acc4, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_4')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                                JournalLine.objects.create(journal_entry=je, account=acc4, description=form.cleaned_data.get('debit_desc_4') or "Expense", debit=dr4_val)
             except Exception as e:
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
                 return render(request, 'invoice_review.html', {'formset': formset, 'metadata': metadata})
@@ -615,10 +632,27 @@ def manual_invoice_entry_view(request):
                 if purchase.wht_account_id and unreg_amount > 0:
                     wht_amount = round(total_amount - unreg_amount, 2) 
 
-                # 1. Main Debit (Expense/Asset)
-                if purchase.account_id:
+                dr2_val = float(form.cleaned_data.get('debit_amount_2') or 0.0)
+                dr3_val = float(form.cleaned_data.get('debit_amount_3') or 0.0)
+                dr4_val = float(form.cleaned_data.get('debit_amount_4') or 0.0)
+                other_debits = dr2_val + dr3_val + dr4_val
+                main_net = round((total_amount - vat_amount - wht_amount) - other_debits, 2)
+                
+                if purchase.account_id and main_net > 0:
                     acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
-                    JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=(total_amount - vat_amount - wht_amount))
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
+
+                if dr2_val > 0 and form.cleaned_data.get('debit_account_id_2'):
+                    acc2, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_2')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                    JournalLine.objects.create(journal_entry=je, account=acc2, description=form.cleaned_data.get('debit_desc_2') or "Expense", debit=dr2_val)
+
+                if dr3_val > 0 and form.cleaned_data.get('debit_account_id_3'):
+                    acc3, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_3')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                    JournalLine.objects.create(journal_entry=je, account=acc3, description=form.cleaned_data.get('debit_desc_3') or "Expense", debit=dr3_val)
+
+                if dr4_val > 0 and form.cleaned_data.get('debit_account_id_4'):
+                    acc4, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_4')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                    JournalLine.objects.create(journal_entry=je, account=acc4, description=form.cleaned_data.get('debit_desc_4') or "Expense", debit=dr4_val)
 
                 # 2. VAT Debit
                 if vat_amount > 0 and purchase.vat_account_id:
@@ -1116,6 +1150,32 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
         
         return kwargs
 
+    def get_initial(self):
+        initial = super().get_initial()
+        je = JournalEntry.objects.filter(purchase=self.object).first()
+        if je:
+            exclude_accts = []
+            if self.object.vat_account_id: exclude_accts.append(str(self.object.vat_account_id))
+            if self.object.wht_debit_account_id: exclude_accts.append(str(self.object.wht_debit_account_id))
+            
+            # Exclude tax accounts to find just the pure expense/accrual debit lines
+            debit_lines = list(je.lines.filter(debit__gt=0).exclude(account__account_id__in=exclude_accts).order_by('id'))
+            
+            # Map any extra debit lines back into the transient fields
+            if len(debit_lines) > 1:
+                initial['debit_account_id_2'] = debit_lines[1].account.account_id
+                initial['debit_amount_2'] = debit_lines[1].debit
+                initial['debit_desc_2'] = debit_lines[1].description
+            if len(debit_lines) > 2:
+                initial['debit_account_id_3'] = debit_lines[2].account.account_id
+                initial['debit_amount_3'] = debit_lines[2].debit
+                initial['debit_desc_3'] = debit_lines[2].description
+            if len(debit_lines) > 3:
+                initial['debit_account_id_4'] = debit_lines[3].account.account_id
+                initial['debit_amount_4'] = debit_lines[3].debit
+                initial['debit_desc_4'] = debit_lines[3].description
+        return initial
+
     def form_valid(self, form):
         # Wrap everything in an atomic transaction to prevent partial writes/duplicates
         with transaction.atomic():
@@ -1159,9 +1219,27 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
             if purchase.wht_account_id and unreg_amount > 0:
                 wht_amount = round(total_amount - unreg_amount, 2)
 
-            if purchase.account_id:
+            dr2_val = form.cleaned_data.get('debit_amount_2') or 0.0
+            dr3_val = form.cleaned_data.get('debit_amount_3') or 0.0
+            dr4_val = form.cleaned_data.get('debit_amount_4') or 0.0
+            other_debits = dr2_val + dr3_val + dr4_val
+            main_net = (total_amount - vat_amount - wht_amount) - other_debits
+            
+            if purchase.account_id and main_net > 0:
                 acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
-                JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=(total_amount - vat_amount - wht_amount))
+                JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
+
+            if dr2_val > 0 and form.cleaned_data.get('debit_account_id_2'):
+                acc2, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_2')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=acc2, description=form.cleaned_data.get('debit_desc_2') or "Expense", debit=dr2_val)
+
+            if dr3_val > 0 and form.cleaned_data.get('debit_account_id_3'):
+                acc3, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_3')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=acc3, description=form.cleaned_data.get('debit_desc_3') or "Expense", debit=dr3_val)
+
+            if dr4_val > 0 and form.cleaned_data.get('debit_account_id_4'):
+                acc4, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(form.cleaned_data.get('debit_account_id_4')), defaults={'name': 'Other Expense/Accrual', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=acc4, description=form.cleaned_data.get('debit_desc_4') or "Expense", debit=dr4_val)
 
             if vat_amount > 0 and purchase.vat_account_id:
                 vat_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})

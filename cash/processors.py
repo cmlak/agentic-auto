@@ -241,26 +241,45 @@ class CashStandardExcelProcessor:
             except (ValueError, TypeError):
                 return 0.0
                 
+        # Define common column aliases to make extraction resilient
+        debit_aliases = ['debit', 'dr', 'in', 'deposit', 'receipt', 'cash in', 'paid in']
+        credit_aliases = ['credit', 'cr', 'out', 'withdrawal', 'payment', 'cash out', 'paid out']
+
         for index, row in df.iterrows():
-            d_val = safe_float(row.get('debit'))
-            c_val = safe_float(row.get('credit'))
+            # Attempt to extract debit/credit values using aliases
+            d_val, c_val = 0.0, 0.0
+            for col in debit_aliases:
+                if col in row and safe_float(row.get(col)) != 0.0:
+                    d_val = safe_float(row.get(col))
+                    break
+                    
+            for col in credit_aliases:
+                if col in row and safe_float(row.get(col)) != 0.0:
+                    c_val = safe_float(row.get(col))
+                    break
+                    
             amt = max(d_val, c_val)
             
             # --- FIX: Skip empty rows or summary rows with no monetary value ---
             if amt == 0.0:
                 continue
                 
-            raw_vendor = str(row.get('vendor', '')).strip() if pd.notna(row.get('vendor')) else ''
+            # Vendor alias fallback
+            vendor_col = next((col for col in ['vendor', 'payee', 'customer'] if col in row), 'vendor')
+            raw_vendor = str(row.get(vendor_col, '')).strip() if pd.notna(row.get(vendor_col)) else ''
             vendor_data = self.resolve_and_assign_vendor(raw_vendor, client_id)
             
-            raw_date = row.get('date')
+            date_col = next((col for col in ['date', 'txn date', 'transaction date'] if col in row), 'date')
+            raw_date = row.get(date_col)
             clean_date = str(raw_date)[:10] if pd.notna(raw_date) and str(raw_date).strip() != '' else None
+            
+            desc_col = next((col for col in ['description', 'particulars', 'memo', 'details'] if col in row), 'description')
             
             entry_dict = {
                 'batch': batch_name,
                 'date': clean_date,
                 'voucher_no': str(row.get('voucher_no', '')) if pd.notna(row.get('voucher_no')) else '',
-                'description': str(row.get('description', '')) if pd.notna(row.get('description')) else '',
+                'description': str(row.get(desc_col, '')) if pd.notna(row.get(desc_col)) else '',
                 
                 'company': raw_vendor,
                 'vendor_db_id': vendor_data['db_id'],

@@ -16,7 +16,7 @@ urlpatterns = [
     path('cash-upload/', views.cash_upload_view, name='cash_upload'),
     path('cash-review/', views.cash_review_view, name='cash_review'),
     path('cash-success/', views.cash_download_view, name='cash_download'),
-    path('download-cash-report/', views.download_cash_report, name='download_cash_report'),
+    path('download-preliminary-cash/', views.download_preliminary_cash_report, name='download_preliminary_cash'),
     
     path('export/cash/<int:client_id>/', views.export_cash_transactions, name='export_cash'),
     path('export/cash/success/', views.cash_export_success_view, name='cash_export_success'),

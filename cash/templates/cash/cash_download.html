@@ -31,15 +31,9 @@
             <h2 class="text-success mb-3">Cash Processing Complete!</h2>
             <p class="text-muted mb-4 fs-5">Your cash transactions have been successfully parsed, confirmed, and saved to the database.</p>
             
-            {% if has_file %}
-                <a href="{% url 'cash:download_cash_report' %}" class="btn btn-success btn-lg shadow-sm px-4 mb-3 d-block w-75 mx-auto">
-                    ⬇️ Download Cash Ledger (.xlsx)
-                </a>
-            {% else %}
-                <div class="alert alert-warning">
-                    Report file has expired or is no longer available.
-                </div>
-            {% endif %}
+            <a href="{% url 'cash:cash_list' %}" class="btn btn-success btn-lg shadow-sm px-4 mb-3 d-block w-75 mx-auto">
+                📋 View Saved Transactions
+            </a>
 
             <hr class="my-4">
             

@@ -1,0 +1,4 @@
+<option value="">--- No Vendor ---</option>
+{% for vendor in vendors %}
+    <option value="{{ vendor.id }}">{{ vendor.vendor_id }} - {{ vendor.name }}</option>
+{% endfor %}

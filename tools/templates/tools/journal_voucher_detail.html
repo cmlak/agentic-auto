@@ -1,0 +1,44 @@
+{% extends 'base_1_tools.html' %}
+
+{% block title %}Journal Voucher Details{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h3 class="mb-0">Journal Voucher <span class="badge bg-primary">JV-{{ jv_record.id }}</span></h3>
+            <a href="{% url 'tools:journal_voucher_list' %}" class="btn btn-outline-secondary btn-sm">Back to List</a>
+        </div>
+        <div class="card-body">
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <p><strong>Client:</strong> {{ jv_record.client.name }}</p>
+                    <p><strong>Date:</strong> {{ jv_record.date|date:"F j, Y" }}</p>
+                    <p><strong>GL Account:</strong> {{ jv_record.account_id }}</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Vendor:</strong> {{ jv_record.vendor|default:"N/A" }}</p>
+                    <p><strong>Debit:</strong> <span class="text-success fw-bold">${{ jv_record.debit|default:"0.00" }}</span></p>
+                    <p><strong>Credit:</strong> <span class="text-danger fw-bold">${{ jv_record.credit|default:"0.00" }}</span></p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-12">
+                    <div class="bg-light p-3 rounded">
+                        <h6 class="text-muted">Description</h6>
+                        <p class="mb-2">{{ jv_record.description }}</p>
+                        <h6 class="text-muted mt-3">Reasoning / Instruction</h6>
+                        <p class="mb-0">{{ jv_record.instruction|default:"No special instructions." }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% if is_owner %}
+        <div class="card-footer bg-white py-3 d-flex justify-content-end gap-2">
+            <a href="{% url 'tools:journal_voucher_update' jv_record.id %}" class="btn btn-primary px-4">✏️ Edit</a>
+            <a href="{% url 'tools:journal_voucher_delete' jv_record.id %}" class="btn btn-danger px-4">🗑️ Delete</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

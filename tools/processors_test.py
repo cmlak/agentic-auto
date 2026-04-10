@@ -84,10 +84,7 @@ class GeminiInvoiceProcessor:
             defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
-        has_tax_info = (vattin and vattin != 'N/A' and str(vattin).strip() != '')
-        has_vat_value = (vat_amount is not None and float(vat_amount) > 0)
-        
-        if not (has_tax_info and has_vat_value) or not raw_name or raw_name == 'Unknown':
+        if not raw_name or str(raw_name).strip().lower() in ['unknown', 'n/a', 'none', '']:
             return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
         name_str = str(raw_name).lower().replace('&', ' and ')
@@ -112,6 +109,12 @@ class GeminiInvoiceProcessor:
 
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
+
+        # 3. Restrict creating new vendors: only if they are a registered tax payer
+        has_tax_info = (vattin and vattin != 'N/A' and str(vattin).strip() != '')
+        has_vat_value = (vat_amount is not None and float(vat_amount) > 0)
+        if not (has_tax_info and has_vat_value):
+            return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
         # 3. New Vendor Cache (Scoped to Client)
         with self.vendor_lock: 

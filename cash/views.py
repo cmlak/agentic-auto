@@ -1,8 +1,10 @@
 import os
+import sys
+import io
 import tempfile
 import json
 import pandas as pd
-from datetime import date
+from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.core.paginator import Paginator
@@ -447,8 +449,6 @@ def cash_upload_view(request):
     user = request.user
 
     if request.method == 'POST':
-        request.session.pop('cash_report_path', None)
-        
         form = CashBatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
@@ -468,27 +468,29 @@ def cash_upload_view(request):
             batch_name = form.cleaned_data['batch_name']
             selected_config = form.cleaned_data['processor_config']
             
-            print(f"📥 Received Cash Book file: {uploaded_file.name} (Size: {uploaded_file.size} bytes)")
-
             ProcessorStrategyClass = CASH_PROCESSOR_MAP.get(selected_config)
             
             if not ProcessorStrategyClass:
                 messages.error(request, "Invalid processor configuration.")
                 return redirect('cash:cash_upload')
             
-            _, file_ext = os.path.splitext(uploaded_file.name)
-            if file_ext.lower() == '.xls': ext = '.xls'
-            elif file_ext.lower() == '.csv': ext = '.csv'
-            else: ext = '.xlsx'
-
-            print(f"💾 Saving temporary file with extension: {ext}")
-            with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
-                for chunk in uploaded_file.chunks():
-                    tmp_file.write(chunk)
-                tmp_file_path = tmp_file.name
-            print(f"✅ Temporary file saved at: {tmp_file_path}")
+            tmp_file_path = None
 
             try:
+                print(f"📥 Received Cash Book file: {uploaded_file.name} (Size: {uploaded_file.size} bytes)")
+                
+                _, file_ext = os.path.splitext(uploaded_file.name)
+                if file_ext.lower() == '.xls': ext = '.xls'
+                elif file_ext.lower() == '.csv': ext = '.csv'
+                else: ext = '.xlsx'
+
+                print(f"💾 Saving temporary file with extension: {ext}")
+                with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
+                    for chunk in uploaded_file.chunks():
+                        tmp_file.write(chunk)
+                    tmp_file_path = tmp_file.name
+                print(f"✅ Temporary file saved at: {tmp_file_path}")
+
                 print("\n" + "="*50)
                 print(f"🚀 STARTING CASH BOOK PROCESSING for {selected_client.name}")
                 print("="*50)
@@ -610,12 +612,13 @@ def cash_upload_view(request):
                 }
                 print("✅ Process complete. Redirecting to review screen.")
                 print("="*50 + "\n")
+                
                 return redirect('cash:cash_review')
                 
             except Exception as e:
                 messages.error(request, f"Processing Error: {str(e)}")
             finally:
-                if os.path.exists(tmp_file_path):
+                if tmp_file_path and os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
     else:
         form = CashBatchUploadForm()
@@ -756,15 +759,6 @@ def cash_review_view(request):
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
                 return render(request, 'cash_review.html', {'formset': formset, 'metadata': metadata, 'page_obj': page_obj})
 
-            if saved_instances:
-                report_data = list(Cash.objects.filter(id__in=[p.id for p in saved_instances]).values())
-                df_report = pd.DataFrame(report_data)
-                media_dir = os.path.join(settings.BASE_DIR, 'media')
-                os.makedirs(media_dir, exist_ok=True)
-                report_path = os.path.join(media_dir, 'cash_process_report.xlsx')
-                df_report.to_excel(report_path, index=False, engine='openpyxl')
-                request.session['cash_report_path'] = report_path 
-
             # Remove processed items from session list
             try: current_page_num = int(request.GET.get('page', 1))
             except ValueError: current_page_num = 1
@@ -790,19 +784,39 @@ def cash_review_view(request):
     else:
         formset = CashFormSet(initial=current_slice, form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices, 'start_sequence': start_sequence})
 
-    return render(request, 'cash_review.html', {'formset': formset, 'metadata': metadata, 'page_obj': page_obj})
+    return render(request, 'cash_review.html', {
+        'formset': formset, 
+        'metadata': metadata, 
+        'page_obj': page_obj,
+        'has_preliminary': len(extracted_data) > 0
+    })
     
 def cash_download_view(request):
-    file_path = request.session.get('cash_report_path')
-    return render(request, 'cash_download.html', {'has_file': bool(file_path and os.path.exists(file_path))})
+    return render(request, 'cash_download.html')
 
-def download_cash_report(request):
-    file_path = request.session.get('cash_report_path')
-    if file_path and os.path.exists(file_path):
-        with open(file_path, 'rb') as fh:
-            response = HttpResponse(fh.read(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            response['Content-Disposition'] = 'attachment; filename="cash_process_report.xlsx"'
-            return response
+def download_preliminary_cash_report(request):
+    """Generates and serves an Excel file containing the preliminary un-saved cash data from the session."""
+    extracted_data = request.session.get('extracted_cash', [])
+    if extracted_data:
+        df = pd.DataFrame(extracted_data)
+        
+        for col in df.columns:
+            if pd.api.types.is_datetime64_any_dtype(df[col]) and df[col].dt.tz is not None:
+                df[col] = df[col].dt.tz_localize(None)
+                
+        output = io.BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False)
+            
+        output.seek(0)
+        response = HttpResponse(
+            output.read(), 
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+        response['Content-Disposition'] = f'attachment; filename="preliminary_cash_report_{datetime.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+        return response
+        
+    messages.error(request, "No preliminary data available to download. Please upload a cash book first.")
     return redirect('cash:cash_upload')
 
 @login_required

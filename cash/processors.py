@@ -192,27 +192,9 @@ class CashStandardExcelProcessor:
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
 
-        # Cache as New Vendor Candidate
-        with self.vendor_lock: 
-            if target_norm in self.batch_new_vendors:
-                return self.batch_new_vendors[target_norm]
-
-            # Safely find the absolute highest numeric vendor_id in the database
-            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
-            max_num = 1
-            for vid in all_vids:
-                if vid:
-                    match = re.search(r'V-?(\d+)', str(vid))
-                    if match:
-                        max_num = max(max_num, int(match.group(1)))
-            next_num = max_num + 1
-            
-            current_seq = next_num + len(self.batch_new_vendors)
-            new_vid = f"V-{current_seq:05d}"
-            
-            vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
-            self.batch_new_vendors[target_norm] = vendor_data
-            return vendor_data
+        # Strict rule: DO NOT create new vendors from Cash/Bank imports as there is no VAT info.
+        # This prevents the Vendor model from becoming messy.
+        return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
     def process(self, file_path, client_id, batch_name="", custom_prompt=""):
         print(f"📄 Reading Tabular File natively: {os.path.basename(file_path)}...")

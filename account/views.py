@@ -684,27 +684,20 @@ def account_ledger_detail_view(request, account_id):
         else:
             running_balance += (line.credit - line.debit)
             
-        old_id = None
-        hist_id = None
-        ref_num = str(line.journal_entry.reference_number).strip().upper() if line.journal_entry.reference_number else ""
-        if ref_num.startswith('OLD-'):
-            try:
-                old_id = int(ref_num.replace('OLD-', '').strip())
-            except ValueError:
-                pass
-        elif ref_num.startswith('HIST-'):
-            hist_id = ref_num.replace('HIST-', '').strip()
-                
-        source_display = "Historical" if (old_id or hist_id) else line.journal_entry.source_type
+        source_display = line.journal_entry.source_type
 
         # Extract safely using IDs directly from the preloaded journal_entry
         purchase_id = line.journal_entry.purchase_id
         bank_id = line.journal_entry.bank_id
         cash_id = line.journal_entry.cash_id
+        journal_voucher_id = line.journal_entry.journal_voucher_id
+        old_id = line.journal_entry.old_id
         
         purchase_detail = getattr(line.journal_entry.purchase, 'company', "Details") if purchase_id and getattr(line.journal_entry, 'purchase', None) else "Details"
         bank_detail = (getattr(line.journal_entry.bank, 'counterparty', "") or getattr(line.journal_entry.bank, 'purpose', "Details")) if bank_id and getattr(line.journal_entry, 'bank', None) else "Details"
         cash_detail = getattr(line.journal_entry.cash, 'description', "Details") if cash_id and getattr(line.journal_entry, 'cash', None) else "Details"
+        jv_detail = getattr(line.journal_entry.journal_voucher, 'description', "Details") if journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None) else "Details"
+        old_detail = getattr(line.journal_entry.old, 'description', "Details") if old_id and getattr(line.journal_entry, 'old', None) else "Details"
 
         ledger_data.append({
             'date': line.journal_entry.date,
@@ -713,11 +706,13 @@ def account_ledger_detail_view(request, account_id):
             'purchase_id': purchase_id,
             'bank_id': bank_id,
             'cash_id': cash_id,
+            'journal_voucher_id': journal_voucher_id,
+            'old_id': old_id,
             'purchase_detail': purchase_detail,
             'bank_detail': bank_detail,
             'cash_detail': cash_detail,
-            'old_id': old_id,
-            'hist_id': hist_id,
+            'jv_detail': jv_detail,
+            'old_detail': old_detail,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance
@@ -1146,22 +1141,13 @@ def export_account_ledger_detail(request, account_id):
         else:
             running_balance += (line.credit - line.debit)
             
-        old_id = None
-        hist_id = None
-        ref_num = str(line.journal_entry.reference_number).strip().upper() if line.journal_entry.reference_number else ""
-        if ref_num.startswith('OLD-'):
-            try:
-                old_id = int(ref_num.replace('OLD-', '').strip())
-            except ValueError:
-                pass
-        elif ref_num.startswith('HIST-'):
-            hist_id = ref_num.replace('HIST-', '').strip()
-                
-        source_display = "Historical" if (old_id or hist_id) else line.journal_entry.source_type
+        source_display = line.journal_entry.source_type
 
         purchase_id = line.journal_entry.purchase_id
         bank_id = line.journal_entry.bank_id
         cash_id = line.journal_entry.cash_id
+        journal_voucher_id = line.journal_entry.journal_voucher_id
+        old_id = line.journal_entry.old_id
         
         if purchase_id and getattr(line.journal_entry, 'purchase', None):
             source_display = f"Purchase: {getattr(line.journal_entry.purchase, 'company', 'Details')}"
@@ -1169,8 +1155,10 @@ def export_account_ledger_detail(request, account_id):
             source_display = f"Bank: {getattr(line.journal_entry.bank, 'counterparty', '') or getattr(line.journal_entry.bank, 'purpose', 'Details')}"
         elif cash_id and getattr(line.journal_entry, 'cash', None):
             source_display = f"Cash: {getattr(line.journal_entry.cash, 'description', 'Details')}"
-        elif hist_id:
-            source_display = f"Historical: {hist_id}"
+        elif journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None):
+            source_display = f"Journal Voucher: {getattr(line.journal_entry.journal_voucher, 'description', 'Details')}"
+        elif old_id and getattr(line.journal_entry, 'old', None):
+            source_display = f"Historical: {getattr(line.journal_entry.old, 'description', 'Details')}"
 
         ledger_data.append({
             'date': line.journal_entry.date,

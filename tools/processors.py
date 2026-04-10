@@ -26,7 +26,7 @@ class RoutingDecision(BaseModel):
 class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
     
-    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If completely missing, output 'NEEDS_SEQ'.")
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed, OR follow custom starting instructions from prompt. If missing and no instruction, output 'NEEDS_SEQ'.")
     
     vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
@@ -58,7 +58,7 @@ class PurchaseEntry(BaseModel):
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
     vat_usd: float = Field(0.0, description="The 10% VAT amount.")
     total_usd: float
-    page: int = Field(..., description="The physical page number.")
+    page: int = Field(..., description="The page number. Follow instructions if a specific starting page is provided, otherwise use the physical page.")
 
     @model_validator(mode='after')
     def validate_tax_integrity(self):
@@ -109,10 +109,7 @@ class GeminiInvoiceProcessor:
             defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
-        has_tax_info = (vattin and vattin != 'N/A' and str(vattin).strip() != '')
-        has_vat_value = (vat_amount is not None and float(vat_amount) > 0)
-        
-        if not (has_tax_info and has_vat_value) or not raw_name or raw_name == 'Unknown':
+        if not raw_name or str(raw_name).strip().lower() in ['unknown', 'n/a', 'none', '']:
             return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
         name_str = str(raw_name).lower().replace('&', ' and ')
@@ -135,6 +132,12 @@ class GeminiInvoiceProcessor:
 
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
+
+        # 3. Restrict creating new vendors: only if they are a registered tax payer
+        has_tax_info = (vattin and vattin != 'N/A' and str(vattin).strip() != '')
+        has_vat_value = (vat_amount is not None and float(vat_amount) > 0)
+        if not (has_tax_info and has_vat_value):
+            return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
         with self.vendor_lock: 
             if target_norm in self.batch_new_vendors:
@@ -200,7 +203,7 @@ class GeminiInvoiceProcessor:
                - ACCRUAL SPLITTING: If the invoice covers multiple months for recurring services (e.g., quarterly or bi-monthly), you MUST recognize it as a monthly expense for the current month (Main Debit) and the remaining months as accrued expenses in the past (Secondary/Tertiary Debits). For these past months, use 'debit_account_id_2', 'debit_amount_2', 'debit_desc_2', etc., and map them to the Accrued Expenses account (e.g., 215090).
                - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
                - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
-            7. INVOICE & PAGE NUMBERS: If the invoice number is completely missing or is fewer than 7 characters, output 'NEEDS_SEQ'. Otherwise, output it exactly as printed.
+            7. INVOICE & PAGE NUMBERS: STRICTLY FOLLOW any custom starting 'invoice_no' or 'page' provided in the [BATCH LEVEL], [INDUSTRY LEVEL], or [COMPANY LEVEL] instructions. If not provided, output the invoice number exactly as printed, or 'NEEDS_SEQ' if missing/short.
             </OUTPUT_INSTRUCTIONS>
             
             DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
@@ -265,7 +268,7 @@ class GeminiInvoiceProcessor:
                     entry_dict['temp_id'] = vendor_data.get('temp_id')
                     entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
                     entry_dict['batch'] = batch_name
-                    entry_dict['page'] = pg
+                    entry_dict['page'] = entry_dict.get('page') or pg
                     
                     ledgers.append(entry_dict)
 
@@ -537,8 +540,9 @@ class TaxOnSalaryData(BaseModel):
     declaration_period: str = Field(description="The declaration period formatted as 'MMM''YY' (e.g., \"Jan'26\").")
     exchange_rate: float = Field(description="Official exchange rate. (e.g., 4050.0)")
     net_salary_usd: float = Field(description="Total Net Salary. Clean float (e.g., 7443.0).")
-    tos_base_resident_khr: float = Field(description="Total TOS Base (Resident) in KHR. Strip commas. (e.g., 4388340.0)")
-    tos_base_non_resident_khr: float = Field(description="Total TOS Base (Non-resident) in KHR. Strip commas. (e.g., 877668.0)")
+    tos_tax_resident_khr: float = Field(description="Total Tax on Salary (Resident) in KHR. Strip commas.")
+    tos_tax_non_resident_khr: float = Field(description="Total Tax on Salary (Non-resident) in KHR. Strip commas.")
+    reasoning: str = Field(description="Explanation of the tax calculation, stating the exchange rate found and how it applies.")
 
 class TOSPDFProcessor:
     def __init__(self, api_key: str):
@@ -558,11 +562,11 @@ class TOSPDFProcessor:
         prompt = """
         You are an expert tax accountant. Read the attached Tax on Salary (TOS) declaration.
         CRITICAL INSTRUCTIONS (EXHAUSTIVE EXTRACTION):
-        1. Exhaustive Extraction: Scan the ENTIRE document to find calculation bases for Residents and Non-Residents.
+        1. Exhaustive Extraction: Scan the ENTIRE document to find tax amounts for Residents and Non-Residents.
         2. Float Formatting: Return purely numeric floats without commas or currency symbols.
         3. Exchange Rate: Locate the official exchange rate.
         4. Date Formatting: Extract period exactly as "MMM'YY" (e.g., "Jan'26").
-        5. Missing Data: If a base doesn't exist, return 0.0.
+        5. Missing Data: If a tax doesn't exist, return 0.0.
         """
         config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=TaxOnSalaryData, temperature=0.0)
         try:
@@ -585,6 +589,7 @@ class TaxLiabilitiesData(BaseModel):
     fbt_usd: float = Field(description="Total 20% Fringe Benefit Tax in USD. Clean float (e.g., 65.82). Return 0.0 if missing.")
     wht_10_usd: float = Field(description="Total 10% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
     wht_15_usd: float = Field(description="Total 15% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
+    reasoning: str = Field(description="Brief explanation of the extracted taxes.")
 
 class TaxLiabilitiesProcessor:
     def __init__(self, api_key: str):

@@ -44,11 +44,11 @@
                         <th>ID</th>
                         <th>Vendor/Company</th>
                         <th>Invoice No</th>
-                        <th>VAT TIN</th>
                         <th>Date</th>
                         <th>Description</th>
                         <th>VAT USD</th>
                         <th>Total USD</th>
+                        <th>Status</th>
                         <th>Action</th>
                     </tr>
                 </thead>
@@ -57,12 +57,12 @@
                         <tr>
                             <td>{{ p.id }}</td>
                             <td><a href="{% url 'tools:purchase_detail' p.id %}">{{ p.company }}</a></td>
-                            <td>{{ p.invoice_no|default:"-"|cut:'="'|cut:'"' }}</td>
-                            <td>{{ p.vattin|default:"-"|cut:'="'|cut:'"' }}</td>
+                            <td>{{ p.invoice_no|default:"-"|cut:'="'|cut:'"' }}</td>                            
                             <td>{{ p.date }}</td>
                             <td>{{ p.description_en|default:p.description|truncatechars:30 }}</td>
                             <td>${{ p.vat_usd|default:"0.00" }}</td>
                             <td>${{ p.total_usd }}</td>
+                            <td>{{ p.payment_status }}</td>
                             <td>
                                 <a href="{% url 'tools:purchase_update' p.id %}" class="btn btn-sm btn-outline-secondary">Edit</a>
                             </td>

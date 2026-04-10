@@ -6,12 +6,19 @@
 
 {% block content %}
 <div class="container-fluid mt-4 mb-5 px-3">
-    <div class="row mb-3">
-        <div class="col">
+    <div class="row align-items-center mb-3">
+        <div class="col-md-8">
             <h2>Review Cash Book Data</h2>
-            <p class="text-muted">
+            <p class="text-muted mb-0">
                 <strong>File:</strong> {{ metadata.file_name }} | <strong>Client:</strong> {{ metadata.client_name }}
             </p>
+        </div>
+        <div class="col-md-4 text-md-end mt-3 mt-md-0">
+            {% if has_preliminary %}
+                <a href="{% url 'cash:download_preliminary_cash' %}" class="btn btn-outline-info shadow-sm">
+                    ⬇️ Download Preliminary Report (.xlsx)
+                </a>
+            {% endif %}
         </div>
     </div>
 

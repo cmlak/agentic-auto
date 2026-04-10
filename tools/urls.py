@@ -45,4 +45,11 @@ urlpatterns = [
 
     # Journal Voucher
     path('journal-vouchers/upload/', views.monthly_closing_view, name='monthly_closing'),
+    path('journal-vouchers/', views.JournalVoucherListView, name='journal_voucher_list'),
+    path('journal-vouchers/new/', views.manual_journal_voucher_entry_view, name='manual_journal_voucher_entry'),
+    path('journal-vouchers/<int:pk>/', views.JournalVoucherDetailView.as_view(), name='journal_voucher_detail'),
+    path('journal-vouchers/<int:pk>/update/', views.JournalVoucherUpdateView.as_view(), name='journal_voucher_update'),
+    path('journal-vouchers/<int:pk>/delete/', views.JournalVoucherDeleteView.as_view(), name='journal_voucher_delete'),
+
+    path('ajax/load-vendors/', views.load_client_vendors, name='ajax_load_vendors'),
 ]

@@ -1,51 +1,75 @@
 {% extends 'base_4_kpi.html' %} 
+
 {% block content %}
-<div class="container mt-4">
-    <h2 class="mb-4">Unified Monthly Closing & Automation</h2>
+<script src="https://unpkg.com/htmx.org@1.9.11"></script>
+
+<div class="container mt-4 mb-5">
+    <h2 class="mb-4 text-primary"><i class="fas fa-calculator me-2"></i>Unified Monthly Closing & Automation</h2>
     
     {% if messages %}
         {% for message in messages %}
-            <div class="alert alert-{{ message.tags }} alert-dismissible fade show">
+            <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm">
                 {{ message }}
                 <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
             </div>
         {% endfor %}
     {% endif %}
 
-    <form method="POST" enctype="multipart/form-data">
+    <form method="POST" enctype="multipart/form-data" id="monthly-closing-form">
         {% csrf_token %}
         
         <div class="card mb-4 shadow-sm border-primary">
-            <div class="card-header bg-primary text-white"><h5>Scenario A: Automated Tax Extractions</h5></div>
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0"><i class="fas fa-file-invoice-dollar me-2"></i>Scenario A: Automated Tax Extractions</h5>
+            </div>
             <div class="card-body row">
-                <div class="col-md-6 mb-3">{{ form.client.label_tag }} {{ form.client }}</div>
-                <div class="col-md-6 mb-3">{{ form.date.label_tag }} {{ form.date }}</div>
-                
-                <hr class="mt-2 mb-3">
                 <div class="col-md-6 mb-3">
-                    {{ form.tos_pdf.label_tag }} {{ form.tos_pdf }}
-                    <small class="text-muted mt-1 d-block">Upload 'Tax on Salary' Declaration</small>
+                    <label for="{{ form.client.id_for_label }}" class="form-label fw-bold">{{ form.client.label }}</label>
+                    {{ form.client }}
+                    <small class="text-muted mt-1 d-block">Changing the client will automatically update the vendors below.</small>
                 </div>
                 <div class="col-md-6 mb-3">
-                    <label class="form-label">Salary Payable (Required if TOS uploaded)</label>
+                    <label for="{{ form.date.id_for_label }}" class="form-label fw-bold">{{ form.date.label }}</label>
+                    {{ form.date }}
+                </div>
+                
+                <hr class="mt-2 mb-3">
+                
+                <div class="col-md-6 mb-3">
+                    <label for="{{ form.tos_pdf.id_for_label }}" class="form-label fw-bold">{{ form.tos_pdf.label }}</label>
+                    {{ form.tos_pdf }}
+                    <small class="text-muted mt-1 d-block">Upload 'Tax on Salary' Declaration (PDF)</small>
+                </div>
+                <div class="col-md-6 mb-3">
+                    <label for="{{ form.salary_payable.id_for_label }}" class="form-label fw-bold">Salary Payable</label>
                     {{ form.salary_payable }}
+                    <small class="text-muted mt-1 d-block">Required if TOS is uploaded (USD)</small>
                 </div>
 
                 <div class="col-md-12 mb-2">
-                    {{ form.tax_liabilities_pdf.label_tag }} {{ form.tax_liabilities_pdf }}
-                    <small class="text-muted mt-1 d-block">Upload 'Tax Liabilities' Declaration (WHT/FBT)</small>
+                    <label for="{{ form.tax_liabilities_pdf.id_for_label }}" class="form-label fw-bold">{{ form.tax_liabilities_pdf.label }}</label>
+                    {{ form.tax_liabilities_pdf }}
+                    <small class="text-muted mt-1 d-block">Upload 'Tax Liabilities' Declaration for WHT/FBT (PDF)</small>
                 </div>
             </div>
         </div>
 
-        <div class="card mb-4 shadow-sm">
-            <div class="card-header bg-success text-white"><h5>Scenario B: Accrued Expenses (Auto-Credits to 215090)</h5></div>
+        <div class="card mb-4 shadow-sm border-success">
+            <div class="card-header bg-success text-white">
+                <h5 class="mb-0"><i class="fas fa-hand-holding-usd me-2"></i>Scenario B: Accrued Expenses (Auto-Credits to 215090)</h5>
+            </div>
             <div class="card-body p-0">
                 {{ accrual_formset.management_form }}
                 <div class="table-responsive">
-                    <table class="table table-striped mb-0">
+                    <table class="table table-hover mb-0 align-middle">
                         <thead class="table-light">
-                            <tr><th>Account ID</th><th>Vendor</th><th>Description</th><th>Debit Amount ($)</th><th class="text-center">Del</th></tr>
+                            <tr>
+                                <th width="25%">Account ID (Debit)</th>
+                                <th width="25%">Vendor</th>
+                                <th width="30%">Description</th>
+                                <th width="15%">Debit Amount ($)</th>
+                                <th width="5%" class="text-center">Del</th>
+                            </tr>
                         </thead>
                         <tbody id="accrual-tbody">
                             {% for a_form in accrual_formset %}
@@ -54,7 +78,7 @@
                                 <td>{{ a_form.vendor }}</td>
                                 <td>{{ a_form.description }}</td>
                                 <td>{{ a_form.debit }}</td>
-                                <td class="text-center align-middle">
+                                <td class="text-center">
                                     {% if accrual_formset.can_delete %}{{ a_form.DELETE }}{% endif %}
                                 </td>
                             </tr>
@@ -63,12 +87,11 @@
                     </table>
                 </div>
                 <div class="p-2 bg-light border-top d-flex justify-content-end">
-                    <button type="button" id="add-accrual-btn" class="btn btn-sm btn-outline-success">➕ Add Accrual</button>
+                    <button type="button" id="add-accrual-btn" class="btn btn-sm btn-outline-success fw-bold">➕ Add Accrual Row</button>
                 </div>
             </div>
         </div>
         
-        <!-- Hidden empty form template for Javascript cloning (Accrual) -->
         <table style="display: none;">
             <tbody id="empty-accrual-form">
                 <tr>
@@ -76,21 +99,28 @@
                     <td>{{ accrual_formset.empty_form.vendor }}</td>
                     <td>{{ accrual_formset.empty_form.description }}</td>
                     <td>{{ accrual_formset.empty_form.debit }}</td>
-                    <td class="text-center align-middle">{% if accrual_formset.can_delete %}{{ accrual_formset.empty_form.DELETE }}{% endif %}</td>
+                    <td class="text-center">{% if accrual_formset.can_delete %}{{ accrual_formset.empty_form.DELETE }}{% endif %}</td>
                 </tr>
             </tbody>
         </table>
 
-        <div class="card mb-4 shadow-sm">
-            <div class="card-header bg-warning text-dark"><h5>Scenario C: FX Gain/Loss (Auto-Credits to 100210)</h5></div>
+        <div class="card mb-4 shadow-sm border-warning">
+            <div class="card-header bg-warning text-dark">
+                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Scenario C: FX Gain/Loss (Auto-Offsets to 100210)</h5>
+            </div>
             <div class="card-body p-0">
                 {{ fx_formset.management_form }}
                 <div class="table-responsive">
-                    <table class="table table-striped mb-0">
+                    <table class="table table-hover mb-0 align-middle">
                         <thead class="table-light">
                             <tr>
-                                <th>Account ID</th><th>Vendor</th><th>Description</th>
-                                <th>Open Bal (USD)</th><th>End Bal (KHR)</th><th>FX Rate</th><th class="text-center">Del</th>
+                                <th width="20%">FX Account ID</th>
+                                <th width="20%">Vendor</th>
+                                <th width="20%">Description</th>
+                                <th width="12%">Open Bal (USD)</th>
+                                <th width="13%">End Bal (KHR)</th>
+                                <th width="10%">FX Rate</th>
+                                <th width="5%" class="text-center">Del</th>
                             </tr>
                         </thead>
                         <tbody id="fx-tbody">
@@ -102,7 +132,7 @@
                                 <td>{{ f_form.openning_balance }}</td>
                                 <td>{{ f_form.ending_balance }}</td>
                                 <td>{{ f_form.exchange_rate }}</td>
-                                <td class="text-center align-middle">
+                                <td class="text-center">
                                     {% if fx_formset.can_delete %}{{ f_form.DELETE }}{% endif %}
                                 </td>
                             </tr>
@@ -111,12 +141,11 @@
                     </table>
                 </div>
                 <div class="p-2 bg-light border-top d-flex justify-content-end">
-                    <button type="button" id="add-fx-btn" class="btn btn-sm btn-outline-warning text-dark">➕ Add FX Row</button>
+                    <button type="button" id="add-fx-btn" class="btn btn-sm btn-outline-warning text-dark fw-bold">➕ Add FX Row</button>
                 </div>
             </div>
         </div>
         
-        <!-- Hidden empty form template for Javascript cloning (FX) -->
         <table style="display: none;">
             <tbody id="empty-fx-form">
                 <tr>
@@ -126,12 +155,12 @@
                     <td>{{ fx_formset.empty_form.openning_balance }}</td>
                     <td>{{ fx_formset.empty_form.ending_balance }}</td>
                     <td>{{ fx_formset.empty_form.exchange_rate }}</td>
-                    <td class="text-center align-middle">{% if fx_formset.can_delete %}{{ fx_formset.empty_form.DELETE }}{% endif %}</td>
+                    <td class="text-center">{% if fx_formset.can_delete %}{{ fx_formset.empty_form.DELETE }}{% endif %}</td>
                 </tr>
             </tbody>
         </table>
 
-        <button type="submit" class="btn btn-primary btn-lg w-100 mb-5 shadow">
+        <button type="submit" class="btn btn-primary btn-lg w-100 mb-5 shadow fw-bold">
             <i class="fas fa-magic me-2"></i> Process Documents & Generate Vouchers
         </button>
     </form>
@@ -139,6 +168,8 @@
 
 <script>
 document.addEventListener("DOMContentLoaded", function() {
+    
+    // --- 1. DYNAMIC FORMSET CLONING LOGIC ---
     function setupDynamicFormset(addBtnId, tbodyId, emptyFormId, totalFormsId) {
         const addBtn = document.getElementById(addBtnId);
         const tbody = document.getElementById(tbodyId);
@@ -149,20 +180,40 @@ document.addEventListener("DOMContentLoaded", function() {
             addBtn.addEventListener("click", function(e) {
                 e.preventDefault();
                 const currentFormCount = parseInt(totalForms.value);
-                
-                // Replace the __prefix__ placeholder inside the hidden template with the next available index
                 const newRowHtml = emptyFormHtml.replace(/__prefix__/g, currentFormCount);
-                
-                // Append to the table and increment the management form's index tracker
                 tbody.insertAdjacentHTML('beforeend', newRowHtml);
                 totalForms.value = currentFormCount + 1;
             });
         }
     }
 
-    // Initialize both formsets using their specific prefixes matching the Django backend view
     setupDynamicFormset("add-accrual-btn", "accrual-tbody", "empty-accrual-form", "id_accrual-TOTAL_FORMS");
     setupDynamicFormset("add-fx-btn", "fx-tbody", "empty-fx-form", "id_fx-TOTAL_FORMS");
+
+    // --- 2. BULLETPROOF VENDOR SYNC (REPLACES HTMX) ---
+    const clientSelect = document.getElementById('id_client');
+    
+    if (clientSelect) {
+        clientSelect.addEventListener('change', function() {
+            const clientId = this.value;
+            
+            if (clientId) {
+                // Fetch the new vendor HTML partial from your existing Django view
+                fetch(`/tools/ajax/load-vendors/?client=${clientId}`)
+                    .then(response => response.text())
+                    .then(html => {
+                        // Grab EVERY vendor dropdown on the page (Accruals, FX, and hidden templates)
+                        const vendorDropdowns = document.querySelectorAll('.dynamic-vendor-select');
+                        
+                        // Loop through and update them all simultaneously
+                        vendorDropdowns.forEach(dropdown => {
+                            dropdown.innerHTML = html;
+                        });
+                    })
+                    .catch(error => console.error('Error fetching vendors:', error));
+            }
+        });
+    }
 });
 </script>
 {% endblock %}

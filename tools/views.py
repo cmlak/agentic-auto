@@ -24,14 +24,14 @@ import pdfplumber
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
-GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, BalancikaExportForm, MultiplePDFUploadForm,\
-MonthlyClosingForm, AccrualFormSet, FXFormSet
+GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
+MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
-from .filters import PurchaseFilter
+from .filters import PurchaseFilter, JournalVoucherFilter
 from .resources import PurchaseResource
 
 # ====================================================================
@@ -897,14 +897,13 @@ def gl_review_view(request):
 
             # If queue is empty, we are done reviewing! Now perform atomic DB save.
             if not parsed_data['lines']:
-                grouped_records = defaultdict(list)
                 report_log = []
                 
                 try:
                     with transaction.atomic():
-                        # 1. PROCESS AND SAVE TO 'Old' MODEL
                         for item in completed_data:
-                            Old.objects.create(
+                            # 1. PROCESS AND SAVE TO 'Old' MODEL
+                            old_record = Old.objects.create(
                                 client=selected_client,
                                 date=item['date'],
                                 account_id=item['account_id'],
@@ -915,7 +914,31 @@ def gl_review_view(request):
                             )
                             
                             gl_no = item['gl_no']
-                            grouped_records[gl_no].append(item)
+                            
+                            # 2. CREATE LINKED JOURNAL ENTRY
+                            ref = f"HIST-{gl_no}" if gl_no and gl_no != 'UNGROUPED' else f"OLD-{old_record.id}"
+                            je = JournalEntry.objects.create(
+                                client=selected_client,
+                                date=item['date'],
+                                reference_number=ref,
+                                description=f"Historical GL Migration: {item['description']}"[:255],
+                                old=old_record
+                            )
+                            
+                            # 3. CREATE JOURNAL LINE
+                            account, _ = Account.objects.get_or_create(
+                                account_id=str(item['account_id']),
+                                client=selected_client,
+                                defaults={'name': 'System Gen Acct', 'account_type': 'Asset'}
+                            )
+                            
+                            JournalLine.objects.create(
+                                journal_entry=je,
+                                account=account,
+                                debit=item['debit'],
+                                credit=item['credit'],
+                                description=item['description']
+                            )
                             
                             report_log.append({
                                 'GL No': gl_no, 'Date': item['date'], 
@@ -923,35 +946,6 @@ def gl_review_view(request):
                                 'Debit': item['debit'], 'Credit': item['credit'], 
                                 'Description': item['description']
                             })
-
-                        # 2. CREATE DOUBLE-ENTRY JOURNALS
-                        for gl_no, items in grouped_records.items():
-                            if not items:
-                                continue
-                            
-                            first_item = items[0]
-                            
-                            je = JournalEntry.objects.create(
-                                client=selected_client,
-                                date=first_item['date'],
-                                reference_number=f"HIST-{gl_no}",
-                                description=f"Historical GL Migration: {first_item['description']}"[:255]
-                            )
-                            
-                            for item in items:
-                                account, _ = Account.objects.get_or_create(
-                                    account_id=str(item['account_id']),
-                                    client=selected_client,
-                                    defaults={'name': 'System Gen Acct', 'account_type': 'Asset'}
-                                )
-                                
-                                JournalLine.objects.create(
-                                    journal_entry=je,
-                                    account=account,
-                                    debit=item['debit'],
-                                    credit=item['credit'],
-                                    description=item['description']
-                                )
                 except Exception as e:
                     messages.error(request, f"Database transaction failed during final save. Nothing was saved. Error: {str(e)}")
                     return render(request, 'tools/gl_review.html', {
@@ -1333,8 +1327,8 @@ def export_purchase_csv(request):
     resource = PurchaseResource()
     dataset = resource.export(queryset=filtered_purchases)
     
-    # Create and return the HTTP response with the CSV payload
-    response = HttpResponse(dataset.csv, content_type='text/csv')
+    # Create and return the HTTP response with a UTF-8 BOM so Excel reads Chinese characters properly
+    response = HttpResponse(dataset.csv.encode('utf-8-sig'), content_type='text/csv; charset=utf-8')
     response['Content-Disposition'] = 'attachment; filename="purchase_invoices.csv"'
     
     return response
@@ -1449,7 +1443,8 @@ def manual_old_entry_view(request):
                     client=old_record.client,
                     date=old_record.date or date.today(),
                     description=f"Historical Entry: {old_record.description}"[:255],
-                    reference_number=f"OLD-{old_record.id}"
+                    reference_number=f"OLD-{old_record.id}",
+                    old=old_record
                 )
                 
                 acct, _ = Account.objects.get_or_create(
@@ -1534,12 +1529,13 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
     def form_valid(self, form):
         with transaction.atomic():
             old_record = form.save()
-            # Wipe old journal entries by matching exact reference string
-            JournalEntry.objects.filter(reference_number=f"OLD-{old_record.id}").delete()
+            JournalEntry.objects.filter(Q(old=old_record) | Q(reference_number=f"OLD-{old_record.id}")).delete()
             
             je = JournalEntry.objects.create(
                 client=old_record.client, date=old_record.date or date.today(),
-                description=f"Updated Historical Entry: {old_record.description}"[:255], reference_number=f"OLD-{old_record.id}"
+                description=f"Updated Historical Entry: {old_record.description}"[:255], 
+                reference_number=f"OLD-{old_record.id}",
+                old=old_record
             )
             acct, _ = Account.objects.get_or_create(client_id=old_record.client_id, account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
             JournalLine.objects.create(journal_entry=je, account=acct, description=old_record.description or "Historical Entry", debit=old_record.debit or 0.0, credit=old_record.credit or 0.0)
@@ -1572,7 +1568,7 @@ class OldDeleteView(LoginRequiredMixin, DeleteView):
         return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
-        JournalEntry.objects.filter(reference_number=f"OLD-{self.object.id}").delete()
+        JournalEntry.objects.filter(Q(old=self.object) | Q(reference_number=f"OLD-{self.object.id}")).delete()
         messages.success(self.request, 'Record and associated Journal Entries deleted successfully!')
         return super().form_valid(form)
 
@@ -1710,10 +1706,32 @@ def export_balancika_view(request):
                 for r in rows_to_add:
                     f_acct = str(r["AcctID"])
                     sheet2_data.append({
-                        "Entry No": entry_no, "Description": r["Desc"],
-                        "Account ID": f_acct,
-                        "Item ID": "", "Quantity": 1, "Unit Cost": r["Cost"], "Total Cost": r["Cost"],
-                        "Grand Total": r["Total"], "Purchase Order Line": r["Line"], "VAT Input": r["VAT"]
+                        "Entry No": entry_no,
+                        "Description": r["Desc"],
+                        "Account ID": f_acct, 
+                        "Item ID": "", 
+                        "Location ID": "", 
+                        "Lot Number": "",
+                        "Manufacture Date (dd-MMM-YYYY)": "", 
+                        "Expiry Date (dd-MMM-YYYY)": "",
+                        "Class ID": "", 
+                        "Uom ID": "",
+                        "Quantity": 1, 
+                        "FOC": 0,
+                        "Unit Cost": r["Cost"], 
+                        "Total Cost": r["Cost"],
+                        "Disc %": 0, 
+                        "Disc": 0,
+                        "Grand Total": r["Total"],
+                        "Purchase Order No": "", 
+                        "Purchase Order Line": r["Line"],
+                        "Job No": "", 
+                        "Job Task No": 0, 
+                        "Job Planning Line": 0,
+                        "WHT": "None", 
+                        "Tax Group 2": "None", 
+                        "Tax Group 3": "None",
+                        "VAT Input": r["VAT"]
                     })
 
             # --- GENERATE EXCEL FILE IN MEMORY ---
@@ -1743,8 +1761,6 @@ def export_balancika_view(request):
                 form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'tools/balancika_export.html', {'form': form})
-
-
 
 # ====================================================================
 # UPDATE ENGAGEMENT LETTER
@@ -1893,119 +1909,153 @@ def upload_proposals_view(request):
 
 @login_required
 def monthly_closing_view(request):
+    # ---------------------------------------------------------
+    # 1. CLIENT SELECTION ROUTE (From JS Fetch / Top Dropdown)
+    # ---------------------------------------------------------
+    if request.method == 'POST' and 'client' in request.POST and 'date' not in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:monthly_closing')
+
+    client_id = request.session.get('active_client_id')
+    user = request.user
+    
+    # ---------------------------------------------------------
+    # 2. STATE SYNC FIX: Ensure backend validates against the submitted POST client
+    # ---------------------------------------------------------
+    if request.method == 'POST' and 'client' in request.POST:
+        submitted_client_id = request.POST.get('client')
+        if submitted_client_id:
+            client_id = submitted_client_id
+            request.session['active_client_id'] = client_id
+
+    # ---------------------------------------------------------
+    # 3. SECURITY & PERMISSIONS
+    # ---------------------------------------------------------
+    if client_id:
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists():
+                    has_access = True
+            except Exception:
+                pass
+        if not has_access:
+            messages.error(request, "Permission denied to manage this client.")
+            request.session.pop('active_client_id', None)
+            return redirect('main')
+
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client to perform monthly closing.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+
+    # ---------------------------------------------------------
+    # 4. STATIC TUPLE GENERATION (Fixes HTML Rendering Bugs)
+    # ---------------------------------------------------------
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    db_vendors = [(str(v.id), f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    vendor_choices = [('', '--- No Vendor ---')] + db_vendors
+
+    # Bundle into kwargs
+    form_kwargs_dict = {
+        'client_id': client_id, 
+        'account_choices': account_choices, 
+        'vendor_choices': vendor_choices
+    }
+
+    # ---------------------------------------------------------
+    # 5. MAIN PROCESSING ROUTE
+    # ---------------------------------------------------------
     if request.method == 'POST':
         form = MonthlyClosingForm(request.POST, request.FILES)
-        accrual_formset = AccrualFormSet(request.POST, prefix='accrual')
-        fx_formset = FXFormSet(request.POST, prefix='fx')
+        
+        # Inject the bundled kwargs
+        accrual_formset = AccrualFormSet(request.POST, prefix='accrual', form_kwargs=form_kwargs_dict)
+        fx_formset = FXFormSet(request.POST, prefix='fx', form_kwargs=form_kwargs_dict)
 
         if form.is_valid() and accrual_formset.is_valid() and fx_formset.is_valid():
             client = form.cleaned_data['client']
             date = form.cleaned_data['date']
             
-            # =========================================================
-            # 1. Initialize the AI Processor
-            # =========================================================
-            # Make sure GEMINI_API_KEY_2 is set in your environment variables
-            api_key = os.getenv("GEMINI_API_KEY_2")
+            api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
             if not api_key:
-                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing from environment variables.")
+                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing.")
                 return render(request, 'tools/monthly_closing.html', {
                     'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
                 })
             
-            vendor_tax, _ = Vendor.objects.get_or_create(name='General Department of Taxation')
-            vendor_staff, _ = Vendor.objects.get_or_create(name='Staff')
+            vendor_tax, _ = Vendor.objects.get_or_create(client=client, name='General Department of Taxation', defaults={'vendor_id': 'V-TAX'})
+            vendor_staff, _ = Vendor.objects.get_or_create(client=client, name='Staff', defaults={'vendor_id': 'V-STAFF'})
 
             transaction_lines = [] 
             period_label = "Current Month"
-            total_ai_cost = 0.0 # Initialize aggregate cost tracker
+            total_ai_cost = 0.0
 
             print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
-            print(f"🏢 Target Client: {client.name}")
-            print(f"📅 Voucher Date: {date}")
-
+            
             # =========================================================
-            # SCENARIO A (Part 1): Tax on Salary (TOS)
+            # SCENARIO A: Tax on Salary & Liabilities
             # =========================================================
             if form.cleaned_data.get('tos_pdf') and form.cleaned_data.get('salary_payable'):
-                print("\n[ MODULE 1 ] Processing Tax on Salary (TOS)...")
                 pdf_bytes = form.cleaned_data['tos_pdf'].read()
                 salary_payable_usd = form.cleaned_data['salary_payable']
-                
-                print(f"💵 User Input - Salary Payable: ${salary_payable_usd}")
-                print("⏳ Extracting data via Gemini AI...")
-                
                 processor = TOSPDFProcessor(api_key=api_key)
                 data = processor.extract_tax_data(pdf_bytes)
 
                 if not data.get('error') and data.get('exchange_rate', 0) > 0:
                     period_label = data['declaration_period']
-                    
-                    print(f"✅ AI Extraction Complete. (Period: {period_label} | FX: {data['exchange_rate']})")
-                    print(f"💲 AI Cost for TOS: ${processor.cost_stats['flash_cost']:.6f}")
                     total_ai_cost += processor.cost_stats['flash_cost']
                     
-                    # Deterministic Math
                     salary_expense_usd = data['net_salary_usd']
                     meal_expense_usd = round(salary_payable_usd - salary_expense_usd, 2)
-                    tax_res_usd = round(data['tos_base_resident_khr'] / data['exchange_rate'], 2)
-                    tax_non_res_usd = round(data['tos_base_non_resident_khr'] / data['exchange_rate'], 2)
+                    tax_res_usd = round(data['tos_tax_resident_khr'] / data['exchange_rate'], 2)
+                    tax_non_res_usd = round(data['tos_tax_non_resident_khr'] / data['exchange_rate'], 2)
                     total_tax = round(tax_res_usd + tax_non_res_usd, 2)
-
-                    print(f"📊 Derived Python Calculations (USD):")
-                    print(f"   - Salary Expense: ${salary_expense_usd}")
-                    print(f"   - Meal Expense:   ${meal_expense_usd}")
-                    print(f"   - Total TOS Tax:  ${total_tax}")
+                    
+                    reasoning = data.get('reasoning', f"Calculated using exchange rate {data['exchange_rate']}.")
 
                     transaction_lines.extend([
-                        {"vendor": vendor_staff, "instruction": "705000", "desc": f"Salary expense {period_label}", "debit": salary_expense_usd, "credit": 0.0},
-                        {"vendor": vendor_staff, "instruction": "705070", "desc": f"Meal expense {period_label}", "debit": meal_expense_usd, "credit": 0.0},
-                        {"vendor": vendor_tax, "instruction": "725410", "desc": f"Salary tax expense {period_label}", "debit": total_tax, "credit": 0.0},
-                        {"vendor": vendor_tax, "instruction": "210030", "desc": f"Salary tax expense {period_label}", "debit": 0.0, "credit": tax_res_usd},
-                        {"vendor": vendor_tax, "instruction": "210030", "desc": f"NR Salary tax expense {period_label}", "debit": 0.0, "credit": tax_non_res_usd},
-                        {"vendor": vendor_staff, "instruction": "225070", "desc": f"Being accrued for salary expense {period_label}", "debit": 0.0, "credit": salary_payable_usd}
+                        {"vendor": vendor_staff, "account_id": "705000", "instruction": reasoning, "desc": f"Salary expense {period_label}", "debit": salary_expense_usd, "credit": 0.0},
+                        {"vendor": vendor_staff, "account_id": "705070", "instruction": reasoning, "desc": f"Meal expense {period_label}", "debit": meal_expense_usd, "credit": 0.0},
+                        {"vendor": vendor_tax, "account_id": "725410", "instruction": reasoning, "desc": f"Salary tax expense {period_label}", "debit": total_tax, "credit": 0.0},
+                        {"vendor": vendor_tax, "account_id": "210030", "instruction": reasoning, "desc": f"Salary tax expense {period_label}", "debit": 0.0, "credit": tax_res_usd},
+                        {"vendor": vendor_tax, "account_id": "210030", "instruction": reasoning, "desc": f"NR Salary tax expense {period_label}", "debit": 0.0, "credit": tax_non_res_usd},
+                        {"vendor": vendor_staff, "account_id": "225070", "instruction": reasoning, "desc": f"Being accrued for salary expense {period_label}", "debit": 0.0, "credit": salary_payable_usd}
                     ])
-                else:
-                    print("❌ TOS Processing Failed (AI Error or Zero FX Rate).")
 
-            # =========================================================
-            # SCENARIO A (Part 2): Tax Liabilities (WHT & FBT)
-            # =========================================================
             if form.cleaned_data.get('tax_liabilities_pdf'):
-                print("\n[ MODULE 2 ] Processing Tax Liabilities (WHT & FBT)...")
                 pdf_bytes = form.cleaned_data['tax_liabilities_pdf'].read()
-                print("⏳ Extracting data via Gemini AI...")
-                
                 processor = TaxLiabilitiesProcessor(api_key=api_key)
                 data = processor.extract_liabilities_data(pdf_bytes)
 
                 if not data.get('error'):
                     period = data.get('declaration_period', period_label)
-                    print(f"✅ AI Extraction Complete. (Period: {period})")
-                    print(f"💲 AI Cost for Liabilities: ${processor.cost_stats['flash_cost']:.6f}")
                     total_ai_cost += processor.cost_stats['flash_cost']
+                    reasoning = data.get('reasoning', '')
                     
-                    # WHT Math
                     total_wht = round(data['wht_10_usd'] + data['wht_15_usd'], 2)
                     if total_wht > 0:
-                        print(f"📊 Derived Python Calculation - Total WHT: ${total_wht}")
                         desc = f"Being accrued for Withholding tax expenses in {period}"
                         transaction_lines.extend([
-                            {"vendor": vendor_tax, "instruction": "725420", "desc": desc, "debit": total_wht, "credit": 0.0},
-                            {"vendor": vendor_tax, "instruction": "210040", "desc": desc, "debit": 0.0, "credit": total_wht}
+                            {"vendor": vendor_tax, "account_id": "725420", "instruction": reasoning, "desc": desc, "debit": total_wht, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "210040", "instruction": reasoning, "desc": desc, "debit": 0.0, "credit": total_wht}
                         ])
 
-                    # FBT Math
                     fbt = round(data['fbt_usd'], 2)
                     if fbt > 0:
-                        print(f"📊 Extracted FBT: ${fbt}")
                         desc = f"Being accrued for Fringe Benefit tax expenses in {period}"
                         transaction_lines.extend([
-                            {"vendor": vendor_tax, "instruction": "705010", "desc": desc, "debit": fbt, "credit": 0.0},
-                            {"vendor": vendor_tax, "instruction": "210031", "desc": desc, "debit": 0.0, "credit": fbt}
+                            {"vendor": vendor_tax, "account_id": "705010", "instruction": reasoning, "desc": desc, "debit": fbt, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "210031", "instruction": reasoning, "desc": desc, "debit": 0.0, "credit": fbt}
                         ])
-                else:
-                    print("❌ Tax Liabilities Processing Failed.")
 
             # =========================================================
             # SCENARIO B: Accrued Expenses
@@ -2015,15 +2065,22 @@ def monthly_closing_view(request):
             for a_form in accrual_formset:
                 if a_form.cleaned_data and not a_form.cleaned_data.get('DELETE', False) and a_form.cleaned_data.get('debit', 0) > 0:
                     debit_amt = round(a_form.cleaned_data['debit'], 2)
-                    vendor = a_form.cleaned_data['vendor']
                     desc = a_form.cleaned_data['description']
                     
+                    # Convert string ID back to Database Instance
+                    vendor_id_str = a_form.cleaned_data.get('vendor')
+                    vendor_instance = None
+                    if vendor_id_str:
+                        try:
+                            vendor_instance = Vendor.objects.get(id=int(vendor_id_str), client=client)
+                        except (ValueError, Vendor.DoesNotExist):
+                            pass
+                    
                     transaction_lines.extend([
-                        {"vendor": vendor, "instruction": a_form.cleaned_data['account_id'], "desc": desc, "debit": debit_amt, "credit": 0.0},
-                        {"vendor": vendor, "instruction": "215090", "desc": desc, "debit": 0.0, "credit": debit_amt}
+                        {"vendor": vendor_instance, "account_id": a_form.cleaned_data['account_id'], "instruction": "Manual Accrual", "desc": desc, "debit": debit_amt, "credit": 0.0},
+                        {"vendor": vendor_instance, "account_id": "215090", "instruction": "Manual Accrual", "desc": desc, "debit": 0.0, "credit": debit_amt}
                     ])
                     accrual_count += 1
-            print(f"✅ Processed {accrual_count} User Accrual entries.")
 
             # =========================================================
             # SCENARIO C: FX Gain/Loss
@@ -2032,93 +2089,314 @@ def monthly_closing_view(request):
             fx_count = 0
             for f_form in fx_formset:
                 if f_form.cleaned_data and not f_form.cleaned_data.get('DELETE', False) and f_form.cleaned_data.get('exchange_rate', 0) > 0:
-                    open_bal = f_form.cleaned_data['openning_balance']
-                    end_bal = f_form.cleaned_data['ending_balance']
+                    open_bal_usd = f_form.cleaned_data['openning_balance']
+                    end_bal_khr = f_form.cleaned_data['ending_balance']
                     fx_rate = f_form.cleaned_data['exchange_rate']
-                    vendor = f_form.cleaned_data['vendor']
                     desc = f_form.cleaned_data['description']
+                    fx_account_id = f_form.cleaned_data['account_id'] 
 
-                    # Deterministic FX Formula
-                    fx_diff = abs(round((end_bal / fx_rate) - open_bal, 2))
+                    # Convert string ID back to Database Instance
+                    vendor_id_str = f_form.cleaned_data.get('vendor')
+                    vendor_instance = None
+                    if vendor_id_str:
+                        try:
+                            vendor_instance = Vendor.objects.get(id=int(vendor_id_str), client=client)
+                        except (ValueError, Vendor.DoesNotExist):
+                            pass
+
+                    month_end_usd = round(end_bal_khr / fx_rate, 2)
+                    fx_diff = round(month_end_usd - open_bal_usd, 2)
+                    instruction_txt = f"FX Calculation: (End Bal KHR {end_bal_khr} / Rate {fx_rate}) - Open Bal USD {open_bal_usd} = {fx_diff}"
                     
-                    if fx_diff > 0:
+                    if fx_diff < 0:
+                        loss_amt = abs(fx_diff)
                         transaction_lines.extend([
-                            {"vendor": vendor, "instruction": f_form.cleaned_data['account_id'], "desc": desc, "debit": fx_diff, "credit": 0.0},
-                            {"vendor": vendor, "instruction": "100210", "desc": desc, "debit": 0.0, "credit": fx_diff}
+                            {"vendor": vendor_instance, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0},
+                            {"vendor": vendor_instance, "account_id": "100210", "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt}
                         ])
                         fx_count += 1
-            print(f"✅ Calculated {fx_count} FX Adjustments.")
+                    elif fx_diff > 0:
+                        gain_amt = fx_diff
+                        transaction_lines.extend([
+                            {"vendor": vendor_instance, "account_id": "100210", "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0},
+                            {"vendor": vendor_instance, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt}
+                        ])
+                        fx_count += 1
 
             # =========================================================
-            # ATOMIC DATABASE SAVE & COST LOGGING
+            # ATOMIC DATABASE SAVE 
             # =========================================================
-            print("\n[ FINALIZING ] Initiating Database Transaction...")
             transaction_lines = [line for line in transaction_lines if line['debit'] > 0 or line['credit'] > 0]
 
             if transaction_lines:
                 try:
                     with transaction.atomic():
-                        # 1. Create Header Entry
-                        journal_entry = JournalEntry.objects.create(
-                            client=client, date=date, description=f"Monthly Closing Automation - {period_label}"
-                        )
-
-                        # 2. Bulk Create Vouchers and Journal Lines
-                        jv_records = []
-                        jl_records = []
-                        
                         for line in transaction_lines:
-                            jv_records.append(
-                                JournalVoucher(client=client, date=date, vendor=line['vendor'], instruction=line['instruction'], description=line['desc'], debit=line['debit'], credit=line['credit']) 
+                            jv = JournalVoucher.objects.create(
+                                client=client, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
+                                description=line['desc'], debit=line['debit'], credit=line['credit']
                             )
-                            
-                            # Ensure the mapped Account exists for the client
+                            je = JournalEntry.objects.create(
+                                client=client, date=date, description=f"Monthly Closing Automation - {period_label}"[:255], 
+                                reference_number=f"JV-{jv.id}", journal_voucher=jv
+                            )
                             account, _ = Account.objects.get_or_create(
-                                client=client,
-                                account_id=str(line['instruction']),
-                                defaults={'name': 'System Gen Acct', 'account_type': 'Expense'}
+                                client=client, account_id=str(line['account_id']), defaults={'name': 'System Gen Acct', 'account_type': 'Expense'}
                             )
-                            
-                            jl_records.append(
-                                JournalLine(
-                                    journal_entry=journal_entry, account=account,
-                                    debit=line['debit'], credit=line['credit'], description=line['desc'][:255]
-                                )
+                            JournalLine.objects.create(
+                                journal_entry=je, account=account, debit=line['debit'], credit=line['credit'], description=line['desc'][:255]
                             )
-                            
-                        JournalVoucher.objects.bulk_create(jv_records)
-                        JournalLine.objects.bulk_create(jl_records)
 
-                        # 3. Save Total Cost to DB Log (if model exists)
                         if total_ai_cost > 0:
                             try:
                                 AICostLog.objects.create(
                                     file_name=f"Monthly Closing Batch - {period_label}",
-                                    total_pages=2, # Assuming 2 PDFs processed max
-                                    flash_cost=total_ai_cost,
-                                    total_cost=total_ai_cost
+                                    total_pages=2, flash_cost=total_ai_cost, total_cost=total_ai_cost
                                 )
                             except NameError:
-                                pass # AICostLog model not imported/used
+                                pass
 
-                    print(f"🎉 SUCCESS: {len(jv_records)} Journal Vouchers Generated.")
-                    print(f"💰 TOTAL BATCH AI COST: ${total_ai_cost:.6f}")
-                    print(f"{'='*60}\n")
-                    
-                    messages.success(request, f"Successfully processed {period_label}. Created {len(jv_records)} Journal Voucher records.")
+                    messages.success(request, f"Successfully processed {period_label}. Created {len(transaction_lines)} Journal Voucher records.")
                     return redirect('tools:monthly_closing')
                 except Exception as db_error:
-                    print(f"❌ DATABASE ERROR: {str(db_error)}")
                     messages.error(request, f"Database Error: {str(db_error)}")
             else:
-                print("⚠️ WARNING: No valid transactions were extracted or entered. Transaction Aborted.")
                 messages.warning(request, "No valid transactions were extracted or entered.")
 
     else:
-        form = MonthlyClosingForm()
-        accrual_formset = AccrualFormSet(prefix='accrual')
-        fx_formset = FXFormSet(prefix='fx')
+        # ---------------------------------------------------------
+        # 6. GET REQUEST RENDERING
+        # ---------------------------------------------------------
+        form = MonthlyClosingForm(initial={'client': client_id})
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Exception:
+                form.fields['client'].queryset = Client.objects.none()
+                
+        # Inject kwargs for GET request rendering
+        accrual_formset = AccrualFormSet(prefix='accrual', form_kwargs=form_kwargs_dict)
+        fx_formset = FXFormSet(prefix='fx', form_kwargs=form_kwargs_dict)
 
     return render(request, 'tools/monthly_closing.html', {
         'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
     })
+
+def load_client_vendors(request):
+    """HTMX endpoint to return vendor <option> tags based on selected client."""
+    client_id = request.GET.get('client')
+    if client_id:
+        vendors = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
+    else:
+        vendors = Vendor.objects.none()
+        
+    return render(request, 'tools/partials/vendor_options.html', {'vendors': vendors})
+
+# ====================================================================
+# --- 5. JOURNAL VOUCHER CRUD & POSTING ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def JournalVoucherListView(request):
+    user = request.user
+
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:journal_voucher_list')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        base_queryset = JournalVoucher.objects.filter(client_id=client_id)
+        if user.is_staff or user.is_superuser:
+            jv_records = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    jv_records = base_queryset
+                else:
+                    messages.error(request, "You do not have permission to view records for this client.")
+                    return redirect('main')
+            except Profile.DoesNotExist:
+                messages.error(request, "You do not have permission to view records for this client.")
+                return redirect('main')
+        
+        client_form = ClientSelectionForm(initial={'client': client_id})
+        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
+    else:
+        jv_records = JournalVoucher.objects.none()
+        client_form = ClientSelectionForm()
+        vendor_queryset = Vendor.objects.none()
+        messages.info(request, "Please select a client to view journal vouchers.")
+
+    jv_records = jv_records.order_by('-id')
+    jv_filter = JournalVoucherFilter(request.GET, queryset=jv_records)
+    jv_filter.form.fields['vendor'].queryset = vendor_queryset
+
+    paginator = Paginator(jv_filter.qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    context = {'filter': jv_filter, 'jv_records': page_obj, 'page_obj': page_obj, 'client_form': client_form}
+    return render(request, 'tools/journal_voucher_list.html', context)
+
+@login_required(login_url="register:login")
+def manual_journal_voucher_entry_view(request):
+    if request.method == 'POST' and 'client' in request.POST and 'account_id' not in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client: request.session['active_client_id'] = selected_client.id
+            else: request.session.pop('active_client_id', None)
+            return redirect('tools:manual_journal_voucher_entry')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists(): has_access = True
+            except Profile.DoesNotExist: pass
+        if not has_access:
+            messages.error(request, "Permission denied to manage this client.")
+            request.session.pop('active_client_id', None)
+            return redirect('main')
+
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    if request.method == 'POST':
+        form = JournalVoucherEntryForm(request.POST, account_choices=account_choices)
+        if form.is_valid():
+            with transaction.atomic():
+                jv_record = form.save()
+                je = JournalEntry.objects.create(
+                    client=jv_record.client, date=jv_record.date or date.today(),
+                    description=f"Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
+                    journal_voucher=jv_record
+                )
+                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+                JournalLine.objects.create(journal_entry=je, account=acct, description=jv_record.description or "Journal Voucher", debit=jv_record.debit or 0.0, credit=jv_record.credit or 0.0)
+            
+            messages.success(request, f"Successfully created journal voucher and posted to GL.")
+            return redirect('tools:journal_voucher_list') 
+    else:
+        form = JournalVoucherEntryForm(initial={'client': client_id}, account_choices=account_choices)
+        form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
+
+    return render(request, 'tools/journal_voucher_form.html', {'form': form})
+
+class JournalVoucherDetailView(LoginRequiredMixin, DetailView):
+    login_url = "register:login"
+    model = JournalVoucher
+    template_name = 'tools/journal_voucher_detail.html'
+    context_object_name = 'jv_record'
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        jv_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        jv_record = self.get_object()
+        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=jv_record.client_id).exists())
+        return context
+
+class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
+    login_url = "register:login"
+    model = JournalVoucher
+    form_class = JournalVoucherEntryForm 
+    template_name = 'tools/journal_voucher_form.html'
+    
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        jv_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=self.object.client_id).order_by('account_id')]
+        kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
+        return kwargs
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        if 'form' in context:
+            context['form'].fields['vendor'].queryset = Vendor.objects.filter(client_id=self.object.client_id)
+        return context
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            jv_record = form.save()
+            JournalEntry.objects.filter(Q(journal_voucher=jv_record) | Q(reference_number=f"JV-{jv_record.id}")).delete()
+            
+            je = JournalEntry.objects.create(
+                client=jv_record.client, date=jv_record.date or date.today(),
+                description=f"Updated Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
+                journal_voucher=jv_record
+            )
+            acct, _ = Account.objects.get_or_create(client_id=jv_record.client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+            JournalLine.objects.create(journal_entry=je, account=acct, description=jv_record.description or "Journal Voucher", debit=jv_record.debit or 0.0, credit=jv_record.credit or 0.0)
+        messages.success(self.request, "Journal voucher and General Ledger entries updated successfully!")
+        return HttpResponseRedirect(reverse('tools:journal_voucher_detail', kwargs={'pk': self.object.pk}))
+
+class JournalVoucherDeleteView(LoginRequiredMixin, DeleteView):
+    login_url = "register:login"
+    model = JournalVoucher
+    template_name = 'tools/journal_voucher_confirm_delete.html'
+    success_url = reverse_lazy('tools:journal_voucher_list')
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        jv_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        JournalEntry.objects.filter(Q(journal_voucher=self.object) | Q(reference_number=f"JV-{self.object.id}")).delete()
+        messages.success(self.request, 'Journal voucher and associated Journal Entries deleted successfully!')
+        return super().form_valid(form)

@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import difflib
 import threading
 import pandas as pd
@@ -141,6 +142,110 @@ class GeminiCanadiaBankProcessor:
 class ClientBCustomBankProcessor:
     def __init__(self, api_key): pass
     def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
+
+# ====================================================================
+# --- 1.5 VENDOR IDENTIFICATION AGENT ---
+# ====================================================================
+class ExtractedVendor(BaseModel):
+    sys_id: str
+    vendor_name: str = Field(description="Cleaned B2B supplier company name. Empty string if individual, employee, internal transfer, or tax.")
+
+class VendorExtractionBatch(BaseModel):
+    vendors: List[ExtractedVendor]
+
+class VendorIdentificationAgent:
+    """Dedicated agent to scan outgoing payments and proactively resolve/create Vendors."""
+    
+    def __init__(self, api_key):
+        print("\n" + "="*50)
+        print("🕵️ INITIALIZING: VENDOR IDENTIFICATION AGENT")
+        print("="*50)
+        self.client = genai.Client(api_key=api_key)
+        self.MODEL_NAME = "gemini-2.5-flash"
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def process(self, extracted_data, client_id):
+        money_out_txns = [t for t in extracted_data if float(t.get('credit') or 0.0) > 0]
+        if not money_out_txns:
+            return extracted_data, self.cost_stats
+        
+        try:
+            tx_for_vendor_agent = [{"sys_id": t['sys_id'], "counterparty": t.get('counterparty'), "purpose": t.get('purpose')} for t in money_out_txns]
+            
+            vendor_prompt = f"""
+            Review the following bank transactions (money out). Identify the true Vendor/Supplier Company Name for each transaction.
+            Ignore bank fees, payroll, internal transfers, and individuals. Focus on B2B suppliers.
+            If it's a valid supplier, return the cleaned company name. If not, return an empty string.
+            
+            Transactions:
+            {json.dumps(tx_for_vendor_agent)}
+            """
+            
+            v_resp = self.client.models.generate_content(
+                model=self.MODEL_NAME,
+                contents=vendor_prompt,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=VendorExtractionBatch,
+                    temperature=0.0
+                )
+            )
+            
+            if v_resp.usage_metadata:
+                v_cost = ((v_resp.usage_metadata.prompt_token_count / 1e6) * 0.075) + ((v_resp.usage_metadata.candidates_token_count / 1e6) * 0.30)
+                self.cost_stats['flash_cost'] += v_cost
+            
+            extracted_vendors = v_resp.parsed.vendors
+            for ev in extracted_vendors:
+                raw_name = ev.vendor_name
+                if not raw_name or str(raw_name).strip() == "" or str(raw_name).lower() == "none":
+                    continue
+                    
+                name_str = str(raw_name).lower().replace('&', ' and ')
+                target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
+                
+                if len(target_norm) < 3:
+                    continue
+                    
+                # Fuzzy match against existing vendors
+                exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+                best_vendor = None
+                if not exact_match:
+                    best_coverage = 0.0
+                    for v in Vendor.objects.filter(client_id=client_id):
+                        if not v.normalized_name or not target_norm or v.normalized_name[0] != target_norm[0]: 
+                            continue
+                        matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
+                        match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
+                        if match.a == 0 and match.b == 0:
+                            coverage = match.size / len(target_norm)
+                            if coverage >= 0.8 and coverage > best_coverage:
+                                best_coverage = coverage
+                                best_vendor = v
+                
+                if not exact_match and not best_vendor:
+                    last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
+                    next_num = 2
+                    if last_vendor and re.search(r'V-?(\d+)', str(last_vendor.vendor_id)):
+                        try: next_num = int(re.search(r'V-?(\d+)', str(last_vendor.vendor_id)).group(1)) + 1
+                        except: pass
+                        
+                    new_vid = f"V-{next_num:05d}"
+                    Vendor.objects.create(client_id=client_id, vendor_id=new_vid, name=raw_name, normalized_name=target_norm)
+                    print(f"      ✨ Created New Vendor: {raw_name} ({new_vid})")
+                    
+                # Tag the remark field with the identified vendor so reconciliation picks it up
+                for t in extracted_data:
+                    if str(t.get('sys_id')) == ev.sys_id:
+                        if not t.get('remark'):
+                            t['remark'] = f"Vendor: {raw_name}"
+                        elif "Vendor:" not in t['remark']:
+                            t['remark'] += f" | Vendor: {raw_name}"
+                        break
+        except Exception as ve:
+            print(f"⚠️ Vendor Extraction Agent Error: {str(ve)}")
+            
+        return extracted_data, self.cost_stats
 
 # ====================================================================
 # --- 2. CASH BOOK EXTRACTION PROCESSOR ---

@@ -13,6 +13,7 @@ urlpatterns = [
     path('tools/', include('tools.urls')),
     path('cash/', include('cash.urls')),
     path('account/', include('account.urls')),
+    path('sale/', include('sale.urls')),
     path('', IndexView, name='main'),
 ]
 

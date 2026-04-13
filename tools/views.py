@@ -7,6 +7,8 @@ import re
 from collections import defaultdict
 import time
 import openpyxl
+from openpyxl.styles import Alignment
+import difflib
 from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
@@ -25,9 +27,9 @@ import pdfplumber
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
-MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet
+MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
-TaxLiabilitiesProcessor
+TaxLiabilitiesProcessor, EngagementLetterProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -1906,6 +1908,176 @@ def upload_proposals_view(request):
         form = MultiplePDFUploadForm()
 
     return render(request, 'tools/engagement_extract.html', {'form': form})
+
+# --------------------------------------------------------------------
+# FUZZY MATCHING LOGIC
+# --------------------------------------------------------------------
+def normalize_company_name(name):
+    if not name: return ""
+    n = str(name).lower()
+    n = re.sub(r'\b(co\.,?\s*ltd\.?|ltd\.?|pte\.?|inc\.?|company|limited|plc\.?|corp\.?)\b', '', n)
+    n = re.sub(r'[^a-z0-9]', '', n)
+    return n
+
+def calculate_similarity(ai_name, excel_name):
+    if not ai_name or not excel_name: return 0.0
+    
+    ai_norm = normalize_company_name(ai_name)
+    ex_norm = normalize_company_name(excel_name)
+    
+    if not ai_norm or not ex_norm: return 0.0
+    if ai_norm == ex_norm: return 1.0 
+    
+    if len(ai_norm) > 5 and len(ex_norm) > 5:
+        if ai_norm in ex_norm or ex_norm in ai_norm:
+            return 0.95 
+            
+    return difflib.SequenceMatcher(None, ai_norm, ex_norm).ratio()
+
+# --------------------------------------------------------------------
+# MAIN VIEW
+# --------------------------------------------------------------------
+@login_required
+def upload_engagement_letters_view(request):
+    SHEET_NAME = getattr(settings, 'PROPOSAL_EXCEL_SHEET_NAME', 'Masterlist')
+
+    COLUMN_MAP = {
+        'COMPANY_NAME_1': 6,  # Col F
+        'PROPOSAL_DATE': 12,  # Col L
+        'PROPOSAL_NO': 13,    # Col M 
+        'COMPANY_NAME_2': 14, # Col N
+        'EL_DATE': 31,        # Col AE
+        'EL_NUMBER': 32,      # Col AF
+        'SERVICES': 33,       # Col AG
+        'FEE_INCLUSIVE': 34,  # Col AH
+        'FEE_EXCLUSIVE': 35,  # Col AI
+    }
+    
+    if request.method == 'POST':
+        form = EngagementLetterUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            files = request.FILES.getlist('pdf_files')
+            excel_file = form.cleaned_data.get('excel_file')
+            
+            api_key = os.getenv("GEMINI_API_KEY_2")
+            if not api_key:
+                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing.")
+                return render(request, 'tools/engagement_letter_extract.html', {'form': form})
+                
+            processor = EngagementLetterProcessor(api_key=api_key)
+
+            try:
+                wb = openpyxl.load_workbook(excel_file)
+                ws = wb[SHEET_NAME] if SHEET_NAME in wb.sheetnames else wb.active
+            except Exception as e:
+                messages.error(request, f"❌ Failed to load Excel file: {str(e)}")
+                return render(request, 'tools/engagement_letter_extract.html', {'form': form})
+
+            success_count = 0
+            total_files = len(files)
+            print(f"\n{'='*60}\n🚀 STARTING BATCH EL EXTRACTION ({total_files} files)\n{'='*60}", flush=True)
+            
+            for i, pdf_file in enumerate(files, 1):
+                try:
+                    print(f"\n⏳ [{i}/{total_files}] Processing '{pdf_file.name}'...", flush=True)
+                    pdf_bytes = pdf_file.read()
+                    
+                    data = processor.extract_el_data(pdf_bytes)
+                    ai_company_name = data.get('company_name', '').strip()
+                    
+                    print(f"   🤖 AI Extracted Company: '{ai_company_name}'", flush=True)
+
+                    best_match_row = None
+                    best_score = 0.0
+                    matched_excel_name = ""
+
+                    if ai_company_name:
+                        for r in range(5, ws.max_row + 1):
+                            prop_date = str(ws.cell(row=r, column=COLUMN_MAP['PROPOSAL_DATE']).value or '').strip()
+                            prop_no = str(ws.cell(row=r, column=COLUMN_MAP['PROPOSAL_NO']).value or '').strip()
+                            
+                            # Year Gate Filter (Only match 2026 documents)
+                            if '2026' not in prop_date and '-26' not in prop_date and '2026' not in prop_no:
+                                continue 
+
+                            name_f = str(ws.cell(row=r, column=COLUMN_MAP['COMPANY_NAME_1']).value or '').strip()
+                            name_n = str(ws.cell(row=r, column=COLUMN_MAP['COMPANY_NAME_2']).value or '').strip()
+                            
+                            score_f = calculate_similarity(ai_company_name, name_f)
+                            score_n = calculate_similarity(ai_company_name, name_n)
+                            
+                            max_score = max(score_f, score_n)
+                            
+                            if max_score > best_score:
+                                best_score = max_score
+                                best_match_row = r
+                                matched_excel_name = name_f if score_f >= score_n else name_n
+                                
+                            if best_score == 1.0:
+                                break
+
+                    if best_match_row and best_score >= 0.80:
+                        # Write the data
+                        ws.cell(row=best_match_row, column=COLUMN_MAP['EL_DATE']).value = data.get('el_date', '')
+                        ws.cell(row=best_match_row, column=COLUMN_MAP['EL_NUMBER']).value = data.get('el_number', '')
+                        
+                        # Services and Fees (Apply wrap_text=True for perfect multiline rendering in Excel)
+                        cell_services = ws.cell(row=best_match_row, column=COLUMN_MAP['SERVICES'])
+                        cell_services.value = data.get('type_of_services', '')
+                        cell_services.alignment = Alignment(wrap_text=True)
+
+                        cell_fee_inc = ws.cell(row=best_match_row, column=COLUMN_MAP['FEE_INCLUSIVE'])
+                        cell_fee_inc.value = data.get('total_fee_inclusive', '')
+                        cell_fee_inc.alignment = Alignment(wrap_text=True)
+
+                        cell_fee_exc = ws.cell(row=best_match_row, column=COLUMN_MAP['FEE_EXCLUSIVE'])
+                        cell_fee_exc.value = data.get('total_fee_exclusive', '')
+                        cell_fee_exc.alignment = Alignment(wrap_text=True)
+                        
+                        print(f"   ✅ MATCHED (Score: {best_score:.2f}) -> Excel Row {best_match_row}: '{matched_excel_name}'", flush=True)
+                        success_count += 1
+                    else:
+                        print(f"   ⚠️ NO MATCH (Highest Score: {best_score:.2f} for '{matched_excel_name}')", flush=True)
+                        messages.warning(request, f"⚠️ '{pdf_file.name}' extracted '{ai_company_name}' but could not find a 2026 match in the Masterlist.")
+
+                except Exception as e:
+                    print(f"   ❌ Failed to process {pdf_file.name}: {str(e)}", flush=True)
+                    messages.warning(request, f"⚠️ Failed to process {pdf_file.name}.")
+
+            try:
+                costs = processor.cost_stats
+                total_cost = costs.get('flash_cost', 0) + costs.get('pro_cost', 0)
+                print(f"\n🎉 BATCH COMPLETE! Processed {success_count}/{total_files} files. Total Cost: ${total_cost:.5f}\n{'='*60}\n", flush=True)
+
+                if total_cost > 0:
+                    AICostLog.objects.create(
+                        file_name=f"{total_files} ELs batch",
+                        total_pages=total_files,
+                        flash_cost=costs.get('flash_cost', 0),
+                        pro_cost=costs.get('pro_cost', 0),
+                        total_cost=total_cost
+                    )
+                
+                output = io.BytesIO()
+                wb.save(output)
+                output.seek(0)
+                
+                filename = f"Masterlist_Updated_EL_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+                response = HttpResponse(
+                    output.read(), 
+                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                response.set_cookie('download_complete', 'true', path='/', max_age=60)
+                return response
+
+            except Exception as e:
+                messages.error(request, f"❌ Failed to generate the Excel file: {str(e)}")
+            
+    else:
+        form = EngagementLetterUploadForm()
+
+    return render(request, 'tools/engagement_letter_extract.html', {'form': form})
 
 @login_required
 def monthly_closing_view(request):

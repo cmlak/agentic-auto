@@ -417,41 +417,38 @@ class GLMigrationProcessor:
         return results, self.cost_stats
 
 # --------------------------------------------------------------------
-# ENGAGEMENT LETTER PROCESSOR
 # 1. DEFINE THE STRICT DATA SCHEMA (Pydantic)
 # --------------------------------------------------------------------
 class ProposalData(BaseModel):
     proposal_date: str = Field(description="The date of the proposal strictly formatted as 'DD-MMM-YY'. E.g., '21-Mar-26'.")
     proposal_number: str = Field(description="The unique proposal code ONLY. Remove 'Proposal code:'. E.g., 'AC-2026-0014'.")
     company_name: str = Field(description="The exact name of the client company receiving the proposal in English.")
-    service_proposed: str = Field(description="A numbered list of ALL professional services and reimbursements offered in English, separated by newlines.")
-    fee_detail: str = Field(description="A numbered list of the proposed fees. Replace 'USD' with '$' and 'per' with '/'. E.g., '$75/year'. Must correspond exactly to the services, separated by newlines.")
+    
+    # Updated to explicitly exclude reimbursements and support bundling
+    service_proposed: str = Field(description="A numbered list of professional services offered, simplified into brief action phrases in English, separated by newlines. NEVER include reimbursements.")
+    fee_detail: str = Field(description="A numbered list of the proposed fees. Replace 'USD' with '$' and 'per' with '/'. E.g., '$75/year'. Must correspond exactly line-by-line to the services, separated by newlines.")
 
 # --------------------------------------------------------------------
 # 2. THE PROCESSOR CLASS
 # --------------------------------------------------------------------
 class ProposalPDFProcessor:
     def __init__(self, api_key: str):
-        """Initialize the Gemini client using the new unified SDK."""
+        """Initialize the Gemini client using the unified SDK."""
         self.client = genai.Client(api_key=api_key)
         # Using gemini-2.5-flash as it excels at fast, structured document extraction
         self.model_name = 'gemini-2.5-flash'
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
 
     def _calculate_cost(self, usage):
-        """
-        Calculates the cost of a Gemini API call.
-        Rates are based on gemini-3-flash-preview as a reasonable proxy.
-        """
-        # Input: $0.10 / 1M tokens, Output: $0.40 / 1M tokens
+        """Calculates the cost of a Gemini API call."""
         if usage:
             return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
         return 0.0
 
     def extract_proposal_data(self, pdf_bytes: bytes) -> dict:
         """
-        Reads PDF bytes, prompts Gemini with detailed examples, 
-        and returns a strictly formatted dictionary.
+        Reads PDF bytes, prompts Gemini with detailed examples handling 
+        bundled services and ignored reimbursements, and returns a strictly formatted dictionary.
         """
         document_part = types.Part.from_bytes(
             data=pdf_bytes,
@@ -466,35 +463,42 @@ class ProposalPDFProcessor:
 
         prompt = f"""
         You are an expert financial auditor, administrative assistant, and data extractor. 
-        Your task is to carefully read the attached Engagement Letter / Client Service Proposal 
+        Your task is to carefully read the attached Client Service Proposal 
         and extract key business information into a highly structured format.
 
         CRITICAL INSTRUCTIONS & FORMATTING RULES:
         1. English Only: Extract and parse English information ONLY. Ignore Khmer, Chinese, or any other translations.
         2. Proposal Date: Convert all dates strictly to the 'DD-MMM-YY' format (e.g., "21st March 2026" becomes "21-Mar-26").
         {proposal_rule}
-        4. Exhaustive Extraction (ALL Services): You MUST thoroughly scan the ENTIRE document. Proposals often contain multiple tables (e.g., "Professional Services" followed by "Reimbursements" or "Government Fees"). You must extract EVERY service and fee listed. Do not stop after the first item.
-        5. Fee Formatting ($ and /): Extract the fee amount, but you MUST replace the word 'USD' with '$', and replace 'per' or '/ per' with '/'. (e.g., "USD 660 per year" becomes "$660/year", and "USD 75 / per year" becomes "$75/year"). Ignore KHR amounts.
-        6. Fee Integrity: Double-check that all fees actually contain the monetary value. NEVER return an empty number like "1." without the corresponding fee.
-        7. Alignment: Ensure that the numbering in 'service_proposed' perfectly matches the numbering in 'fee_detail'.
+        
+        4. EXCLUDE REIMBURSEMENTS (CRITICAL): You MUST completely ignore any items labeled as "Reimbursement", "out-of-pocket expenses", or "government official fees". These are NOT firm revenues and must NEVER appear in your services or fees lists.
+        
+        5. Services (Numbered List & Bundling): Extract professional services as a numbered list, separated by newlines (\n). Simplify the descriptions capturing only the core action, target, and year.
+           - BUNDLED SERVICES: If multiple services (e.g., Part A and Part B) are grouped together and billed under a SINGLE combined fee, you MUST combine them into a single line item (e.g., "1. Service A AND Service B"). Do not separate them into multiple lines, as that will cause the fee to duplicate.
+           
+        6. Fee Formatting ($ and /): Extract the fee amount, but you MUST replace the word 'USD' with '$', and replace 'per' or '/ per' with '/'. (e.g., "USD 660 per year" becomes "$660/year", and "USD 75 / per year" becomes "$75/year"). Ignore KHR amounts.
+        
+        7. Alignment & Integrity: Ensure that the numbering in 'service_proposed' perfectly matches the numbering in 'fee_detail'. Double-check that all fees actually contain the monetary value. NEVER return an empty number like "1." without the corresponding fee.
         8. Line Breaks: You MUST separate different services and different fees using newlines (\n). Do not combine them into a single paragraph.
         9. Missing Data: If a piece of information is missing entirely, return an empty string ("").
 
         --- EXAMPLES OF EXPECTED FORMATTING ---
         
-        Example 1 (Standard Format):
+        Example 1 (Standard Format & Bundled Services):
+        (Scenario: Document lists 'Open ACAR' and 'Fulfill ACAR' grouped together for a single fee of $550/year. Tax compliance is listed separately for $660/year.)
         - proposal_date: "11-Mar-26"
         - proposal_number: "AC-2026-0014"
         - company_name: "SUREWIN WORLDWIDE LIMITED (CAMBODIA) CO., LTD."
-        - service_proposed: "1. Preparation of request to open the ACAR e-filing system for submission of Unaudited Financial Statements for FY2024\n2. Fulfilling Accounting and Auditing Regulator’s (ACAR’s) Requirement for FY2024"
+        - service_proposed: "1. Open ACAR AND Fulfill ACAR Requirement for FY2024\n2. Tax Compliance"
         - fee_detail: "1. $550/year\n2. $660/year"
 
-        Example 2 (Complex Formatting: Multiple Tables, Prefix Stripping, $ and / conversion):
+        Example 2 (Prefix Stripping, $ and / conversion, Ignored Reimbursements):
+        (Scenario: Document lists Bookkeeping, ACAR Registration, and a Reimbursement for a government fee of $300)
         - proposal_date: "21-Mar-26"
         - proposal_number: "AC-2026-0013"
         - company_name: "SUNWAY SOTHEAROS CO., LTD."
-        - service_proposed: "1. Monthly Bookkeeping service\n2. ACAR Registration\n3. Reimbursement for government fee"
-        - fee_detail: "1. $440 (set up)\n$330/month\n2. $75/year\n3. $300"
+        - service_proposed: "1. Monthly Bookkeeping service\n2. ACAR Registration"
+        - fee_detail: "1. $440 (set up)\n$330/month\n2. $75/year"
 
         Now, read the attached document and extract the required fields using the exact same formatting principles shown above.
         """
@@ -521,7 +525,6 @@ class ProposalPDFProcessor:
             # The response.text is guaranteed to be a JSON string matching our schema
             data = json.loads(response.text)
             
-                
             return data
             
         except Exception as e:
@@ -531,6 +534,103 @@ class ProposalPDFProcessor:
                 "proposal_date": "", "proposal_number": "", 
                 "company_name": "ERROR PARSING FILE", 
                 "service_proposed": "", "fee_detail": ""
+            }
+
+# --------------------------------------------------------------------
+# 1. DEFINE THE STRICT DATA SCHEMA (Pydantic)
+# --------------------------------------------------------------------
+class EngagementData(BaseModel):
+    el_date: str = Field(description="The date of the engagement letter strictly formatted as 'DD-MMM-YY'. E.g., '31-Mar-26'.")
+    el_number: str = Field(description="The unique engagement letter reference ONLY. Remove 'Our ref:'. E.g., 'AC-2026-0024-P001'.")
+    company_name: str = Field(description="The exact legal name of the client company ONLY. Exclude 'The Management', 'Attn:', and all address lines.")
+    
+    # Separated line-by-line schema
+    type_of_services: str = Field(description="A numbered list of the services offered, separated by newlines.")
+    total_fee_inclusive: str = Field(description="A numbered list of fees INCLUDING 10% VAT, matching line-by-line with the services.")
+    total_fee_exclusive: str = Field(description="A numbered list of fees EXCLUDING 10% VAT, matching line-by-line with the services.")
+
+# --------------------------------------------------------------------
+# 2. THE ENGAGEMENT LETTER PROCESSOR
+# --------------------------------------------------------------------
+class EngagementLetterProcessor:
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def _calculate_cost(self, usage):
+        if usage:
+            return ((usage.prompt_token_count / 1e6) * 0.10) + ((usage.candidates_token_count / 1e6) * 0.40)
+        return 0.0
+
+    def extract_el_data(self, pdf_bytes: bytes) -> dict:
+        """Extracts Engagement Letter data ensuring bundled services and ignored reimbursements."""
+        document_part = types.Part.from_bytes(
+            data=pdf_bytes,
+            mime_type="application/pdf"
+        )
+        
+        prompt = """
+        You are an expert financial auditor, administrative assistant, and data extractor. 
+        Your task is to carefully read the attached Engagement Letter and extract key business information.
+
+        CRITICAL INSTRUCTIONS & FORMATTING RULES:
+        1. English Only: Extract and parse English information ONLY. Ignore Chinese or Khmer translations.
+        2. EL Date: Convert the engagement letter date strictly to the 'DD-MMM-YY' format.
+        3. EL Number: Extract the specific reference value. Strip prefixes like "Ref:" or "Our ref:".
+        4. Company Name: Extract ONLY the legal company name. NEVER include introductory words like 'The Management', 'Attn:', or the address lines.
+        
+        5. EXCLUDE REIMBURSEMENTS (CRITICAL): You MUST completely ignore any items labeled as "Reimbursement", "out-of-pocket expenses", or "government official fees". These are NOT firm revenues and must NEVER appear in your services or fees lists.
+        
+        6. Services (Numbered List & Bundling): Extract professional services as a numbered list, separated by newlines (\n). Simplify the descriptions.
+           - BUNDLED SERVICES: If multiple services (e.g., Part A and Part B) are grouped together and billed under a SINGLE combined fee, you MUST combine them into a single line item (e.g., "1. Service A AND Service B"). Do not separate them into multiple lines, as that will cause the fee to duplicate.
+        
+        7. Fees (LINE-BY-LINE FORMAT - DO NOT SUM): You MUST NOT sum the fees into a grand total. Instead, extract the specific fee for EACH service line-by-line, perfectly matching the numbering of the services list. 
+           - Provide BOTH the "10% VAT inclusive" list and "10% VAT exclusive" list.
+           - If only one is stated, mathematically calculate the other (VAT is 10%). (e.g., If Inclusive is $880, Exclusive is $800).
+           - Replace 'USD' with '$' and 'per' with '/'.
+           - CRITICAL: You MUST include the period/frequency exactly as stated (e.g., "for FY 2021", "for FY 2022 to 2024", "/year").
+
+        --- EXAMPLES OF EXPECTED FORMATTING ---
+        
+        Example 1 (Bundled Services & Ignored Reimbursements):
+        (Scenario: Document lists Service A and Service B for a combined USD 880/year inclusive of VAT, plus a reimbursement of KHR 200,000)
+        - type_of_services: "1. Submission of English Notification AND Unaudited Financial Statement"
+        - total_fee_inclusive: "1. $880/year"
+        - total_fee_exclusive: "1. $800/year"
+
+        Example 2 (Line-by-Line Breakdown):
+        (Scenario: Service 1 is $660 for FY2021. Service 2 is $330/year for FY2021 to 2024. VAT is exclusive.)
+        - type_of_services: "1. Preparation and submission of protest letter to ACAR\n2. Submission of Audited Financial Statement"
+        - total_fee_inclusive: "1. $726 for FY 2021\n2. $363/year for FY 2021 to 2024"
+        - total_fee_exclusive: "1. $660 for FY 2021\n2. $330/year for FY 2021 to 2024"
+
+        Now, read the attached document and extract the fields using these exact formatting principles.
+        """
+
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=EngagementData,
+            temperature=0.0 # Strict accuracy, zero hallucination
+        )
+
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=[prompt, document_part],
+                config=config
+            )
+            
+            cost = self._calculate_cost(response.usage_metadata)
+            self.cost_stats["flash_cost"] += cost 
+            
+            return json.loads(response.text)
+            
+        except Exception as e:
+            print(f"AI Extraction Error: {str(e)}")
+            return {
+                "el_date": "", "el_number": "", "company_name": "", 
+                "type_of_services": "", "total_fee_inclusive": "", "total_fee_exclusive": ""
             }
 
 # ====================================================================

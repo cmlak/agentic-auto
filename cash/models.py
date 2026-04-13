@@ -34,6 +34,33 @@ class Bank(models.Model):
 
     def __str__(self):
         return f"{self.date} | {self.bank_ref_id} | In: {self.debit} | Out: {self.credit}"
+        
+    def save(self, *args, **kwargs):
+        old_purchase = None
+        if self.pk:
+            old_instance = Bank.objects.filter(pk=self.pk).first()
+            if old_instance and old_instance.matched_purchase_id != self.matched_purchase_id:
+                old_purchase = old_instance.matched_purchase
+        
+        super().save(*args, **kwargs)
+        
+        if old_purchase:
+            if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
+                old_purchase.payment_status = 'Open'
+                old_purchase.save(update_fields=['payment_status'])
+                
+        if self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
+            self.matched_purchase.payment_status = 'Paid'
+            self.matched_purchase.save(update_fields=['payment_status'])
+
+    def delete(self, *args, **kwargs):
+        purchase = self.matched_purchase
+        result = super().delete(*args, **kwargs)
+        if purchase:
+            if not purchase.bank_payments.exists() and not purchase.cash_payments.exists():
+                purchase.payment_status = 'Open'
+                purchase.save(update_fields=['payment_status'])
+        return result
 
 
 class Cash(models.Model):
@@ -68,3 +95,30 @@ class Cash(models.Model):
     def __str__(self):
         desc = self.description[:30] + '...' if self.description and len(self.description) > 30 else self.description
         return f"{self.date} | {desc} | In: {self.debit} | Out: {self.credit}"
+
+    def save(self, *args, **kwargs):
+        old_purchase = None
+        if self.pk:
+            old_instance = Cash.objects.filter(pk=self.pk).first()
+            if old_instance and old_instance.matched_purchase_id != self.matched_purchase_id:
+                old_purchase = old_instance.matched_purchase
+        
+        super().save(*args, **kwargs)
+        
+        if old_purchase:
+            if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
+                old_purchase.payment_status = 'Open'
+                old_purchase.save(update_fields=['payment_status'])
+                
+        if self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
+            self.matched_purchase.payment_status = 'Paid'
+            self.matched_purchase.save(update_fields=['payment_status'])
+
+    def delete(self, *args, **kwargs):
+        purchase = self.matched_purchase
+        result = super().delete(*args, **kwargs)
+        if purchase:
+            if not purchase.bank_payments.exists() and not purchase.cash_payments.exists():
+                purchase.payment_status = 'Open'
+                purchase.save(update_fields=['payment_status'])
+        return result

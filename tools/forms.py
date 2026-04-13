@@ -695,6 +695,24 @@ class MultiplePDFUploadForm(forms.Form):
             'accept': '.pdf'
         })
 
+class EngagementLetterUploadForm(forms.Form):
+    excel_file = forms.FileField(
+        label="Upload Masterlist Excel File",
+        widget=forms.FileInput(attrs={'class': 'form-control border-success', 'accept': '.xlsx, .xls'})
+    )
+    pdf_files = forms.FileField(
+        label="Select Engagement Letter PDFs",
+        widget=forms.FileInput
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['pdf_files'].widget.attrs.update({
+            'multiple': True,
+            'class': 'form-control border-success',
+            'accept': '.pdf'
+        })
+
 class MonthlyClosingForm(forms.Form):
     client = forms.ModelChoiceField(
         queryset=Client.objects.all(),

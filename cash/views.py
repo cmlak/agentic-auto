@@ -4,6 +4,8 @@ import io
 import tempfile
 import json
 import pandas as pd
+import re
+import difflib
 from datetime import date, datetime
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
@@ -19,7 +21,7 @@ from django.db import transaction
 
 from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet, ManualBankEntryForm, ManualCashEntryForm
 from .processors import GeminiABABankProcessor, GeminiCanadiaBankProcessor, ClientBCustomBankProcessor, \
-    CashStandardExcelProcessor, GeminiReconciliationEngine
+    CashStandardExcelProcessor, GeminiReconciliationEngine, VendorIdentificationAgent
 from .models import Bank, Cash
 from .resources import BankResource, CashResource
 from .filters import BankFilter, CashFilter
@@ -125,6 +127,13 @@ def bank_ai_upload_view(request):
                 )
                 print(f"✅ Extracted {len(extracted_data)} transactions across {total_pages} pages.")
                 
+                # --- 1.5 VENDOR IDENTIFICATION & CREATION (ADDITIONAL AGENT) ---
+                print("\n[1.5/4] IDENTIFYING & CREATING NEW VENDORS (ADDITIONAL AGENT)...")
+                vendor_agent = VendorIdentificationAgent(api_key=api_key)
+                extracted_data, vendor_costs = vendor_agent.process(extracted_data, selected_client.id)
+                costs['flash_cost'] = costs.get('flash_cost', 0) + vendor_costs.get('flash_cost', 0)
+                costs['pro_cost'] = costs.get('pro_cost', 0) + vendor_costs.get('pro_cost', 0)
+
                 # 2. FETCH OPEN PURCHASES (SUBLEDGER)
                 print("\n[2/4] FETCHING OPEN PURCHASES (SUBLEDGER)...")
                 open_purchases = list(Purchase.objects.filter(
@@ -528,7 +537,6 @@ def cash_upload_view(request):
                     print(f"⚖️ Reconciling {len(extracted_data)} cash lines against {len(open_purchases)} Open Invoices...")
                     reconciler = GeminiReconciliationEngine(api_key=api_key, context_account='100000')
                     
-                    tx_data_str = json.dumps(extracted_data, default=str)
                     pur_data_str = json.dumps(open_purchases, default=str)
                     
                     # --- CONSTRUCT TIER 2 FROM DATABASE MODELS ---
@@ -548,20 +556,26 @@ def cash_upload_view(request):
                             tier_2_rules += f"- If description contains '{rule.trigger_keywords}', you MUST consider Account: {rule.account.account_id}. Reasoning: {rule.ai_guideline}\n"
                     # ----------------------------------------------
                     
-                    mappings, recon_costs = reconciler.reconcile(
-                        transactions_data=tx_data_str, 
-                        open_purchases_data=pur_data_str,
-                        prompt_memo=tier_2_rules
-                    )
-                    print(f"\n✅ AI returned {len(mappings)} reconciliation mappings. Processing transactions...")
-                    mapping_dict = {str(m.transaction_id): m for m in mappings}
-                    
                     for item in extracted_data:
                         sys_id = str(item.get('sys_id'))
-                        print(f"   🔹 Processing Cash Transaction [Sys ID: {sys_id}] | Description: {str(item.get('description', 'N/A'))[:30]} | In: {item.get('debit', 0)} | Out: {item.get('credit', 0)}")
+                        desc = str(item.get('description', 'N/A'))[:30]
+                        print(f"   🔹 Processing Cash Transaction [Sys ID: {sys_id}] | Description: {desc} | In: {item.get('debit', 0)} | Out: {item.get('credit', 0)}", flush=True)
+                        
+                        tx_data_str = json.dumps([item], default=str)
+                        mappings, step_costs = reconciler.reconcile(
+                            transactions_data=tx_data_str, 
+                            open_purchases_data=pur_data_str,
+                            prompt_memo=tier_2_rules
+                        )
+                        
+                        recon_costs['flash_cost'] += step_costs.get('flash_cost', 0)
+                        recon_costs['pro_cost'] += step_costs.get('pro_cost', 0)
+                        
+                        mapping_dict = {str(m.transaction_id): m for m in mappings} if mappings else {}
+                        
                         if sys_id in mapping_dict:
                             match = mapping_dict[sys_id]
-                            print(f"      ✨ AI Reconciled -> Dr: {match.debit_account_id} | Cr: {match.credit_account_id} | Reason: {match.reasoning}")
+                            print(f"      ✨ AI Reconciled -> Dr: {match.debit_account_id} | Cr: {match.credit_account_id} | Reason: {match.reasoning}", flush=True)
                             item['debit_account_id'] = match.debit_account_id
                             item['credit_account_id'] = match.credit_account_id
                             if hasattr(match, 'matched_purchase_ids') and match.matched_purchase_ids:
@@ -570,13 +584,15 @@ def cash_upload_view(request):
                                 item['matched_purchase_ids'] = ""
                             item['instruction'] = f"AI Reconciled: {match.reasoning}"
                         else:
-                            print(f"      ⚠️ No exact AI mapping. Applying default accounts.")
+                            print(f"      ⚠️ No exact AI mapping. Applying default accounts.", flush=True)
                             if item.get('credit', 0) > 0:  # Money Out
                                 item['credit_account_id'] = '100000'
                                 item['debit_account_id'] = '120000'
                             else:  # Money In
                                 item['debit_account_id'] = '100000'
                                 item['credit_account_id'] = '400000'
+                                
+                    print(f"\n✅ Completed AI reconciliation for all {len(extracted_data)} transactions.")
                 else:
                     print("⚠️ Skipping reconciliation: No extracted data or no open purchases.")
                     for item in extracted_data:

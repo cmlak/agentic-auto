@@ -42,6 +42,7 @@ urlpatterns = [
 
     # Engagement Letter
     path('proposals/upload/', views.upload_proposals_view, name='upload_proposals'),
+    path('engagement-letters/upload/', views.upload_engagement_letters_view, name='upload_engagement_letters'),
 
     # Journal Voucher
     path('journal-vouchers/upload/', views.monthly_closing_view, name='monthly_closing'),

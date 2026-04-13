@@ -47,6 +47,7 @@ class BankBatchUploadForm(forms.Form):
 
 class BankReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
+    vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold'}))
     
     # --- DOUBLE ENTRY ACCOUNTING FIELDS ---
     debit_account_id = forms.ChoiceField(
@@ -69,9 +70,16 @@ class BankReviewForm(forms.ModelForm):
     )
 
     def __init__(self, *args, **kwargs):
+        dynamic_choices = kwargs.pop('dynamic_choices', None)
         account_choices = kwargs.pop('account_choices', [])
         super().__init__(*args, **kwargs)
         
+        # Populate dynamic vendors
+        if dynamic_choices:
+            self.fields['vendor_choice'].choices = dynamic_choices
+        if self.initial.get('vendor_choice'):
+            self.fields['vendor_choice'].initial = self.initial.get('vendor_choice')
+            
         # Populate dynamic accounts
         if account_choices:
             self.fields['debit_account_id'].choices = account_choices
@@ -115,8 +123,9 @@ class BankReviewForm(forms.ModelForm):
                 css_class='mt-4 border-top pt-3 border-2 border-success'
             ),
             Row(
-                Column('counterparty', css_class='form-group col-md-4'),
-                Column('purpose', css_class='form-group col-md-8'),
+                Column('counterparty', css_class='form-group col-md-3'),
+                Column('vendor_choice', css_class='form-group col-md-3'),
+                Column('purpose', css_class='form-group col-md-6'),
             ),
             Row(
                 Column('remark', css_class='form-group col-md-4'),
@@ -180,7 +189,6 @@ class BankReviewForm(forms.ModelForm):
         return cleaned_data
 
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
-
 
 class ManualBankEntryForm(forms.ModelForm):
     debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))

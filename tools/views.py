@@ -19,7 +19,7 @@ from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import DetailView, UpdateView, DeleteView
-from django.db.models import Sum
+from django.db.models import Sum, Q
 from django.db import transaction
 from django.core.paginator import Paginator
 import pdfplumber
@@ -35,6 +35,7 @@ from account.models import Account, JournalEntry, JournalLine, AccountMappingRul
 from register.models import Profile
 from .filters import PurchaseFilter, JournalVoucherFilter
 from .resources import PurchaseResource
+from cash.models import Bank
 
 # ====================================================================
 # --- 1. AI INVOICE UPLOAD & PROCESSING ---
@@ -1597,8 +1598,10 @@ def export_balancika_view(request):
         form = BalancikaExportForm(request.POST)
         if form.is_valid():
             client = form.cleaned_data['client']
-            year = form.cleaned_data['year']
-            month = int(form.cleaned_data['month'])
+            start_date = form.cleaned_data.get('start_date')
+            end_date = form.cleaned_data.get('end_date')
+            purchase_id = form.cleaned_data.get('purchase_id')
+            bank_id = form.cleaned_data.get('bank_id')
             entry_counter = form.cleaned_data['entry_no_start']
             
             user = request.user
@@ -1613,104 +1616,196 @@ def export_balancika_view(request):
                 messages.error(request, "You do not have permission to export data for this client.")
                 return redirect('main')
 
-            # Query the Purchase instances for the selected client, month, and year
-            purchases = Purchase.objects.filter(
-                client=client,
-                date__year=year,
-                date__month=month
-            ).order_by('date', 'id')
+            purchase_filters = Q(client=client)
+            bank_filters = Q(client=client, credit__gt=0)
 
-            if not purchases.exists():
-                messages.warning(request, f"No purchases found for {client.name} in {month}/{year}.")
+            if start_date:
+                purchase_filters &= Q(date__gte=start_date)
+                bank_filters &= Q(date__gte=start_date)
+            if end_date:
+                purchase_filters &= Q(date__lte=end_date)
+                bank_filters &= Q(date__lte=end_date)
+
+            purchases = []
+            bank_charges = []
+
+            if purchase_id:
+                purchases = list(Purchase.objects.filter(purchase_filters & Q(id=purchase_id)))
+            elif bank_id:
+                bank_charges = list(Bank.objects.filter(bank_filters & Q(id=bank_id)))
+            else:
+                purchases = list(Purchase.objects.filter(purchase_filters))
+                
+                bank_fee_triggers = ['interbank fund', 'checkbook', 'commission']
+                q_objects = Q()
+                for trigger in bank_fee_triggers:
+                    q_objects |= Q(purpose__icontains=trigger) | Q(trans_type__icontains=trigger) | Q(remark__icontains=trigger) | Q(raw_remark__icontains=trigger)
+                
+                bank_charges = list(Bank.objects.filter(bank_filters & q_objects))
+
+            combined_records = purchases + bank_charges
+            combined_records.sort(key=lambda x: (x.date if x.date else date.min, x.id))
+
+            if not combined_records:
+                messages.warning(request, f"No purchases or bank charges found for {client.name} with the given criteria.")
                 return render(request, 'tools/balancika_export.html', {'form': form})
 
             # Calculate base month start and end dates
-            _, last_day = calendar.monthrange(year, month)
-            base_start_str = date(year, month, 1).strftime('%d-%b-%Y')
-            base_end_str = date(year, month, last_day).strftime('%d-%b-%Y')
+            base_start_str = start_date.strftime('%d-%b-%Y') if start_date else date.today().strftime('%d-%b-%Y')
+            base_end_str = end_date.strftime('%d-%b-%Y') if end_date else date.today().strftime('%d-%b-%Y')
 
             sheet1_data = []
             sheet2_data = []
 
-            for p in purchases:
+            for record in combined_records:
                 entry_no = f"PIN{entry_counter:05d}"
                 entry_counter += 1
 
-                # Mappings from Django Model (Adjust field names if your model differs slightly)
-                original_acct_id = str(getattr(p, 'account_id', '')).strip()
-                original_vendor_id = str(p.vendor.vendor_id).strip() if p.vendor else ''
-                original_invoice = clean_invoice_number(getattr(p, 'invoice_no', ''))
-                description = str(getattr(p, 'description', '')).strip()
-                description_en = str(getattr(p, 'description_en', '')).strip()
+                if isinstance(record, Purchase):
+                    p = record
+                    # Mappings from Django Model (Adjust field names if your model differs slightly)
+                    original_acct_id = str(getattr(p, 'account_id', '')).strip()
+                    original_vendor_id = str(p.vendor.vendor_id).strip() if p.vendor else ''
+                    original_invoice = clean_invoice_number(getattr(p, 'invoice_no', ''))
+                    description = str(getattr(p, 'description', '')).strip()
+                    description_en = str(getattr(p, 'description_en', '')).strip()
 
-                # Date Formatting
-                if p.date:
-                    final_date = p.date.strftime('%d-%b-%Y')
-                    # Find the last day of the transaction's month
-                    _, p_last_day = calendar.monthrange(p.date.year, p.date.month)
-                    final_due_date = date(p.date.year, p.date.month, p_last_day).strftime('%d-%b-%Y')
+                    # Date Formatting
+                    if p.date:
+                        final_date = p.date.strftime('%d-%b-%Y')
+                        # Find the last day of the transaction's month
+                        _, p_last_day = calendar.monthrange(p.date.year, p.date.month)
+                        final_due_date = date(p.date.year, p.date.month, p_last_day).strftime('%d-%b-%Y')
+                    else:
+                        final_date, final_due_date = base_start_str, base_end_str
+
+                    # --- SHEET 1 POPULATION ---
+                    sheet1_data.append({
+                        "Entry No": entry_no,
+                        "Date (dd-MMM-YYYY)": final_date,
+                        "Type": "Apply to GL Account",
+                        "Reference": original_invoice,
+                        "Remark": description_en if description_en else description,
+                        "Vendor ID": original_vendor_id,
+                        "Employee ID": "",
+                        "Class ID": "",
+                        "Due Date (dd-MMM-YYYY)": final_due_date,
+                        "Purchase Order": "",
+                        "Currency ID": "USD",
+                        "Exchange Rate": 1
+                    })
+
+                    # --- SHEET 2 SCENARIO LOGIC ---
+                    # Safely get numeric amounts from the Django model
+                    local_vat_amt = float(getattr(p, 'vat_usd', 0.0) or 0.0)
+                    total_amt = float(getattr(p, 'total_usd', 0.0) or 0.0)
+                    
+                    # If your model has specific non-vat fields, use them. Otherwise, calculate.
+                    local_purchase_amt = float(getattr(p, 'local_purchase_usd', total_amt - local_vat_amt) or 0.0)
+                    non_vat_amt = float(getattr(p, 'non_vat_usd', 0.0) or 0.0) 
+
+                    desc_lower = description.lower()
+                    display_desc = description_en if description_en else description
+                    rows_to_add = []
+
+                    # RENTAL SCENARIO
+                    if 'rental' in desc_lower:
+                        wht_val = total_amt * 0.10
+                        rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
+                        rows_to_add.append({"Desc": "10% WHT on Rental", "Cost": -wht_val, "Total": -wht_val, "Line": 2, "VAT": "None", "AcctID": "23500"})
+                        rows_to_add.append({"Desc": "10% WHT on Rental Expense", "Cost": wht_val, "Total": wht_val, "Line": 3, "VAT": "None", "AcctID": "65000"})
+
+                    # NSSF SCENARIO
+                    elif ("nssf" in desc_lower or "occupational risk" in desc_lower) and "pension" in desc_lower:
+                        parts = [pt.strip() for pt in re.split(r'\.\s+', description) if pt.strip()]
+                        for idx, pt in enumerate(parts[:3]):
+                            m = re.search(r"(?:--|-)\s*([\d,]+\.?\d*)", pt)
+                            amt = float(m.group(1).replace(',', '')) if m else 0.0
+                            rows_to_add.append({"Desc": pt, "Cost": amt, "Total": amt, "Line": idx+1, "VAT": "None", "AcctID": original_acct_id})
+
+                    # SCENARIOS B/D/A
+                    elif non_vat_amt != 0 and local_vat_amt != 0:
+                        rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
+                        rows_to_add.append({"Desc": display_desc, "Cost": non_vat_amt, "Total": non_vat_amt, "Line": 2, "VAT": "None", "AcctID": original_acct_id})
+                    elif local_vat_amt != 0:
+                        rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
+                    else:
+                        rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
+
+                    for r in rows_to_add:
+                        f_acct = str(r["AcctID"])
+                        sheet2_data.append({
+                            "Entry No": entry_no,
+                            "Description": r["Desc"],
+                            "Account ID": f_acct, 
+                            "Item ID": "", 
+                            "Location ID": "", 
+                            "Lot Number": "",
+                            "Manufacture Date (dd-MMM-YYYY)": "", 
+                            "Expiry Date (dd-MMM-YYYY)": "",
+                            "Class ID": "", 
+                            "Uom ID": "",
+                            "Quantity": 1, 
+                            "FOC": 0,
+                            "Unit Cost": r["Cost"], 
+                            "Total Cost": r["Cost"],
+                            "Disc %": 0, 
+                            "Disc": 0,
+                            "Grand Total": r["Total"],
+                            "Purchase Order No": "", 
+                            "Purchase Order Line": r["Line"],
+                            "Job No": "", 
+                            "Job Task No": 0, 
+                            "Job Planning Line": 0,
+                            "WHT": "None", 
+                            "Tax Group 2": "None", 
+                            "Tax Group 3": "None",
+                            "VAT Input": r["VAT"]
+                        })
                 else:
-                    final_date, final_due_date = base_start_str, base_end_str
-
-                # --- SHEET 1 POPULATION ---
-                sheet1_data.append({
-                    "Entry No": entry_no,
-                    "Date (dd-MMM-YYYY)": final_date,
-                    "Type": "Apply to GL Account",
-                    "Reference": original_invoice,
-                    "Remark": description_en if description_en else description,
-                    "Vendor ID": original_vendor_id,
-                    "Employee ID": "",
-                    "Class ID": "",
-                    "Due Date (dd-MMM-YYYY)": final_due_date,
-                    "Purchase Order": "",
-                    "Currency ID": "USD",
-                    "Exchange Rate": 1
-                })
-
-                # --- SHEET 2 SCENARIO LOGIC ---
-                # Safely get numeric amounts from the Django model
-                local_vat_amt = float(getattr(p, 'vat_usd', 0.0) or 0.0)
-                total_amt = float(getattr(p, 'total_usd', 0.0) or 0.0)
-                
-                # If your model has specific non-vat fields, use them. Otherwise, calculate.
-                local_purchase_amt = float(getattr(p, 'local_purchase_usd', total_amt - local_vat_amt) or 0.0)
-                non_vat_amt = float(getattr(p, 'non_vat_usd', 0.0) or 0.0) 
-
-                desc_lower = description.lower()
-                display_desc = description_en if description_en else description
-                rows_to_add = []
-
-                # RENTAL SCENARIO
-                if 'rental' in desc_lower:
-                    wht_val = total_amt * 0.10
-                    rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
-                    rows_to_add.append({"Desc": "10% WHT on Rental", "Cost": -wht_val, "Total": -wht_val, "Line": 2, "VAT": "None", "AcctID": "23500"})
-                    rows_to_add.append({"Desc": "10% WHT on Rental Expense", "Cost": wht_val, "Total": wht_val, "Line": 3, "VAT": "None", "AcctID": "65000"})
-
-                # NSSF SCENARIO
-                elif ("nssf" in desc_lower or "occupational risk" in desc_lower) and "pension" in desc_lower:
-                    parts = [pt.strip() for pt in re.split(r'\.\s+', description) if pt.strip()]
-                    for idx, pt in enumerate(parts[:3]):
-                        m = re.search(r"(?:--|-)\s*([\d,]+\.?\d*)", pt)
-                        amt = float(m.group(1).replace(',', '')) if m else 0.0
-                        rows_to_add.append({"Desc": pt, "Cost": amt, "Total": amt, "Line": idx+1, "VAT": "None", "AcctID": original_acct_id})
-
-                # SCENARIOS B/D/A
-                elif non_vat_amt != 0 and local_vat_amt != 0:
-                    rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
-                    rows_to_add.append({"Desc": display_desc, "Cost": non_vat_amt, "Total": non_vat_amt, "Line": 2, "VAT": "None", "AcctID": original_acct_id})
-                elif local_vat_amt != 0:
-                    rows_to_add.append({"Desc": display_desc, "Cost": local_purchase_amt, "Total": local_purchase_amt, "Line": 1, "VAT": "VAT_IN_1", "AcctID": original_acct_id})
-                else:
-                    rows_to_add.append({"Desc": display_desc, "Cost": total_amt, "Total": total_amt, "Line": 1, "VAT": "None", "AcctID": original_acct_id})
-
-                for r in rows_to_add:
-                    f_acct = str(r["AcctID"])
+                    b = record
+                    original_acct_id = str(getattr(b, 'debit_account_id', ''))
+                    original_vendor_id = str(b.vendor.vendor_id).strip() if b.vendor else ''
+                    original_invoice = b.bank_ref_id or ''
+                    
+                    trans_type = str(getattr(b, 'trans_type', '')).strip()
+                    purpose = str(getattr(b, 'purpose', '')).strip()
+                    remark = str(getattr(b, 'remark', '')).strip()
+                    
+                    display_desc = remark if remark else purpose
+                    if trans_type and trans_type.lower() not in display_desc.lower():
+                        display_desc = f"{trans_type} - {display_desc}" if display_desc else trans_type
+                    if not display_desc:
+                        display_desc = "Bank Charge"
+                    
+                    if b.date:
+                        final_date = b.date.strftime('%d-%b-%Y')
+                        _, b_last_day = calendar.monthrange(b.date.year, b.date.month)
+                        final_due_date = date(b.date.year, b.date.month, b_last_day).strftime('%d-%b-%Y')
+                    else:
+                        final_date, final_due_date = base_start_str, base_end_str
+                        
+                    sheet1_data.append({
+                        "Entry No": entry_no,
+                        "Date (dd-MMM-YYYY)": final_date,
+                        "Type": "Apply to GL Account",
+                        "Reference": original_invoice,
+                        "Remark": display_desc,
+                        "Vendor ID": original_vendor_id,
+                        "Employee ID": "",
+                        "Class ID": "",
+                        "Due Date (dd-MMM-YYYY)": final_due_date,
+                        "Purchase Order": "",
+                        "Currency ID": "USD",
+                        "Exchange Rate": 1
+                    })
+                    
+                    charge_amt = float(b.credit)
+                    
                     sheet2_data.append({
                         "Entry No": entry_no,
-                        "Description": r["Desc"],
-                        "Account ID": f_acct, 
+                        "Description": display_desc,
+                        "Account ID": original_acct_id, 
                         "Item ID": "", 
                         "Location ID": "", 
                         "Lot Number": "",
@@ -1720,20 +1815,20 @@ def export_balancika_view(request):
                         "Uom ID": "",
                         "Quantity": 1, 
                         "FOC": 0,
-                        "Unit Cost": r["Cost"], 
-                        "Total Cost": r["Cost"],
+                        "Unit Cost": charge_amt, 
+                        "Total Cost": charge_amt,
                         "Disc %": 0, 
                         "Disc": 0,
-                        "Grand Total": r["Total"],
+                        "Grand Total": charge_amt,
                         "Purchase Order No": "", 
-                        "Purchase Order Line": r["Line"],
+                        "Purchase Order Line": 1,
                         "Job No": "", 
                         "Job Task No": 0, 
                         "Job Planning Line": 0,
                         "WHT": "None", 
                         "Tax Group 2": "None", 
                         "Tax Group 3": "None",
-                        "VAT Input": r["VAT"]
+                        "VAT Input": "None"
                     })
 
             # --- GENERATE EXCEL FILE IN MEMORY ---
@@ -1746,7 +1841,15 @@ def export_balancika_view(request):
             output.seek(0)
 
             # --- RETURN AS DOWNLOADABLE ATTACHMENT ---
-            filename = f"Balancika_Export_{client.name.replace(' ', '_')}_{year}_{month:02d}.xlsx"
+            date_range_str = ""
+            if start_date and end_date:
+                date_range_str = f"_{start_date.strftime('%Y%m%d')}_to_{end_date.strftime('%Y%m%d')}"
+            elif start_date:
+                date_range_str = f"_from_{start_date.strftime('%Y%m%d')}"
+            elif end_date:
+                date_range_str = f"_to_{end_date.strftime('%Y%m%d')}"
+            
+            filename = f"Balancika_Export_{client.name.replace(' ', '_')}{date_range_str}.xlsx"
             response = HttpResponse(
                 output.read(), 
                 content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'

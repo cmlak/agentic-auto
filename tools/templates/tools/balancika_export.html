@@ -30,10 +30,16 @@
                                 {{ form.client|as_crispy_field }}
                             </div>
                             <div class="col-md-6 mb-3">
-                                {{ form.month|as_crispy_field }}
+                                {{ form.start_date|as_crispy_field }}
                             </div>
                             <div class="col-md-6 mb-3">
-                                {{ form.year|as_crispy_field }}
+                                {{ form.end_date|as_crispy_field }}
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                {{ form.purchase_id|as_crispy_field }}
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                {{ form.bank_id|as_crispy_field }}
                             </div>
                             <div class="col-md-12 mb-4">
                                 {{ form.entry_no_start|as_crispy_field }}

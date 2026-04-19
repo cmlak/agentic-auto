@@ -647,26 +647,33 @@ from django import forms
 from datetime import date
 from tools.models import Client # Adjust import path to your Client model
 
-MONTH_CHOICES = [
-    (1, 'January'), (2, 'February'), (3, 'March'), (4, 'April'),
-    (5, 'May'), (6, 'June'), (7, 'July'), (8, 'August'),
-    (9, 'September'), (10, 'October'), (11, 'November'), (12, 'December')
-]
-
 class BalancikaExportForm(forms.Form):
     client = forms.ModelChoiceField(
         queryset=Client.objects.all(),
         empty_label="--- Select Client ---",
         widget=forms.Select(attrs={'class': 'form-select fw-bold'})
     )
-    year = forms.IntegerField(
-        initial=date.today().year,
+    start_date = forms.DateField(
+        required=False,
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+        label="Start Date"
+    )
+    end_date = forms.DateField(
+        required=False,
+        widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+        label="End Date"
+    )
+    purchase_id = forms.IntegerField(
+        required=False,
+        label="Purchase ID",
+        help_text="Optional: Export specific purchase invoice",
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
-    month = forms.ChoiceField(
-        choices=MONTH_CHOICES,
-        initial=date.today().month,
-        widget=forms.Select(attrs={'class': 'form-select'})
+    bank_id = forms.IntegerField(
+        required=False,
+        label="Bank ID",
+        help_text="Optional: Export specific bank charge",
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
     entry_no_start = forms.IntegerField(
         initial=1,

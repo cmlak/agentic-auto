@@ -2,6 +2,10 @@ from import_export import resources, fields
 from import_export.widgets import ForeignKeyWidget
 from .models import Bank, Cash
 from tools.models import Client, Vendor, Purchase
+try:
+    from sale.models import Customer, Sale
+except ImportError:
+    Customer, Sale = None, None
 
 class BankResource(resources.ModelResource):
     client = fields.Field(
@@ -9,10 +13,25 @@ class BankResource(resources.ModelResource):
         attribute='client',
         widget=ForeignKeyWidget(Client, field='name')
     )
+    vendor = fields.Field(
+        column_name='Vendor',
+        attribute='vendor',
+        widget=ForeignKeyWidget(Vendor, field='name')
+    )
+    customer = fields.Field(
+        column_name='Customer',
+        attribute='customer',
+        widget=ForeignKeyWidget(Customer, field='name') if Customer else None
+    )
     matched_purchase = fields.Field(
         column_name='Matched Purchase Invoice',
         attribute='matched_purchase',
         widget=ForeignKeyWidget(Purchase, field='invoice_no')
+    )
+    matched_sale = fields.Field(
+        column_name='Matched Sale Invoice',
+        attribute='matched_sale',
+        widget=ForeignKeyWidget(Sale, field='invoice_no') if Sale else None
     )
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
@@ -46,9 +65,9 @@ class BankResource(resources.ModelResource):
     class Meta:
         model = Bank
         fields = (
-            'id', 'client', 'batch', 'sys_id', 'date', 'bank_ref_id', 
-            'trans_type', 'counterparty', 'purpose', 'remark', 'raw_remark', 
-            'debit', 'credit', 'balance', 'debit_account', 'credit_account', 'matched_purchase', 'instruction', 'created_at',
+            'id', 'client', 'batch', 'sys_id', 'date', 'bank_ref_id',
+            'trans_type', 'counterparty', 'vendor', 'customer', 'purpose', 'remark', 'raw_remark',
+            'debit', 'credit', 'balance', 'debit_account', 'credit_account', 'matched_purchase', 'matched_sale', 'instruction', 'created_at',
         )
         export_order = fields
 
@@ -63,10 +82,20 @@ class CashResource(resources.ModelResource):
         attribute='vendor',
         widget=ForeignKeyWidget(Vendor, field='name')
     )
+    customer = fields.Field(
+        column_name='Customer',
+        attribute='customer',
+        widget=ForeignKeyWidget(Customer, field='name') if Customer else None
+    )
     matched_purchase = fields.Field(
         column_name='Matched Purchase Invoice',
         attribute='matched_purchase',
         widget=ForeignKeyWidget(Purchase, field='invoice_no')
+    )
+    matched_sale = fields.Field(
+        column_name='Matched Sale Invoice',
+        attribute='matched_sale',
+        widget=ForeignKeyWidget(Sale, field='invoice_no') if Sale else None
     )
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
@@ -100,8 +129,8 @@ class CashResource(resources.ModelResource):
     class Meta:
         model = Cash
         fields = (
-            'id', 'client', 'batch', 'date', 'voucher_no', 'description', 
-            'vendor', 'invoice_no', 'debit', 'credit', 'balance', 
-            'debit_account', 'credit_account', 'matched_purchase', 'instruction', 'note',
+            'id', 'client', 'batch', 'date', 'voucher_no', 'description',
+            'vendor', 'customer', 'invoice_no', 'debit', 'credit', 'balance',
+            'debit_account', 'credit_account', 'matched_purchase', 'matched_sale', 'instruction', 'note',
         )
         export_order = fields

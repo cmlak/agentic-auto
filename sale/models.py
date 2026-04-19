@@ -23,10 +23,10 @@ class Customer(models.Model):
         return f"{self.customer_id} - {self.name}"
 
 # ====================================================================
-# --- 3. PURCHASE MODEL ---
+# --- 3. SALE MODEL ---
 # ====================================================================
-class Revenue(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, related_name='revenue_client')
+class Sale(models.Model):
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, related_name='sale_client')
     batch = models.CharField(max_length=255, blank=True, null=True) 
     
     date = models.DateField(blank=True, null=True)
@@ -60,7 +60,7 @@ class Revenue(models.Model):
         if self.invoice_no and not str(self.invoice_no).startswith('="'):
             self.invoice_no = f'="{self.invoice_no}"'
             
-        super(Revenue, self).save(*args, **kwargs)
+        super(Sale, self).save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.customer_id} - {self.invoice_no}"

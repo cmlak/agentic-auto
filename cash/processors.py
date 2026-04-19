@@ -13,9 +13,10 @@ from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from tools.models import Vendor
+from sale.models import Sale
 
 # ====================================================================
-# --- 1. BANK STATEMENT EXTRACTION SCHEMAS & PROCESSORS ---
+# --- 1. SCHEMAS ---
 # ====================================================================
 
 class BankTransaction(BaseModel):
@@ -24,6 +25,8 @@ class BankTransaction(BaseModel):
     tr_date: str = Field(..., description="Transaction date in YYYY-MM-DD format.")
     trans_type: str = Field(..., description="The main transaction type.")
     counterparty: str = Field(..., description="The counterparty name, if available.")
+    vendor_name: str = Field("", description="Cleaned B2B supplier or payee name. Empty if internal transfer.")
+    customer_name: str = Field("", description="Cleaned B2B customer or payer name. Empty if internal transfer or money out.")
     purpose: str = Field(..., description="The text of the transaction details.")
     remark: str = Field(..., description="Matched Vendor and Invoice No (e.g., 'Vendor: X, Inv: Y'). Maximum 250 characters.")
     raw_remark: str = Field(..., description="The full original bank text plus any matched supplementary data including Invoice No.") 
@@ -62,23 +65,28 @@ class BankInfo(BaseModel):
                 elif hasattr(transaction, 'sys_id'):
                     transaction.sys_id = sys_id_val
         return v
-
+# ====================================================================
+# --- 2. THE PROCESSOR ---
+# ====================================================================
 
 class GeminiABABankProcessor:
     def __init__(self, api_key):
         print("\n" + "="*50)
-        print("🏦 INITIALIZING: ABA BANK PROCESSOR")
+        print("🏦 INITIALIZING: ABA BANK PROCESSOR (3-TIER AGENT)")
         print("="*50)
         self.client = genai.Client(api_key=api_key)
-        self.MODEL_NAME = "gemini-2.5-flash" 
+        self.MODEL_NAME = "gemini-3.1-pro-preview" 
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+        
+        # --- EXPLICIT CONTEXT ANCHOR ---
+        self.bank_name = "ABA Bank" 
 
     def calculate_cost(self, usage):
-        if usage: return ((usage.prompt_token_count / 1e6) * 0.075) + ((usage.candidates_token_count / 1e6) * 0.30)
+        if usage: return ((usage.prompt_token_count / 1e6) * 1.25) + ((usage.candidates_token_count / 1e6) * 10.00)
         return 0.0
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def process(self, pdf_path, batch_name="", custom_prompt=""):
+    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""):
         print(f"\n📄 Reading PDF natively: {os.path.basename(pdf_path)}...")
         try:
             reader = PdfReader(pdf_path)
@@ -89,163 +97,262 @@ class GeminiABABankProcessor:
         except Exception as e:
             raise e
 
-        print(f"🧠 Sending structured text to Gemini ({self.MODEL_NAME})...")
-        print(f"   🔹 PDF Text Length: {len(raw_text)} characters")
+        print(f"🧠 Sending structured text to Gemini ({self.MODEL_NAME})...", flush=True)
         
-        # --- ENHANCEMENT: Instruct AI to merge Spreadsheet data into remarks ---
-        extraction_prompt = """Extract all bank transactions from the text below. Strictly follow the JSON schema.
+        # --- THE THREE-TIER HIERARCHY PROMPT ---
+        extraction_prompt = f"""
+        <TIER_1_CORE_EXTRACTION_RULES>
+        DOCUMENT CONTEXT: This is an official bank statement issued by {self.bank_name}.
         
-        CRITICAL EXTRACTION RULES:
-        1. Read the SUPPLEMENTARY ROUTING DATA (if provided). Cross-reference it with the bank transactions using dates and amounts.
-        2. If matched, extract ONLY the 'Vendor' and 'Invoice No' from the supplementary data and format it into the 'remark' field (e.g., 'Vendor: Cambodia Concrete, Inv: 2026-00012'). Ensure the remark field does not exceed 250 characters.
-        3. Include BOTH the original bank PDF text AND the supplementary spreadsheet information (including the Invoice No) in the 'raw_remark' field so no context is lost.
+        Extract ALL bank transactions from the text below. Strictly follow the JSON schema.
+        1. 100% COMPLETENESS: You MUST extract EVERY SINGLE transaction. Do NOT skip rows, alternate rows, or leave fields blank to save output length.
+        2. MULTI-LINE MERGING: Bank statements often split a single transaction across 2 or 3 lines. You MUST merge these multi-line descriptions into ONE single JSON object per transaction.
+        3. COUNTERPARTY EXTRACTION (UNIVERSAL):
+           - VENDOR (Money Out): Analyze the description to extract the true B2B Vendor or Payee Name into 'vendor_name'. 
+           - CUSTOMER (Money In): Analyze the description to extract the true B2B Customer or Payer Name into 'customer_name'.
+           - SYSTEM OVERRIDES: You MUST read <TIER_2_CLIENT_ACCOUNTING_MEMO> for strict rules on what exact strings to output for edge cases.
+        4. SUPPLEMENTARY ROUTING DATA: Cross-reference any provided supplementary data. If matched, extract the 'Vendor'/'Customer' and 'Invoice No' into the 'remark' field.
+        5. CONTEXT PRESERVATION: Put BOTH the original merged bank text AND any matched supplementary information into the 'raw_remark' field.
+        </TIER_1_CORE_EXTRACTION_RULES>
+
+        <TIER_2_CLIENT_ACCOUNTING_MEMO>
+        The following instructions take absolute precedence over any default rules above:
+        {custom_prompt if custom_prompt else "No custom instructions provided."}
+        </TIER_2_CLIENT_ACCOUNTING_MEMO>
+
+        <TIER_3_RAW_STATEMENT_DATA>
+        {raw_text}
+        </TIER_3_RAW_STATEMENT_DATA>
         """
         
-        if custom_prompt: 
-            print(f"   🔹 Injecting supplementary data and instructions...")
-            extraction_prompt += f"\nADDITIONAL INSTRUCTIONS & SUPPLEMENTARY DATA:\n{custom_prompt}\n"
-        extraction_prompt += f"\nDATA:\n---\n{raw_text}\n---\n"
-
         try:
-            print("   ⏳ Waiting for Gemini API response...")
             response = self.client.models.generate_content(
                 model=self.MODEL_NAME,
                 contents=extraction_prompt,
-                config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=BankInfo, temperature=0.0)
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json", 
+                    response_schema=BankInfo, 
+                    temperature=0.0
+                )
             )
-            print("   ✅ Received structured data from Gemini API.")
-            
-            cost = self.calculate_cost(response.usage_metadata)
-            self.cost_stats["flash_cost"] += cost
+
+            # ---------------------------------------------------------
+            # 🐛 DEBUGGING INTERCEPTOR 
+            # ---------------------------------------------------------
+            print("\n" + "-"*30 + " RAW AI OUTPUT " + "-"*30, flush=True)
+            print(response.text, flush=True)
+            print("-"*75 + "\n", flush=True)
 
             structured_data = response.parsed
             if not structured_data: raise ValueError("Model returned unparseable schema.")
+            print("   ✅ Successfully parsed structured data from Gemini API.", flush=True)
+            
+            cost = self.calculate_cost(response.usage_metadata)
+            self.cost_stats["pro_cost"] += cost
+                
+            # --- VENDOR & CUSTOMER RESOLUTION INITIALIZATION ---
+            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+            max_num = 1
+            for vid in all_vids:
+                if vid:
+                    match = re.search(r'V-?(\d+)', str(vid))
+                    if match: max_num = max(max_num, int(match.group(1)))
+            next_num = max_num + 1
+            batch_new_vendors = {}
+            
+            from django.apps import apps
+            try: Customer = apps.get_model('sale', 'Customer')
+            except LookupError: 
+                try: Customer = apps.get_model('sales', 'Customer')
+                except LookupError: Customer = None
+                
+            all_cids = Customer.objects.filter(client_id=client_id).values_list('customer_id', flat=True) if Customer else []
+            max_cnum = 1
+            for cid in all_cids:
+                if cid:
+                    match = re.search(r'C-?(\d+)', str(cid))
+                    if match: max_cnum = max(max_cnum, int(match.group(1)))
+            next_cnum = max_cnum + 1
+            batch_new_customers = {}
                 
             transactions = [t.model_dump() for t in structured_data.transactions]
+            
             for t in transactions:
                 t['batch'] = batch_name
                 t['date'] = t.pop('tr_date', None) 
                 
-                # --- DOUBLE ENTRY BALANCING FOR UI ---
                 amt = max(float(t.get('debit') or 0.0), float(t.get('credit') or 0.0))
                 t['debit_amount'] = amt
                 t['credit_amount'] = amt
+                
+                raw_vendor = t.pop('vendor_name', '') or ''
+                raw_customer = t.pop('customer_name', '') or ''
+                
+                trans_type = str(t.get('trans_type', '')).lower()
+                purpose = str(t.get('purpose', '')).lower()
+                
+                is_money_out = float(t.get('credit') or 0.0) > 0
+                is_money_in = float(t.get('debit') or 0.0) > 0
+                
+                # =========================================================
+                # 3. NEW: THE PYTHON FAILSAFE (DETERMINISTIC OVERRIDE)
+                # =========================================================
+                # Use highly specific banking terms to prevent false positives like "professional fee"
+                bank_fee_triggers = [
+                    'interbank fund transfer fee', 
+                    'bank charge', 
+                    'bank fee', 
+                    'maintenance fee', 
+                    'checkbook', 
+                    'bank commission'
+                ]
+                
+                if is_money_out and any(keyword in trans_type or keyword in purpose for keyword in bank_fee_triggers):
+                    raw_vendor = self.bank_name
+                # =========================================================
+
+                # =========================================================
+                # VENDOR RESOLUTION (MONEY OUT)
+                # =========================================================
+                if amt > 0 and is_money_out and raw_vendor and str(raw_vendor).strip() != "" and str(raw_vendor).lower() != "none":
+                    
+                    name_str = str(raw_vendor).lower().replace('&', ' and ')
+                    target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
+                    
+                    if len(target_norm) >= 3:
+                        exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+                        best_vendor = None
+                        if not exact_match:
+                            best_coverage = 0.0
+                            for v in Vendor.objects.filter(client_id=client_id):
+                                if not v.normalized_name or not target_norm or v.normalized_name[0] != target_norm[0]: 
+                                    continue
+                                matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
+                                match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
+                                if match.a == 0 and match.b == 0:
+                                    coverage = match.size / len(target_norm)
+                                    if coverage >= 0.8 and coverage > best_coverage:
+                                        best_coverage = coverage
+                                        best_vendor = v
+                        
+                        is_new = False
+                        temp_vid, temp_id = None, None
+
+                        if not exact_match and not best_vendor:
+                            if target_norm not in batch_new_vendors:
+                                new_vid = f"V-{next_num:05d}"
+                                batch_new_vendors[target_norm] = {
+                                    'temp_vid': new_vid,
+                                    'temp_id': f"TEMP_{new_vid}",
+                                    'company': raw_vendor.title()
+                                }
+                                next_num += 1
+                                print(f"      ✨ Identified New Vendor: {raw_vendor.title()} ({new_vid})", flush=True)
+                            
+                            mapped = batch_new_vendors[target_norm]
+                            is_new = True
+                            temp_vid = mapped['temp_vid']
+                            temp_id = mapped['temp_id']
+                            vendor_id_to_assign = temp_id
+                            company_to_assign = mapped['company']
+                        else:
+                            vendor_id_to_assign = exact_match.id if exact_match else best_vendor.id
+
+                        t['vendor_choice'] = vendor_id_to_assign
+                        
+                        if is_new:
+                            t['is_new_vendor'] = True
+                            t['company'] = company_to_assign
+                            t['temp_id'] = temp_id
+                            t['temp_vid'] = temp_vid
+                            
+                    if not t.get('remark'):
+                        t['remark'] = f"Vendor: {raw_vendor.title()}"
+                    elif "Vendor:" not in t['remark']:
+                        t['remark'] += f" | Vendor: {raw_vendor.title()}"
+
+                # =========================================================
+                # CUSTOMER RESOLUTION (MONEY IN)
+                # =========================================================
+                if Customer and amt > 0 and is_money_in and raw_customer and str(raw_customer).strip() != "" and str(raw_customer).lower() != "none":
+                    
+                    if str(raw_customer).lower() == 'capital injection':
+                        c_exact = Customer.objects.filter(client_id=client_id, name__iexact='Capital Injection').first()
+                        if c_exact:
+                            t['customer_choice'] = c_exact.id
+                            if not t.get('remark'): t['remark'] = f"Customer: Capital Injection"
+                            elif "Customer:" not in t['remark']: t['remark'] += f" | Customer: Capital Injection"
+                            continue
+                        else:
+                            raw_customer = 'Capital Injection'
+
+                    name_str = str(raw_customer).lower().replace('&', ' and ')
+                    target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
+                    
+                    if len(target_norm) >= 3:
+                        exact_match = Customer.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+                        best_customer = None
+                        if not exact_match:
+                            best_coverage = 0.0
+                            for c in Customer.objects.filter(client_id=client_id):
+                                if not c.normalized_name or not target_norm or c.normalized_name[0] != target_norm[0]: 
+                                    continue
+                                matcher = difflib.SequenceMatcher(None, target_norm, c.normalized_name)
+                                match = matcher.find_longest_match(0, len(target_norm), 0, len(c.normalized_name))
+                                if match.a == 0 and match.b == 0:
+                                    coverage = match.size / len(target_norm)
+                                    if coverage >= 0.8 and coverage > best_coverage:
+                                        best_coverage = coverage
+                                        best_customer = c
+                        
+                        is_new = False
+                        temp_cid, temp_id = None, None
+
+                        if not exact_match and not best_customer:
+                            if target_norm not in batch_new_customers:
+                                new_cid = f"C-{next_cnum:05d}"
+                                batch_new_customers[target_norm] = {
+                                    'temp_cid': new_cid,
+                                    'temp_id': f"TEMP_{new_cid}",
+                                    'company': raw_customer.title() if raw_customer.lower() != 'capital injection' else 'Capital Injection'
+                                }
+                                next_cnum += 1
+                                print(f"      ✨ Identified New Customer: {batch_new_customers[target_norm]['company']} ({new_cid})", flush=True)
+                            
+                            mapped = batch_new_customers[target_norm]
+                            is_new = True
+                            temp_cid = mapped['temp_cid']
+                            temp_id = mapped['temp_id']
+                            customer_id_to_assign = temp_id
+                            company_to_assign = mapped['company']
+                        else:
+                            customer_id_to_assign = exact_match.id if exact_match else best_customer.id
+
+                        t['customer_choice'] = customer_id_to_assign
+                        
+                        if is_new:
+                            t['is_new_customer'] = True
+                            t['customer_company'] = company_to_assign
+                            t['customer_temp_id'] = temp_id
+                            t['customer_temp_cid'] = temp_cid
+                            
+                    if not t.get('remark'):
+                        t['remark'] = f"Customer: {raw_customer.title()}"
+                    elif "Customer:" not in t['remark']:
+                        t['remark'] += f" | Customer: {raw_customer.title()}"
+
             return transactions, len(reader.pages), self.cost_stats
         except Exception as e:
-            print(f"❌ AI Extraction Error: {str(e)}")
+            print(f"❌ AI Extraction Error: {str(e)}", flush=True)
             raise e
 
 class GeminiCanadiaBankProcessor:
     def __init__(self, api_key): pass
-    def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
+    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
 
 class ClientBCustomBankProcessor:
     def __init__(self, api_key): pass
-    def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
-
-# ====================================================================
-# --- 1.5 VENDOR IDENTIFICATION AGENT ---
-# ====================================================================
-class ExtractedVendor(BaseModel):
-    sys_id: str
-    vendor_name: str = Field(description="Cleaned B2B supplier company name. Empty string if individual, employee, internal transfer, or tax.")
-
-class VendorExtractionBatch(BaseModel):
-    vendors: List[ExtractedVendor]
-
-class VendorIdentificationAgent:
-    """Dedicated agent to scan outgoing payments and proactively resolve/create Vendors."""
-    
-    def __init__(self, api_key):
-        print("\n" + "="*50)
-        print("🕵️ INITIALIZING: VENDOR IDENTIFICATION AGENT")
-        print("="*50)
-        self.client = genai.Client(api_key=api_key)
-        self.MODEL_NAME = "gemini-2.5-flash"
-        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
-
-    def process(self, extracted_data, client_id):
-        money_out_txns = [t for t in extracted_data if float(t.get('credit') or 0.0) > 0]
-        if not money_out_txns:
-            return extracted_data, self.cost_stats
-        
-        try:
-            tx_for_vendor_agent = [{"sys_id": t['sys_id'], "counterparty": t.get('counterparty'), "purpose": t.get('purpose')} for t in money_out_txns]
-            
-            vendor_prompt = f"""
-            Review the following bank transactions (money out). Identify the true Vendor/Supplier Company Name for each transaction.
-            Ignore bank fees, payroll, internal transfers, and individuals. Focus on B2B suppliers.
-            If it's a valid supplier, return the cleaned company name. If not, return an empty string.
-            
-            Transactions:
-            {json.dumps(tx_for_vendor_agent)}
-            """
-            
-            v_resp = self.client.models.generate_content(
-                model=self.MODEL_NAME,
-                contents=vendor_prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=VendorExtractionBatch,
-                    temperature=0.0
-                )
-            )
-            
-            if v_resp.usage_metadata:
-                v_cost = ((v_resp.usage_metadata.prompt_token_count / 1e6) * 0.075) + ((v_resp.usage_metadata.candidates_token_count / 1e6) * 0.30)
-                self.cost_stats['flash_cost'] += v_cost
-            
-            extracted_vendors = v_resp.parsed.vendors
-            for ev in extracted_vendors:
-                raw_name = ev.vendor_name
-                if not raw_name or str(raw_name).strip() == "" or str(raw_name).lower() == "none":
-                    continue
-                    
-                name_str = str(raw_name).lower().replace('&', ' and ')
-                target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
-                
-                if len(target_norm) < 3:
-                    continue
-                    
-                # Fuzzy match against existing vendors
-                exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
-                best_vendor = None
-                if not exact_match:
-                    best_coverage = 0.0
-                    for v in Vendor.objects.filter(client_id=client_id):
-                        if not v.normalized_name or not target_norm or v.normalized_name[0] != target_norm[0]: 
-                            continue
-                        matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
-                        match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
-                        if match.a == 0 and match.b == 0:
-                            coverage = match.size / len(target_norm)
-                            if coverage >= 0.8 and coverage > best_coverage:
-                                best_coverage = coverage
-                                best_vendor = v
-                
-                if not exact_match and not best_vendor:
-                    last_vendor = Vendor.objects.filter(client_id=client_id).order_by('-id').first()
-                    next_num = 2
-                    if last_vendor and re.search(r'V-?(\d+)', str(last_vendor.vendor_id)):
-                        try: next_num = int(re.search(r'V-?(\d+)', str(last_vendor.vendor_id)).group(1)) + 1
-                        except: pass
-                        
-                    new_vid = f"V-{next_num:05d}"
-                    Vendor.objects.create(client_id=client_id, vendor_id=new_vid, name=raw_name, normalized_name=target_norm)
-                    print(f"      ✨ Created New Vendor: {raw_name} ({new_vid})")
-                    
-                # Tag the remark field with the identified vendor so reconciliation picks it up
-                for t in extracted_data:
-                    if str(t.get('sys_id')) == ev.sys_id:
-                        if not t.get('remark'):
-                            t['remark'] = f"Vendor: {raw_name}"
-                        elif "Vendor:" not in t['remark']:
-                            t['remark'] += f" | Vendor: {raw_name}"
-                        break
-        except Exception as ve:
-            print(f"⚠️ Vendor Extraction Agent Error: {str(ve)}")
-            
-        return extracted_data, self.cost_stats
+    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
 
 # ====================================================================
 # --- 2. CASH BOOK EXTRACTION PROCESSOR ---
@@ -258,48 +365,7 @@ class CashStandardExcelProcessor:
         print("\n" + "="*50)
         print("💵 INITIALIZING: CASH BOOK EXCEL PROCESSOR")
         print("="*50)
-        self.vendor_lock = threading.Lock()
-        self.batch_new_vendors = {}
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
-
-    def resolve_and_assign_vendor(self, raw_name, client_id):
-        """Matches vendor strictly within the selected client's isolated database."""
-        general_vendor, _ = Vendor.objects.get_or_create(
-            client_id=client_id,
-            vendor_id='V-00001', 
-            defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
-        )
-        
-        if not raw_name or str(raw_name).lower() in ['nan', 'none', 'unknown', '']:
-            return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
-
-        name_str = str(raw_name).lower().replace('&', ' and ')
-        target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
-
-        # Exact Match
-        exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
-        if exact_match:
-            return {'db_id': exact_match.id, 'is_new': False, 'temp_vid': None}
-
-        # Fuzzy Match
-        best_vendor, best_coverage = None, 0.0
-        for v in Vendor.objects.filter(client_id=client_id):
-            if not v.normalized_name or v.normalized_name[0] != target_norm[0]: 
-                continue
-            matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
-            match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
-            if match.a == 0 and match.b == 0:
-                coverage = match.size / len(target_norm)
-                if coverage >= 0.6 and coverage > best_coverage:
-                    best_coverage = coverage
-                    best_vendor = v
-
-        if best_vendor:
-            return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
-
-        # Strict rule: DO NOT create new vendors from Cash/Bank imports as there is no VAT info.
-        # This prevents the Vendor model from becoming messy.
-        return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
     def process(self, file_path, client_id, batch_name="", custom_prompt=""):
         print(f"📄 Reading Tabular File natively: {os.path.basename(file_path)}...")
@@ -354,7 +420,6 @@ class CashStandardExcelProcessor:
             # Vendor alias fallback
             vendor_col = next((col for col in ['vendor', 'payee', 'customer'] if col in row), 'vendor')
             raw_vendor = str(row.get(vendor_col, '')).strip() if pd.notna(row.get(vendor_col)) else ''
-            vendor_data = self.resolve_and_assign_vendor(raw_vendor, client_id)
             
             date_col = next((col for col in ['date', 'txn date', 'transaction date'] if col in row), 'date')
             raw_date = row.get(date_col)
@@ -369,11 +434,7 @@ class CashStandardExcelProcessor:
                 'description': str(row.get(desc_col, '')) if pd.notna(row.get(desc_col)) else '',
                 
                 'company': raw_vendor,
-                'vendor_db_id': vendor_data['db_id'],
-                'is_new_vendor': vendor_data['is_new'],
-                'temp_vid': vendor_data['temp_vid'],
-                'temp_id': vendor_data.get('temp_id'),
-                'vendor_choice': vendor_data['temp_id'] if vendor_data['is_new'] else vendor_data['db_id'],
+                'vendor_choice': '',
                 'invoice_no': str(row.get('invoice_no', '')) if pd.notna(row.get('invoice_no')) else '',
                 
                 'debit': d_val,
@@ -396,9 +457,10 @@ class CashStandardExcelProcessor:
 class ReconciliationMapping(BaseModel):
     transaction_id: str = Field(..., description="The sys_id or row index of the Bank/Cash transaction.")
     matched_purchase_ids: Optional[List[int]] = Field(None, description="A list of IDs of the matched Purchases. Null if no match.")
-    debit_account_id: str = Field(..., description="The 6-digit GL Account code to be Debited.")
+    matched_sale_ids: Optional[List[int]] = Field(None, description="A list of IDs of the matched Sales. Null if no match.")
+    debit_account_id: str = Field(..., description="The GL Account code to be Debited. If unknown or unprovided, output 'UNKNOWN'.")
     debit_amount: float = Field(..., description="The balancing transaction amount for the Debit leg.")
-    credit_account_id: str = Field(..., description="The 6-digit GL Account code to be Credited.")
+    credit_account_id: str = Field(..., description="The GL Account code to be Credited. If unknown or unprovided, output 'UNKNOWN'.")
     credit_amount: float = Field(..., description="The balancing transaction amount for the Credit leg.")
     reasoning: str = Field(..., description="Brief explanation of why these accounts were selected.")
 
@@ -417,41 +479,53 @@ class GeminiReconciliationEngine:
         self.context_account = context_account 
         
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    def reconcile(self, transactions_data: str, open_purchases_data: str, prompt_memo: str = "", historical_gl_data: str = ""):
+    def reconcile(self, transactions_data: str, open_purchases_data: str, open_sales_data: str = "[]", prompt_memo: str = "", historical_gl_data: str = "", chart_of_accounts_data: str = ""):
         
         prompt = f"""
-        <TIER_1_INDUSTRY_RULES>
-        You are an expert strict corporate accountant. Your task is to assign perfect Double-Entry (Debit and Credit) 6-digit GL accounts to bank/cash transactions.
+        <TIER_1_CORE_RECONCILIATION_RULES>
+        You are an expert strict corporate accountant. Your task is to assign perfect Double-Entry (Debit and Credit) GL accounts to bank/cash transactions.
         The primary account being reconciled is: {self.context_account}
+
+        MECHANICAL RULE 1: MONEY OUT (Payment from Base Account)
+        - The CREDIT side is ALWAYS the base account: {self.context_account}.
+        - For the DEBIT side, you MUST defer to the logic in <TIER_2_CLIENT_ACCOUNTING_MEMO> and find the matching 6-digit code in the <CHART_OF_ACCOUNTS>.
+            a) An opposing Bank/Cash account for internal transfers.
+            b) A Trade Payable account if a match is found in <OPEN_PURCHASES> or <HISTORICAL_LEDGER>.
+            c) A Prepayment account if no match is found.
+            d) Any other expense or asset account based on keyword mappings.
+
+        MECHANICAL RULE 2: MONEY IN (Receipt to Base Account)
+        - The DEBIT side is ALWAYS the base account: {self.context_account}.
+        - For the CREDIT side, you MUST defer to the logic in <TIER_2_CLIENT_ACCOUNTING_MEMO> and find the matching 6-digit code in the <CHART_OF_ACCOUNTS>.
+            a) An opposing Bank/Cash account for internal transfers.
+            b) An Accounts Receivable account if a match is found in <OPEN_SALES> or <HISTORICAL_LEDGER>.
+            c) A Share Capital account for capital injections.
+            d) Any other revenue or liability account based on keyword mappings.
         
-        Rule 1: MONEY OUT (Payments/Credits to Base Account)
-        - CREDIT: Always {self.context_account}.
-        - DEBIT: 
-            - A Bank or Cash account (e.g., 100000 Cash on Hand) if the remark indicates an internal transfer, ATM withdrawal, cash replenishment, or reimbursement to cash on hand. CRITICAL: For internal transfers, leave 'matched_purchase_ids' empty.
-            - 200000 (Trade Payable) IF AND ONLY IF you find an exact match in <OPEN_PURCHASES>, OR if you find that a Payable was already established in the <HISTORICAL_LEDGER> (indicated by a credit to a Payable account for this vendor/invoice). 
-              *COMBINATION MATCHING*: Be mathematically creative. A single payment might cover multiple open purchases. If multiple purchases are paid by one transaction, include ALL matched purchase IDs in the 'matched_purchase_ids' list. Use the extracted 'remark'/'raw_remark'/'description'/'note' fields to search these databases.
-            - 120000 (Prepayment) if it is a vendor payment but NO matching invoice or prior payable is found in either <OPEN_PURCHASES> or <HISTORICAL_LEDGER>.
+        MECHANICAL RULE 3: DATA CROSS-REFERENCING
+        - You MUST use the 'remark', 'raw_remark', and 'note' fields from the <TRANSACTIONS> data to search for matches within <OPEN_PURCHASES>, <OPEN_SALES>, and <HISTORICAL_LEDGER>.
+        - If a payment covers multiple invoices, you MUST include all matched IDs in the 'matched_purchase_ids' or 'matched_sale_ids' list.
+        - If you absolutely cannot find a relevant 6-digit code in the <CHART_OF_ACCOUNTS>, output 'UNKNOWN' for the account ID.
+        </TIER_1_CORE_RECONCILIATION_RULES>
 
-        Rule 2: MONEY IN (Receipts/Debits to Base Account)
-        - DEBIT: Always {self.context_account}.
-        - CREDIT:
-            - A Bank or Cash account (e.g., 100010 Cash in Bank) if it is an internal transfer, cash deposit, or replenishment from the bank to cash on hand. CRITICAL: For internal transfers, leave 'matched_purchase_ids' empty.
-            - 300000 (Share Capital) if the remark says "Capital", "Shareholders", or "Funds Received" from owners.
-            - 400000 (Accounts Receivable) if it is a payment from a customer.
-        </TIER_1_INDUSTRY_RULES>
-
-        <TIER_2_COMPANY_MEMO>
-        {prompt_memo}
-        </TIER_2_COMPANY_MEMO>
+        <TIER_2_CLIENT_ACCOUNTING_MEMO>
+        The following client-specific accounting rules, GL account mappings, and keyword triggers take absolute precedence and provide the specific logic needed to execute the mechanical rules in Tier 1.
+        {prompt_memo if prompt_memo else "No specific client memo provided."}
+        </TIER_2_CLIENT_ACCOUNTING_MEMO>
         
         <TIER_3_BATCH_DATA>
-        Compare the <TRANSACTIONS> against BOTH the <OPEN_PURCHASES> and the <HISTORICAL_LEDGER>. 
-        Use the extracted 'remark', 'raw_remark', 'description', and 'note' fields to identify Vendor Name and Invoice Number. 
-        Analyze the historical ledger to determine if a transaction is paying off a prior period payable or if it is a new advance payment (prepayment).
-        
+        <CHART_OF_ACCOUNTS>
+        You MUST ONLY use the 6-digit codes provided in this list:
+        {chart_of_accounts_data}
+        </CHART_OF_ACCOUNTS>
+
         <OPEN_PURCHASES>
         {open_purchases_data}
         </OPEN_PURCHASES>
+        
+        <OPEN_SALES>
+        {open_sales_data}
+        </OPEN_SALES>
         
         <HISTORICAL_LEDGER>
         {historical_gl_data if historical_gl_data else "No historical ledger provided."}
@@ -464,7 +538,7 @@ class GeminiReconciliationEngine:
         """
 
         try:
-            print(f"   ⚖️  Sending Reconciliation Prompt to Gemini ({self.MODEL_NAME})...")
+            print(f"   ⚖️  Sending Reconciliation Prompt to Gemini ({self.MODEL_NAME})...", end=" ", flush=True)
             response = self.client.models.generate_content(
                 model=self.MODEL_NAME,
                 contents=prompt,
@@ -474,7 +548,15 @@ class GeminiReconciliationEngine:
                     temperature=0.0
                 )
             )
-            print("   ✅ Received reconciliation mappings from Gemini API.")
+            
+            # ---------------------------------------------------------
+            # 🐛 RECONCILIATION DEBUGGING INTERCEPTOR 
+            # ---------------------------------------------------------
+            print("\n" + "-"*30 + " RAW AI RECONCILIATION OUTPUT " + "-"*30, flush=True)
+            print(response.text, flush=True)
+            print("-" * 90 + "\n", flush=True)
+            
+            print("✅ Received.", flush=True)
             
             flash_cost = 0.0
             pro_cost = 0.0
@@ -484,9 +566,9 @@ class GeminiReconciliationEngine:
 
             return response.parsed.mappings, {"flash_cost": flash_cost, "pro_cost": pro_cost}
         except Exception as e:
-            print(f"❌ Reconciliation Error: {str(e)}")
+            print(f"\n❌ Reconciliation Error: {str(e)}", flush=True)
             return [], {"flash_cost": 0.0, "pro_cost": 0.0}
-
+            
 # ====================================================================
 # --- STRATEGY MAPS ---
 # ====================================================================

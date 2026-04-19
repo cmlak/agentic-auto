@@ -48,6 +48,7 @@ class BankBatchUploadForm(forms.Form):
 class BankReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
     vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold'}))
+    customer_choice = forms.ChoiceField(label="Matched Customer DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold text-primary'}))
     
     # --- DOUBLE ENTRY ACCOUNTING FIELDS ---
     debit_account_id = forms.ChoiceField(
@@ -59,6 +60,7 @@ class BankReviewForm(forms.ModelForm):
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
     matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
+    matched_sale_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     
     debit_amount = forms.CharField(label="Debit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}))
     credit_amount = forms.CharField(label="Credit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}))
@@ -71,6 +73,7 @@ class BankReviewForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         dynamic_choices = kwargs.pop('dynamic_choices', None)
+        dynamic_customer_choices = kwargs.pop('dynamic_customer_choices', None)
         account_choices = kwargs.pop('account_choices', [])
         super().__init__(*args, **kwargs)
         
@@ -79,6 +82,12 @@ class BankReviewForm(forms.ModelForm):
             self.fields['vendor_choice'].choices = dynamic_choices
         if self.initial.get('vendor_choice'):
             self.fields['vendor_choice'].initial = self.initial.get('vendor_choice')
+            
+        # Populate dynamic customers
+        if dynamic_customer_choices:
+            self.fields['customer_choice'].choices = dynamic_customer_choices
+        if self.initial.get('customer_choice'):
+            self.fields['customer_choice'].initial = self.initial.get('customer_choice')
             
         # Populate dynamic accounts
         if account_choices:
@@ -123,9 +132,10 @@ class BankReviewForm(forms.ModelForm):
                 css_class='mt-4 border-top pt-3 border-2 border-success'
             ),
             Row(
-                Column('counterparty', css_class='form-group col-md-3'),
+                Column('counterparty', css_class='form-group col-md-2'),
                 Column('vendor_choice', css_class='form-group col-md-3'),
-                Column('purpose', css_class='form-group col-md-6'),
+                Column('customer_choice', css_class='form-group col-md-3'),
+                Column('purpose', css_class='form-group col-md-4'),
             ),
             Row(
                 Column('remark', css_class='form-group col-md-4'),
@@ -155,12 +165,15 @@ class BankReviewForm(forms.ModelForm):
             ),
             Field('debit', type="hidden"),
             Field('credit', type="hidden"),
-            Field('matched_purchase_ids')
+            Field('vendor', type="hidden"),
+            Field('customer', type="hidden"),
+            Field('matched_purchase_ids'),
+            Field('matched_sale_ids')
         )
 
     class Meta:
         model = Bank
-        exclude = ['client', 'matched_purchase']
+        exclude = ['client', 'matched_purchase', 'matched_sale']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'purpose': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
@@ -191,14 +204,18 @@ class BankReviewForm(forms.ModelForm):
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
 class ManualBankEntryForm(forms.ModelForm):
+    vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
     debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
     credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
     
     def __init__(self, *args, **kwargs):
         account_choices = kwargs.pop('account_choices', [])
+        vendor_choices = kwargs.pop('vendor_choices', [])
         super().__init__(*args, **kwargs)
         self.fields['debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
+        if vendor_choices:
+            self.fields['vendor_choice'].choices = vendor_choices
 
         self.helper = FormHelper()
         self.helper.form_tag = False
@@ -214,6 +231,9 @@ class ManualBankEntryForm(forms.ModelForm):
             ),
             Row(
                 Column('remark', css_class='form-group col-md-12'),
+            ),
+            Row(
+                Column('vendor_choice', css_class='form-group col-md-12'),
             ),
             Row(
                 Column('debit_account_id', css_class='form-group col-md-6'),
@@ -288,6 +308,7 @@ class CashReviewForm(forms.ModelForm):
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
     matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
+    matched_sale_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     
     debit_amount = forms.CharField(label="Debit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-success fw-bold'}))
     credit_amount = forms.CharField(label="Credit", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-danger fw-bold'}))
@@ -372,12 +393,13 @@ class CashReviewForm(forms.ModelForm):
             Field('debit', type="hidden"),
             Field('credit', type="hidden"),
             Field('vendor', type="hidden"),
-            Field('matched_purchase_ids')
+            Field('matched_purchase_ids'),
+            Field('matched_sale_ids')
         )
 
     class Meta:
         model = Cash
-        exclude = ['client', 'matched_purchase']
+        exclude = ['client', 'matched_purchase', 'matched_sale']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),

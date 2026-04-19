@@ -19,6 +19,10 @@ class Bank(models.Model):
     remark = models.CharField(max_length=255, blank=True, null=True)
     raw_remark = models.TextField(blank=True, null=True)
     
+    # Linked to the isolated Vendor database
+    vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, null=True, blank=True)
+    customer = models.ForeignKey('sale.Customer', on_delete=models.CASCADE, null=True, blank=True)
+    
     # Financials
     debit = models.FloatField(default=0.0)
     credit = models.FloatField(default=0.0)
@@ -26,6 +30,7 @@ class Bank(models.Model):
     
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_payments')
+    matched_sale = models.ForeignKey('sale.Sale', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_receipts')
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
@@ -37,10 +42,14 @@ class Bank(models.Model):
         
     def save(self, *args, **kwargs):
         old_purchase = None
+        old_sale = None
         if self.pk:
             old_instance = Bank.objects.filter(pk=self.pk).first()
-            if old_instance and old_instance.matched_purchase_id != self.matched_purchase_id:
-                old_purchase = old_instance.matched_purchase
+            if old_instance:
+                if old_instance.matched_purchase_id != self.matched_purchase_id:
+                    old_purchase = old_instance.matched_purchase
+                if hasattr(old_instance, 'matched_sale_id') and getattr(old_instance, 'matched_sale_id', None) != getattr(self, 'matched_sale_id', None):
+                    old_sale = getattr(old_instance, 'matched_sale', None)
         
         super().save(*args, **kwargs)
         
@@ -48,18 +57,30 @@ class Bank(models.Model):
             if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
                 old_purchase.payment_status = 'Open'
                 old_purchase.save(update_fields=['payment_status'])
+        if old_sale:
+            if not getattr(old_sale, 'bank_receipts', None).exists() and not getattr(old_sale, 'cash_receipts', None).exists():
+                old_sale.payment_status = 'Open'
+                old_sale.save(update_fields=['payment_status'])
                 
         if self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
             self.matched_purchase.payment_status = 'Paid'
             self.matched_purchase.save(update_fields=['payment_status'])
+        if getattr(self, 'matched_sale', None) and getattr(self.matched_sale, 'payment_status', None) != 'Paid':
+            self.matched_sale.payment_status = 'Paid'
+            self.matched_sale.save(update_fields=['payment_status'])
 
     def delete(self, *args, **kwargs):
         purchase = self.matched_purchase
+        sale = getattr(self, 'matched_sale', None)
         result = super().delete(*args, **kwargs)
         if purchase:
             if not purchase.bank_payments.exists() and not purchase.cash_payments.exists():
                 purchase.payment_status = 'Open'
                 purchase.save(update_fields=['payment_status'])
+        if sale:
+            if not getattr(sale, 'bank_receipts', None).exists() and not getattr(sale, 'cash_receipts', None).exists():
+                sale.payment_status = 'Open'
+                sale.save(update_fields=['payment_status'])
         return result
 
 
@@ -76,6 +97,7 @@ class Cash(models.Model):
     
     # Linked to the isolated Vendor database
     vendor = models.ForeignKey(Vendor, on_delete=models.CASCADE, null=True, blank=True)
+    customer = models.ForeignKey('sale.Customer', on_delete=models.CASCADE, null=True, blank=True)
     invoice_no = models.CharField(max_length=100, blank=True, null=True)
     
     # Financials
@@ -85,6 +107,7 @@ class Cash(models.Model):
     
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_payments')
+    matched_sale = models.ForeignKey('sale.Sale', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_receipts')
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
@@ -98,10 +121,14 @@ class Cash(models.Model):
 
     def save(self, *args, **kwargs):
         old_purchase = None
+        old_sale = None
         if self.pk:
             old_instance = Cash.objects.filter(pk=self.pk).first()
-            if old_instance and old_instance.matched_purchase_id != self.matched_purchase_id:
-                old_purchase = old_instance.matched_purchase
+            if old_instance:
+                if old_instance.matched_purchase_id != self.matched_purchase_id:
+                    old_purchase = old_instance.matched_purchase
+                if hasattr(old_instance, 'matched_sale_id') and getattr(old_instance, 'matched_sale_id', None) != getattr(self, 'matched_sale_id', None):
+                    old_sale = getattr(old_instance, 'matched_sale', None)
         
         super().save(*args, **kwargs)
         
@@ -109,16 +136,28 @@ class Cash(models.Model):
             if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
                 old_purchase.payment_status = 'Open'
                 old_purchase.save(update_fields=['payment_status'])
+        if old_sale:
+            if not getattr(old_sale, 'bank_receipts', None).exists() and not getattr(old_sale, 'cash_receipts', None).exists():
+                old_sale.payment_status = 'Open'
+                old_sale.save(update_fields=['payment_status'])
                 
         if self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
             self.matched_purchase.payment_status = 'Paid'
             self.matched_purchase.save(update_fields=['payment_status'])
+        if getattr(self, 'matched_sale', None) and getattr(self.matched_sale, 'payment_status', None) != 'Paid':
+            self.matched_sale.payment_status = 'Paid'
+            self.matched_sale.save(update_fields=['payment_status'])
 
     def delete(self, *args, **kwargs):
         purchase = self.matched_purchase
+        sale = getattr(self, 'matched_sale', None)
         result = super().delete(*args, **kwargs)
         if purchase:
             if not purchase.bank_payments.exists() and not purchase.cash_payments.exists():
                 purchase.payment_status = 'Open'
                 purchase.save(update_fields=['payment_status'])
+        if sale:
+            if not getattr(sale, 'bank_receipts', None).exists() and not getattr(sale, 'cash_receipts', None).exists():
+                sale.payment_status = 'Open'
+                sale.save(update_fields=['payment_status'])
         return result

@@ -21,8 +21,9 @@ from django.db import transaction
 
 from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet, ManualBankEntryForm, ManualCashEntryForm
 from .processors import GeminiABABankProcessor, GeminiCanadiaBankProcessor, ClientBCustomBankProcessor, \
-    CashStandardExcelProcessor, GeminiReconciliationEngine, VendorIdentificationAgent
+    CashStandardExcelProcessor, GeminiReconciliationEngine
 from .models import Bank, Cash
+from sale.models import Sale
 from .resources import BankResource, CashResource
 from .filters import BankFilter, CashFilter
 from tools.models import AICostLog, Client, Vendor, Purchase
@@ -47,6 +48,7 @@ def bank_ai_upload_view(request):
         if form.is_valid():
             selected_client = form.cleaned_data['client']
             
+            # --- AUTHORIZATION CHECK ---
             has_access = user.is_staff or user.is_superuser
             if not has_access:
                 try:
@@ -60,42 +62,51 @@ def bank_ai_upload_view(request):
                 
             uploaded_pdf = form.cleaned_data['bank_pdf']
             batch_name = form.cleaned_data['batch_name']
-            custom_prompt = form.cleaned_data.get('ai_prompt', '')
             selected_config = form.cleaned_data['processor_config']
             
-            # --- 1. PARSE BANK PAYMENT EXPLANATION FILE ---
+            # --- 1. PARSE BANK PAYMENT EXPLANATION FILE (SUPPLEMENTARY) ---
+            supplementary_data_md = ""
             custom_rules_file = form.cleaned_data.get('custom_rules_file')
             if custom_rules_file:
-                print(f"📄 Received bank explanation file: {custom_rules_file.name}")
+                print(f"📄 Received bank explanation file: {custom_rules_file.name}", flush=True)
                 try:
                     if custom_rules_file.name.endswith('.csv'): 
                         df_rules = pd.read_csv(custom_rules_file)
-                    elif custom_rules_file.name.endswith('.xls'): 
-                        df_rules = pd.read_excel(custom_rules_file, engine='xlrd')
                     else: 
                         df_rules = pd.read_excel(custom_rules_file, engine='openpyxl')
                     
-                    rules_md = df_rules.to_csv(index=False)
-                    custom_prompt += f"\n\n[SUPPLEMENTARY ROUTING DATA]\n{rules_md}"
-                    print("✅ Successfully parsed supplementary rules file.")
+                    supplementary_data_md = df_rules.to_csv(index=False)
+                    print("✅ Successfully parsed supplementary rules file.", flush=True)
                 except Exception as e:
                     messages.warning(request, f"Warning: Could not parse supplementary file. {str(e)}")
+
+            # --- BUILD TIER 2 PROMPT FOR BANK EXTRACTION ---
+            bank_extraction_memo = form.cleaned_data.get('ai_prompt', '')
+            if supplementary_data_md:
+                bank_extraction_memo += f"\n\n[SUPPLEMENTARY ROUTING DATA]\n{supplementary_data_md}"
+            
+            bank_memos = ClientPromptMemo.objects.filter(
+                client=selected_client, 
+                category__in=['BANK_EXTRACTION', 'GENERAL']
+            )
+            if bank_memos.exists():
+                bank_extraction_memo += "\n\n--- CLIENT-SPECIFIC DATABASE RULES ---\n"
+                for memo in bank_memos:
+                    bank_extraction_memo += f"- {memo.memo_text}\n"
 
             # --- 2. PARSE HISTORICAL GL FILE ---
             historical_gl_file = form.cleaned_data.get('historical_gl_file')
             hist_gl_md = ""
             if historical_gl_file:
-                print(f"📚 Received Historical GL file: {historical_gl_file.name}")
+                print(f"📚 Received Historical GL file: {historical_gl_file.name}", flush=True)
                 try:
                     if historical_gl_file.name.endswith('.csv'): 
                         df_gl = pd.read_csv(historical_gl_file)
-                    elif historical_gl_file.name.endswith('.xls'): 
-                        df_gl = pd.read_excel(historical_gl_file, engine='xlrd')
                     else: 
                         df_gl = pd.read_excel(historical_gl_file, engine='openpyxl')
                     
                     hist_gl_md = df_gl.to_csv(index=False)
-                    print("✅ Successfully parsed Historical General Ledger.")
+                    print("✅ Successfully parsed Historical General Ledger.", flush=True)
                 except Exception as e:
                     messages.warning(request, f"Warning: Could not parse Historical GL. {str(e)}")
 
@@ -111,98 +122,134 @@ def bank_ai_upload_view(request):
                 tmp_pdf_path = tmp_pdf.name
 
             try:
-                print("\n" + "="*50)
-                print(f"🚀 STARTING BANK AI PROCESSING for {selected_client.name}")
-                print("="*50)
+                print("\n" + "="*50, flush=True)
+                print(f"🚀 STARTING BANK AI PROCESSING for {selected_client.name}", flush=True)
+                print("="*50, flush=True)
 
                 api_key = os.getenv("GEMINI_API_KEY_2") 
                 processor = ProcessorStrategyClass(api_key=api_key)
                 
-                # 1. EXTRACT TRANSACTIONS
-                print("\n[1/4] EXTRACTING TRANSACTIONS FROM PDF...")
+                # =========================================================
+                # PHASE 1: EXTRACT TRANSACTIONS
+                # =========================================================
+                print("\n[1/4] EXTRACTING TRANSACTIONS AND VENDORS FROM PDF...", flush=True)
                 extracted_data, total_pages, costs = processor.process(
                     pdf_path=tmp_pdf_path, 
+                    client_id=selected_client.id,
                     batch_name=batch_name,
-                    custom_prompt=custom_prompt
+                    custom_prompt=bank_extraction_memo
                 )
-                print(f"✅ Extracted {len(extracted_data)} transactions across {total_pages} pages.")
+                print(f"✅ Extracted {len(extracted_data)} transactions across {total_pages} pages.", flush=True)
                 
-                # --- 1.5 VENDOR IDENTIFICATION & CREATION (ADDITIONAL AGENT) ---
-                print("\n[1.5/4] IDENTIFYING & CREATING NEW VENDORS (ADDITIONAL AGENT)...")
-                vendor_agent = VendorIdentificationAgent(api_key=api_key)
-                extracted_data, vendor_costs = vendor_agent.process(extracted_data, selected_client.id)
-                costs['flash_cost'] = costs.get('flash_cost', 0) + vendor_costs.get('flash_cost', 0)
-                costs['pro_cost'] = costs.get('pro_cost', 0) + vendor_costs.get('pro_cost', 0)
-
-                # 2. FETCH OPEN PURCHASES (SUBLEDGER)
-                print("\n[2/4] FETCHING OPEN PURCHASES (SUBLEDGER)...")
+                # =========================================================
+                # PHASE 2: FETCH SUBLEDGERS & COA
+                # =========================================================
+                print("\n[2/4] FETCHING SUBLEDGERS & CHART OF ACCOUNTS...", flush=True)
+                
+                # 2A. Open Purchases
                 open_purchases = list(Purchase.objects.filter(
                     client=selected_client,
                     payment_status__in=['Open', 'Prepayment']
-                ).values(
-                    'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'
-                ))
-                print(f"✅ Found {len(open_purchases)} open purchase invoices for {selected_client.name}.")
+                ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'))
+                print(f"✅ Found {len(open_purchases)} open purchase invoices.", flush=True)
                 
-                # 3. AI RECONCILIATION (WITH HISTORICAL GL)
+                # 2B. Open Sales
+                open_sales = []
+                if Sale:
+                    open_sales = list(Sale.objects.filter(
+                        client=selected_client, payment_status__in=['Open', 'Prepayment']
+                    ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'))
+                print(f"✅ Found {len(open_sales)} open sales invoices.", flush=True)
+
+                # 2C. Chart of Accounts (COA) - THE CRITICAL FIX
+                client_accounts = Account.objects.filter(client=selected_client).values_list('account_id', 'name')
+                coa_list_str = "\n".join([f"{acct[0]} - {acct[1]}" for acct in client_accounts])
+                print(f"✅ Loaded {len(client_accounts)} GL accounts for AI mapping.", flush=True)
+                
+                # =========================================================
+                # PHASE 3: AI RECONCILIATION
+                # =========================================================
                 recon_costs = {"flash_cost": 0.0, "pro_cost": 0.0}
-                print("\n[3/4] AI RECONCILIATION WITH 3-TIER PROMPT & HISTORICAL DATA...")
+                print("\n[3/4] AI RECONCILIATION WITH 3-TIER PROMPT & HISTORICAL DATA...", flush=True)
+                
                 if extracted_data:
                     reconciler = GeminiReconciliationEngine(api_key=api_key, context_account='100010')
                     
-                    tx_data_str = json.dumps(extracted_data, default=str)
                     pur_data_str = json.dumps(open_purchases, default=str)
+                    sal_data_str = json.dumps(open_sales, default=str)
+                    print(f"⚖️ Reconciling {len(extracted_data)} bank transactions...", flush=True)
                     
-                    tier_2_rules = ""
-                    if custom_prompt:
-                        tier_2_rules += f"User Override & Data Instructions:\n{custom_prompt}\n\n"
-                        
-                    client_memos = ClientPromptMemo.objects.filter(client=selected_client)
-                    if client_memos.exists():
-                        tier_2_rules += "CLIENT SPECIFIC ACCOUNTING MEMOS:\n"
-                        for memo in client_memos:
-                            tier_2_rules += f"- {memo.memo_text}\n"
-                        tier_2_rules += "\n"
+                    # --- BUILD TIER 2 PROMPT FOR RECONCILIATION ENGINE ---
+                    tier_2_recon_rules = ""
+                    recon_memos = ClientPromptMemo.objects.filter(
+                        client=selected_client,
+                        category__in=['RECONCILIATION', 'GENERAL']
+                    )
+                    if recon_memos.exists():
+                        tier_2_recon_rules += "CLIENT SPECIFIC ACCOUNTING MEMOS:\n"
+                        for memo in recon_memos:
+                            tier_2_recon_rules += f"- {memo.memo_text}\n"
+                        tier_2_recon_rules += "\n"
 
                     mapping_rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
                     if mapping_rules.exists():
-                        tier_2_rules += "MANDATORY KEYWORD MAPPINGS:\n"
+                        tier_2_recon_rules += "MANDATORY KEYWORD MAPPINGS:\n"
                         for rule in mapping_rules:
-                            tier_2_rules += f"- If description contains '{rule.trigger_keywords}', you MUST consider Account: {rule.account.account_id}. Reasoning: {rule.ai_guideline}\n"
+                            tier_2_recon_rules += f"- If description contains '{rule.trigger_keywords}', you MUST consider Account: {rule.account.account_id}. Reasoning: {rule.ai_guideline}\n"
 
-                    # ---> PASS THE HISTORICAL GL DATA TO THE RECONCILER <---
-                    mappings, recon_costs = reconciler.reconcile(
-                        transactions_data=tx_data_str, 
-                        open_purchases_data=pur_data_str,
-                        historical_gl_data=hist_gl_md,
-                        prompt_memo=tier_2_rules
-                    )
-                    print(f"\n✅ AI returned {len(mappings)} reconciliation mappings. Processing transactions...")
-                    mapping_dict = {str(m.transaction_id): m for m in mappings}
-                    
                     for item in extracted_data:
                         sys_id = str(item.get('sys_id'))
-                        print(f"   🔹 Processing Transaction [Sys ID: {sys_id}] | Counterparty: {item.get('counterparty', 'N/A')} | In: {item.get('debit', 0)} | Out: {item.get('credit', 0)}")
+                        counterparty = str(item.get('counterparty', 'N/A'))[:30]
+                        print(f"   🔹 Processing Bank Transaction [Sys ID: {sys_id}] | Counterparty: {counterparty} | In: {item.get('debit', 0)} | Out: {item.get('credit', 0)}", flush=True)
+                        
+                        tx_data_str = json.dumps([item], default=str)
+                        
+                        # INJECT THE COA ALONG WITH SUBLEDGERS AND MEMOS
+                        mappings, step_costs = reconciler.reconcile(
+                            transactions_data=tx_data_str, 
+                            open_purchases_data=pur_data_str,
+                            open_sales_data=sal_data_str,
+                            historical_gl_data=hist_gl_md,
+                            prompt_memo=tier_2_recon_rules,
+                            chart_of_accounts_data=coa_list_str  # <--- THE MAGIC KEY
+                        )
+                        
+                        recon_costs['flash_cost'] += step_costs.get('flash_cost', 0)
+                        recon_costs['pro_cost'] += step_costs.get('pro_cost', 0)
+                        
+                        mapping_dict = {str(m.transaction_id): m for m in mappings} if mappings else {}
+                        
                         if sys_id in mapping_dict:
                             match = mapping_dict[sys_id]
-                            print(f"      ✨ AI Reconciled -> Dr: {match.debit_account_id} | Cr: {match.credit_account_id} | Reason: {match.reasoning}")
+                            print(f"      ✨ AI Reconciled -> Dr: {match.debit_account_id} | Cr: {match.credit_account_id} | Reason: {match.reasoning}", flush=True)
                             item['debit_account_id'] = match.debit_account_id
                             item['credit_account_id'] = match.credit_account_id
+                            
                             if hasattr(match, 'matched_purchase_ids') and match.matched_purchase_ids:
                                 item['matched_purchase_ids'] = ",".join(map(str, match.matched_purchase_ids))
                             else:
                                 item['matched_purchase_ids'] = ""
+                                
+                            if hasattr(match, 'matched_sale_ids') and match.matched_sale_ids:
+                                item['matched_sale_ids'] = ",".join(map(str, match.matched_sale_ids))
+                            else:
+                                item['matched_sale_ids'] = ""
+                                
                             item['instruction'] = f"AI Reconciled: {match.reasoning}"
                         else:
-                            print(f"      ⚠️ No exact AI mapping. Applying default accounts.")
+                            print(f"      ⚠️ No exact AI mapping. Applying default accounts.", flush=True)
                             if item.get('credit', 0) > 0:  
                                 item['credit_account_id'] = '100010'
                                 item['debit_account_id'] = '120000'
                             else:  
                                 item['debit_account_id'] = '100010'
                                 item['credit_account_id'] = '400000'
+                                
+                    print(f"\n✅ Completed AI reconciliation for all {len(extracted_data)} transactions.")
 
-                # 4. LOG COST TO CENTRALIZED TABLE
+                # =========================================================
+                # PHASE 4: LOG COST TO CENTRALIZED TABLE
+                # =========================================================
                 print("\n[4/4] LOGGING AI COSTS AND FINALIZING...")
                 total_flash = costs.get('flash_cost', 0) + recon_costs.get('flash_cost', 0)
                 total_pro = costs.get('pro_cost', 0) + recon_costs.get('pro_cost', 0)
@@ -234,13 +281,12 @@ def bank_ai_upload_view(request):
                     os.remove(tmp_pdf_path)
     else:
         form = BankBatchUploadForm()
-        
-        # Dynamically limit the dropdown to ONLY the clients the user manages
         if not (user.is_staff or user.is_superuser):
             try:
                 form.fields['client'].queryset = user.profile.clients.all()
             except Profile.DoesNotExist:
                 form.fields['client'].queryset = Client.objects.none()
+                
     return render(request, 'bank_upload.html', {'form': form})
 
 @login_required
@@ -273,8 +319,30 @@ def bank_review_view(request):
     db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    
+    temp_vendors = []
+    for item in extracted_data:
+        if item.get('is_new_vendor'):
+            temp_vendors.append((item['temp_id'], f"✨ NEW: {item.get('company', 'Unknown')} ({item.get('temp_vid', '')})"))
+    
+    temp_vendors = list(dict.fromkeys(temp_vendors))
+    dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
+    
+    try: from sale.models import Customer
+    except ImportError: Customer = None
+
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    temp_customers = []
+    for item in extracted_data:
+        if item.get('is_new_customer'):
+            temp_customers.append((item['customer_temp_id'], f"✨ NEW: {item.get('customer_company', 'Unknown')} ({item.get('customer_temp_cid', '')})"))
+    
+    temp_customers = list(dict.fromkeys(temp_customers))
+    dynamic_customer_choices = [('', '--- Select Customer ---')] + db_customers + temp_customers
+
     if request.method == 'POST':
-        formset = BankFormSet(request.POST, form_kwargs={'account_choices': account_choices}) 
+        formset = BankFormSet(request.POST, form_kwargs={'account_choices': account_choices, 'dynamic_choices': dynamic_choices, 'dynamic_customer_choices': dynamic_customer_choices}) 
         if formset.is_valid():
             saved_instances = []
             
@@ -286,6 +354,44 @@ def bank_review_view(request):
                             instance.client_id = client_id 
                             instance.batch = metadata.get('batch_name')
                             
+                            # 1. Resolve Vendor
+                            vc = form.cleaned_data.get('vendor_choice')
+                            if str(vc).startswith('TEMP_'):
+                                new_vid = vc.replace('TEMP_', '')
+                                raw_name = 'Unknown Vendor'
+                                for choice_val, choice_label in dynamic_choices:
+                                    if choice_val == vc:
+                                        raw_name = choice_label.replace('✨ NEW: ', '')
+                                        raw_name = re.sub(r'\s*\([^)]+\)$', '', raw_name).strip()
+                                        break
+                                new_vendor, _ = Vendor.objects.get_or_create(
+                                    client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name.title()}
+                                )
+                                instance.vendor = new_vendor
+                            elif vc:
+                                try:
+                                    instance.vendor_id = int(vc)
+                                except ValueError:
+                                    pass
+                                    
+                            # 1.5 Resolve Customer
+                            cc = form.cleaned_data.get('customer_choice')
+                            if cc:
+                                if str(cc).startswith('TEMP_'):
+                                    new_cid = cc.replace('TEMP_', '')
+                                    raw_cname = 'Unknown Customer'
+                                    for choice_val, choice_label in dynamic_customer_choices:
+                                        if choice_val == cc:
+                                            raw_cname = choice_label.replace('✨ NEW: ', '')
+                                            raw_cname = re.sub(r'\s*\([^)]+\)$', '', raw_cname).strip()
+                                            break
+                                    if Customer:
+                                        new_customer, _ = Customer.objects.get_or_create(client_id=client_id, customer_id=new_cid, defaults={'name': raw_cname.title()})
+                                        instance.customer = new_customer
+                                else:
+                                    try: instance.customer_id = int(cc)
+                                    except ValueError: pass
+
                             # --- SANITIZE REMARK ---
                             # Enforce maximum character limit to prevent database errors
                             if instance.remark and len(instance.remark) > 250:
@@ -307,6 +413,19 @@ def bank_review_view(request):
                                 # Mark ALL matched purchases as 'Paid'
                                 purchases_to_pay = Purchase.objects.filter(id__in=matched_ids, client_id=client_id)
                                 purchases_to_pay.update(payment_status='Paid')
+                                
+                            # --- STATUS TRIGGER FOR SALES ---
+                            matched_s_ids_str = form.cleaned_data.get('matched_sale_ids')
+                            if matched_s_ids_str:
+                                matched_s_ids = [int(id_str) for id_str in matched_s_ids_str.split(',') if id_str.isdigit()]
+                                if matched_s_ids:
+                                    try:
+                                        from sale.models import Sale
+                                        first_sale = Sale.objects.get(id=matched_s_ids[0], client_id=client_id)
+                                        instance.matched_sale = first_sale
+                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids, client_id=client_id)
+                                        sales_to_pay.update(payment_status='Paid')
+                                    except (ImportError, Exception): pass
  
                             instance.save()
                             saved_instances.append(instance)
@@ -370,7 +489,7 @@ def bank_review_view(request):
             messages.error(request, "Validation failed. Please check the form for errors.")
             
     else:
-        formset = BankFormSet(initial=extracted_data, form_kwargs={'account_choices': account_choices})
+        formset = BankFormSet(initial=extracted_data, form_kwargs={'account_choices': account_choices, 'dynamic_choices': dynamic_choices, 'dynamic_customer_choices': dynamic_customer_choices})
 
     return render(request, 'bank_review.html', {'formset': formset, 'metadata': metadata})
 
@@ -530,6 +649,16 @@ def cash_upload_view(request):
                 ))
                 print(f"✅ Found {len(open_purchases)} open purchase invoices for {selected_client.name}.")
                 
+                open_sales = []
+                try:
+                    from sale.models import Sale
+                    open_sales = list(Sale.objects.filter(
+                        client=selected_client, payment_status__in=['Open', 'Prepayment']
+                    ).values(
+                        'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'
+                    ))
+                except ImportError: pass
+                
                 # 3. AI RECONCILIATION WITH 3-TIER PROMPT
                 recon_costs = {"flash_cost": 0.0, "pro_cost": 0.0}
                 print("\n[3/4] AI RECONCILIATION WITH 3-TIER PROMPT...")
@@ -538,14 +667,17 @@ def cash_upload_view(request):
                     reconciler = GeminiReconciliationEngine(api_key=api_key, context_account='100000')
                     
                     pur_data_str = json.dumps(open_purchases, default=str)
+                    sal_data_str = json.dumps(open_sales, default=str)
                     
                     # --- CONSTRUCT TIER 2 FROM DATABASE MODELS ---
                     tier_2_rules = ""
-                    
-                    client_memos = ClientPromptMemo.objects.filter(client=selected_client)
-                    if client_memos.exists():
+                    recon_memos = ClientPromptMemo.objects.filter(
+                        client=selected_client,
+                        category__in=['RECONCILIATION', 'GENERAL']
+                    )
+                    if recon_memos.exists():
                         tier_2_rules += "CLIENT SPECIFIC ACCOUNTING MEMOS:\n"
-                        for memo in client_memos:
+                        for memo in recon_memos:
                             tier_2_rules += f"- {memo.memo_text}\n"
                         tier_2_rules += "\n"
 
@@ -565,6 +697,7 @@ def cash_upload_view(request):
                         mappings, step_costs = reconciler.reconcile(
                             transactions_data=tx_data_str, 
                             open_purchases_data=pur_data_str,
+                            open_sales_data=sal_data_str,
                             prompt_memo=tier_2_rules
                         )
                         
@@ -582,6 +715,10 @@ def cash_upload_view(request):
                                 item['matched_purchase_ids'] = ",".join(map(str, match.matched_purchase_ids))
                             else:
                                 item['matched_purchase_ids'] = ""
+                            if hasattr(match, 'matched_sale_ids') and match.matched_sale_ids:
+                                item['matched_sale_ids'] = ",".join(map(str, match.matched_sale_ids))
+                            else:
+                                item['matched_sale_ids'] = ""
                             item['instruction'] = f"AI Reconciled: {match.reasoning}"
                         else:
                             print(f"      ⚠️ No exact AI mapping. Applying default accounts.", flush=True)
@@ -707,16 +844,22 @@ def cash_review_view(request):
                             instance = form.save(commit=False)
                             instance.client_id = client_id
                             
+                            # --- NEW ANTI-DOUBLE ENTRY CHECK ---
+                            if instance.debit_account_id == 'DUPLICATE' or instance.credit_account_id == 'DUPLICATE':
+                                print(f"   ⏭️ SKIPPING Transaction {instance.voucher_no}: Flagged as Cash Replenishment duplicate.")
+                                continue # Skips creating the Journal Entry and Cash record for this row entirely
+                            
                             # 1. Resolve Vendor
                             vc = form.cleaned_data.get('vendor_choice')
                             raw_name = form.cleaned_data.get('company', 'Unknown Vendor')
                             if str(vc).startswith('TEMP_'):
                                 new_vid = vc.replace('TEMP_', '')
-                                new_vendor, _ = Vendor.objects.get_or_create(client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name})
+                                new_vendor, _ = Vendor.objects.get_or_create(client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name.title()})
                                 instance.vendor = new_vendor
                             elif vc:
                                 try: instance.vendor = Vendor.objects.get(id=int(vc), client_id=client_id)
                                 except (ValueError, Vendor.DoesNotExist): pass
+                                    
                                     
                             # --- 2. THE TRIGGER: LINK INVOICE & UPDATE STATUS ---
                             matched_ids_str = form.cleaned_data.get('matched_purchase_ids')
@@ -730,9 +873,21 @@ def cash_review_view(request):
                                     except Purchase.DoesNotExist:
                                         pass
                                 
-                                # Mark ALL matched purchases as 'Paid'
-                                purchases_to_pay = Purchase.objects.filter(id__in=matched_ids, client_id=client_id)
-                                purchases_to_pay.update(payment_status='Paid')
+                                    # Mark ALL matched purchases as 'Paid'
+                                    purchases_to_pay = Purchase.objects.filter(id__in=matched_ids, client_id=client_id)
+                                    purchases_to_pay.update(payment_status='Paid')
+                                
+                            matched_s_ids_str = form.cleaned_data.get('matched_sale_ids')
+                            if matched_s_ids_str:
+                                matched_s_ids = [int(id_str) for id_str in matched_s_ids_str.split(',') if id_str.isdigit()]
+                                if matched_s_ids:
+                                    try:
+                                        from sale.models import Sale
+                                        first_sale = Sale.objects.get(id=matched_s_ids[0], client_id=client_id)
+                                        instance.matched_sale = first_sale
+                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids, client_id=client_id)
+                                        sales_to_pay.update(payment_status='Paid')
+                                    except (ImportError, Exception): pass
  
                             instance.save()
                             saved_instances.append(instance)
@@ -926,13 +1081,16 @@ def BankListView(request):
             except Profile.DoesNotExist:
                 banks = Bank.objects.none()
         client_form = ClientSelectionForm(initial={'client': client_id})
+        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
     else:
         banks = Bank.objects.none()
         client_form = ClientSelectionForm()
+        vendor_queryset = Vendor.objects.none()
         messages.info(request, "Please select a client to view bank transactions.")
 
     banks = banks.order_by('-date', '-id')
     bank_filter = BankFilter(request.GET, queryset=banks)
+    bank_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(bank_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
@@ -966,14 +1124,19 @@ def manual_bank_entry_view(request):
     db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
+
     if request.method == 'POST':
-        form = ManualBankEntryForm(request.POST, account_choices=account_choices)
+        form = ManualBankEntryForm(request.POST, account_choices=account_choices, vendor_choices=vendor_choices)
         if form.is_valid():
             with transaction.atomic():
                 bank = form.save(commit=False)
                 bank.client_id = client_id
                 bank.user = request.user
                 bank.batch = "MANUAL_ENTRY"
+                vc = form.cleaned_data.get('vendor_choice')
+                if vc: bank.vendor_id = int(vc)
                 bank.save()
 
                 dr_acct_id = str(bank.debit_account_id)
@@ -991,7 +1154,7 @@ def manual_bank_entry_view(request):
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
     else:
-        form = ManualBankEntryForm(account_choices=account_choices)
+        form = ManualBankEntryForm(account_choices=account_choices, vendor_choices=vendor_choices)
     return render(request, 'cash/manual_bank_entry.html', {'form': form})
 
 class BankDetailView(LoginRequiredMixin, DetailView):
@@ -1045,11 +1208,22 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
         client_id = self.request.session.get('active_client_id')
         db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
+        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+        kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
         return kwargs
+
+    def get_initial(self):
+        initial = super().get_initial()
+        if self.object.vendor:
+            initial['vendor_choice'] = self.object.vendor.id
+        return initial
 
     def form_valid(self, form):
         with transaction.atomic():
-            bank = form.save()
+            bank = form.save(commit=False)
+            vc = form.cleaned_data.get('vendor_choice')
+            if vc: bank.vendor_id = int(vc)
+            bank.save()
             JournalEntry.objects.filter(bank=bank).delete()
             client_id = self.request.session.get('active_client_id')
             

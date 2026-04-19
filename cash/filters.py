@@ -21,6 +21,12 @@ class BankFilter(django_filters.FilterSet):
         empty_label='All Banks',
         widget=forms.Select(attrs={'class': 'form-select'})
     )
+    
+    vendor = django_filters.ModelChoiceFilter(
+        queryset=Vendor.objects.all(),
+        label='Vendor', empty_label='All Vendors',
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
 
     remark = django_filters.ChoiceFilter(
         label='Remark',
@@ -56,9 +62,10 @@ class BankFilter(django_filters.FilterSet):
         form.helper.layout = Layout(
             Row(
                 Column('bank', css_class='form-group col-md-3 mb-3'),
-                Column('remark', css_class='form-group col-md-3 mb-3'),
-                Column('start_date', css_class='form-group col-md-3 mb-3'),
-                Column('end_date', css_class='form-group col-md-3 mb-3'),
+                Column('vendor', css_class='form-group col-md-3 mb-3'),
+                Column('remark', css_class='form-group col-md-2 mb-3'),
+                Column('start_date', css_class='form-group col-md-2 mb-3'),
+                Column('end_date', css_class='form-group col-md-2 mb-3'),
                 css_class='row'
             ),
             Row(

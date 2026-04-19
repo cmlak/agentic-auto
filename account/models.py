@@ -139,10 +139,16 @@ class AccountMappingRule(models.Model):
         return f"Rule for {self.account.account_id} ({self.client.name})"
 
 class ClientPromptMemo(models.Model):
-    """Replaces the account_id_memo.txt (Anti-Patterns)"""
-    client = models.OneToOneField('tools.Client', on_delete=models.CASCADE, related_name='prompt_memo')
-    memo_text = models.TextField(help_text="Global anti-patterns and strict instructions for this specific client.")
-    updated_at = models.DateTimeField(auto_now=True)
+    CATEGORY_CHOICES = [
+        ('GENERAL', 'General & Universal Rules'),
+        ('BANK_EXTRACTION', 'Bank Statement Extraction'),
+        ('RECONCILIATION', 'GL Mapping & Reconciliation'),
+        ('PURCHASE', 'Purchase & Expense Rules'),
+        ('VENDOR_CUSTOMER', 'Vendor & Customer Rules'),
+    ]
+    client = models.ForeignKey(Client, on_delete=models.CASCADE)
+    category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='GENERAL')
+    memo_text = models.TextField()
 
     def __str__(self):
-        return f"AI Memo: {self.client.name}"
+        return f"Memo for {self.client.name} ({self.category})"

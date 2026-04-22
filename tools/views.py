@@ -29,7 +29,7 @@ from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GL
 GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
 MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
-TaxLiabilitiesProcessor, EngagementLetterProcessor
+TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
 from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -767,7 +767,6 @@ def gl_migration_upload_view(request):
             has_access = user.is_staff or user.is_superuser
             if not has_access:
                 try:
-                    # Adjust depending on your specific Profile relation
                     if user.profile.clients.filter(id=selected_client.id).exists():
                         has_access = True
                 except Exception:
@@ -792,6 +791,11 @@ def gl_migration_upload_view(request):
                 print(f"🚀 Parsing Historical Data for: {selected_client.name}...")
                 parsed_data, costs = processor.process_migration_file(tmp_file_path)
                 
+                # --- NEW: PREVENT GHOST SAVES (Hard Stop if AI returned nothing) ---
+                if not parsed_data:
+                    messages.error(request, "AI Extraction Failed: No valid transactions were processed. Please check the file formatting or terminal logs for Pydantic schema errors.")
+                    return redirect('tools:gl_migration_upload')
+                
                 # Log the AI Cost Immediately
                 total_items = len(parsed_data)
                 AICostLog.objects.create(
@@ -809,10 +813,10 @@ def gl_migration_upload_view(request):
                     'client_name': selected_client.name,
                     'batch_name': batch_name
                 }
-                request.session['gl_migration_log'] = [] # To store report data across multiple saves
+                request.session['gl_migration_log'] = [] 
                 request.session['gl_migration_completed'] = []
                 
-                messages.success(request, "Data parsed successfully. Please review the batches.")
+                messages.success(request, f"Data parsed successfully. Found {total_items} lines. Please review the batches.")
                 return redirect('tools:gl_review')
                 
             except Exception as e:
@@ -858,14 +862,14 @@ def gl_review_view(request):
     
     seen_accounts = set()
     db_accounts = []
-    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+    for acc_id, name in Account.objects.filter(client_id=client_id).values_list('account_id', 'name'):
         if acc_id not in seen_accounts:
             seen_accounts.add(acc_id)
             db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
     db_accounts.sort(key=lambda x: str(x[0]))
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
-    # We process a maximum of 30 items per page to prevent browser lag (Higher since it's single lines now)
+    # We process a maximum of 30 items per page to prevent browser lag
     CHUNK_SIZE = 30
     lines_queue = parsed_data.get('lines', [])
 
@@ -902,13 +906,18 @@ def gl_review_view(request):
             if not parsed_data['lines']:
                 report_log = []
                 
+                # --- NEW: PREVENT GHOST SAVES (Hard Stop if completed_data is empty) ---
+                if not completed_data:
+                    messages.error(request, "CRITICAL ERROR: Attempted to save an empty dataset to the database.")
+                    return redirect('tools:gl_migration_upload')
+                
                 try:
                     with transaction.atomic():
                         for item in completed_data:
                             # 1. PROCESS AND SAVE TO 'Old' MODEL
                             old_record = Old.objects.create(
                                 client=selected_client,
-                                date=item['date'],
+                                date=item['date'] or date.today(),
                                 account_id=item['account_id'],
                                 description=item['description'],
                                 instruction=item['instruction'],
@@ -922,9 +931,9 @@ def gl_review_view(request):
                             ref = f"HIST-{gl_no}" if gl_no and gl_no != 'UNGROUPED' else f"OLD-{old_record.id}"
                             je = JournalEntry.objects.create(
                                 client=selected_client,
-                                date=item['date'],
+                                date=item['date'] or date.today(),
                                 reference_number=ref,
-                                description=f"Historical GL Migration: {item['description']}"[:255],
+                                description=f"Historical GL Migration: {item.get('description', '')}"[:255],
                                 old=old_record
                             )
                             
@@ -935,13 +944,18 @@ def gl_review_view(request):
                                 defaults={'name': 'System Gen Acct', 'account_type': 'Asset'}
                             )
                             
-                            JournalLine.objects.create(
-                                journal_entry=je,
-                                account=account,
-                                debit=item['debit'],
-                                credit=item['credit'],
-                                description=item['description']
-                            )
+                            safe_desc = item['description'][:255] if item.get('description') else "Historical Entry"
+                            if item['debit'] > 0 and item['credit'] > 0:
+                                JournalLine.objects.create(journal_entry=je, account=account, debit=item['debit'], credit=0.0, description=safe_desc)
+                                JournalLine.objects.create(journal_entry=je, account=account, debit=0.0, credit=item['credit'], description=safe_desc)
+                            else:
+                                JournalLine.objects.create(
+                                    journal_entry=je,
+                                    account=account,
+                                    debit=item['debit'],
+                                    credit=item['credit'],
+                                    description=safe_desc
+                                )
                             
                             report_log.append({
                                 'GL No': gl_no, 'Date': item['date'], 
@@ -969,7 +983,7 @@ def gl_review_view(request):
                 request.session.pop('gl_migration_log', None)
                 request.session.pop('gl_migration_completed', None)
                 
-                messages.success(request, "🎉 All historical data successfully staged to Old model and mapped to Journals!")
+                messages.success(request, f"🎉 All {len(completed_data)} historical records successfully staged to Old model and mapped to Journals!")
                 return redirect('tools:gl_download')
             
             messages.success(request, "Batch reviewed and queued. Loading next items...")
@@ -1455,13 +1469,21 @@ def manual_old_entry_view(request):
                     account_id=str(old_record.account_id), 
                     defaults={'name': 'Historical Default', 'account_type': 'Asset'}
                 )
-                JournalLine.objects.create(
-                    journal_entry=je, 
-                    account=acct, 
-                    description=old_record.description or "Historical Entry", 
-                    debit=old_record.debit or 0.0,
-                    credit=old_record.credit or 0.0
-                )
+                safe_desc = old_record.description[:255] if old_record.description else "Historical Entry"
+                debit_val = old_record.debit or 0.0
+                credit_val = old_record.credit or 0.0
+                
+                if debit_val > 0 and credit_val > 0:
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=0.0)
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=0.0, credit=credit_val)
+                else:
+                    JournalLine.objects.create(
+                        journal_entry=je, 
+                        account=acct, 
+                        description=safe_desc, 
+                        debit=debit_val,
+                        credit=credit_val
+                    )
             
             messages.success(request, f"Successfully created manual historical record and posted to GL.")
             return redirect('tools:old_list') 
@@ -1541,7 +1563,14 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
                 old=old_record
             )
             acct, _ = Account.objects.get_or_create(client_id=old_record.client_id, account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
-            JournalLine.objects.create(journal_entry=je, account=acct, description=old_record.description or "Historical Entry", debit=old_record.debit or 0.0, credit=old_record.credit or 0.0)
+            safe_desc = old_record.description[:255] if old_record.description else "Historical Entry"
+            debit_val = old_record.debit or 0.0
+            credit_val = old_record.credit or 0.0
+            if debit_val > 0 and credit_val > 0:
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=0.0)
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=0.0, credit=credit_val)
+            else:
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=credit_val)
         messages.success(self.request, "Historical record and General Ledger entries updated successfully!")
         return HttpResponseRedirect(self.get_success_url())
 
@@ -1658,7 +1687,7 @@ def export_balancika_view(request):
             sheet2_data = []
 
             for record in combined_records:
-                entry_no = f"PIN{entry_counter:05d}"
+                entry_no = f"PIN-{entry_counter:05d}"
                 entry_counter += 1
 
                 if isinstance(record, Purchase):
@@ -2185,7 +2214,7 @@ def upload_engagement_letters_view(request):
 @login_required
 def monthly_closing_view(request):
     # ---------------------------------------------------------
-    # 1. CLIENT SELECTION ROUTE (From JS Fetch / Top Dropdown)
+    # 1. CLIENT SELECTION ROUTE 
     # ---------------------------------------------------------
     if request.method == 'POST' and 'client' in request.POST and 'date' not in request.POST:
         form = ClientSelectionForm(request.POST)
@@ -2201,7 +2230,7 @@ def monthly_closing_view(request):
     user = request.user
     
     # ---------------------------------------------------------
-    # 2. STATE SYNC FIX: Ensure backend validates against the submitted POST client
+    # 2. STATE SYNC FIX
     # ---------------------------------------------------------
     if request.method == 'POST' and 'client' in request.POST:
         submitted_client_id = request.POST.get('client')
@@ -2231,7 +2260,7 @@ def monthly_closing_view(request):
         return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # ---------------------------------------------------------
-    # 4. STATIC TUPLE GENERATION (Fixes HTML Rendering Bugs)
+    # 4. STATIC TUPLE GENERATION 
     # ---------------------------------------------------------
     db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
@@ -2239,7 +2268,6 @@ def monthly_closing_view(request):
     db_vendors = [(str(v.id), f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     vendor_choices = [('', '--- No Vendor ---')] + db_vendors
 
-    # Bundle into kwargs
     form_kwargs_dict = {
         'client_id': client_id, 
         'account_choices': account_choices, 
@@ -2252,7 +2280,6 @@ def monthly_closing_view(request):
     if request.method == 'POST':
         form = MonthlyClosingForm(request.POST, request.FILES)
         
-        # Inject the bundled kwargs
         accrual_formset = AccrualFormSet(request.POST, prefix='accrual', form_kwargs=form_kwargs_dict)
         fx_formset = FXFormSet(request.POST, prefix='fx', form_kwargs=form_kwargs_dict)
 
@@ -2271,65 +2298,70 @@ def monthly_closing_view(request):
             vendor_staff, _ = Vendor.objects.get_or_create(client=client, name='Staff', defaults={'vendor_id': 'V-STAFF'})
 
             transaction_lines = [] 
-            period_label = "Current Month"
+            period_label = date.strftime("%b'%y")
             total_ai_cost = 0.0
 
             print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
             
             # =========================================================
-            # SCENARIO A: Tax on Salary & Liabilities
+            # SCENARIO A: Unified Tax & Salary Liabilities
             # =========================================================
-            if form.cleaned_data.get('tos_pdf') and form.cleaned_data.get('salary_payable'):
-                pdf_bytes = form.cleaned_data['tos_pdf'].read()
-                salary_payable_usd = form.cleaned_data['salary_payable']
-                processor = TOSPDFProcessor(api_key=api_key)
+            if form.cleaned_data.get('tax_declaration_pdf'):
+                pdf_bytes = form.cleaned_data['tax_declaration_pdf'].read()
+                salary_payable_usd = form.cleaned_data.get('salary_payable') or 0.0
+                staff_meals_usd = form.cleaned_data.get('staff_meals') or 0.0
+                
+                processor = UnifiedTaxProcessor(api_key=api_key)
                 data = processor.extract_tax_data(pdf_bytes)
 
-                if not data.get('error') and data.get('exchange_rate', 0) > 0:
-                    period_label = data['declaration_period']
-                    total_ai_cost += processor.cost_stats['flash_cost']
-                    
-                    salary_expense_usd = data['net_salary_usd']
-                    meal_expense_usd = round(salary_payable_usd - salary_expense_usd, 2)
-                    tax_res_usd = round(data['tos_tax_resident_khr'] / data['exchange_rate'], 2)
-                    tax_non_res_usd = round(data['tos_tax_non_resident_khr'] / data['exchange_rate'], 2)
-                    total_tax = round(tax_res_usd + tax_non_res_usd, 2)
-                    
-                    reasoning = data.get('reasoning', f"Calculated using exchange rate {data['exchange_rate']}.")
-
-                    transaction_lines.extend([
-                        {"vendor": vendor_staff, "account_id": "705000", "instruction": reasoning, "desc": f"Salary expense {period_label}", "debit": salary_expense_usd, "credit": 0.0},
-                        {"vendor": vendor_staff, "account_id": "705070", "instruction": reasoning, "desc": f"Meal expense {period_label}", "debit": meal_expense_usd, "credit": 0.0},
-                        {"vendor": vendor_tax, "account_id": "725410", "instruction": reasoning, "desc": f"Salary tax expense {period_label}", "debit": total_tax, "credit": 0.0},
-                        {"vendor": vendor_tax, "account_id": "210030", "instruction": reasoning, "desc": f"Salary tax expense {period_label}", "debit": 0.0, "credit": tax_res_usd},
-                        {"vendor": vendor_tax, "account_id": "210030", "instruction": reasoning, "desc": f"NR Salary tax expense {period_label}", "debit": 0.0, "credit": tax_non_res_usd},
-                        {"vendor": vendor_staff, "account_id": "225070", "instruction": reasoning, "desc": f"Being accrued for salary expense {period_label}", "debit": 0.0, "credit": salary_payable_usd}
-                    ])
-
-            if form.cleaned_data.get('tax_liabilities_pdf'):
-                pdf_bytes = form.cleaned_data['tax_liabilities_pdf'].read()
-                processor = TaxLiabilitiesProcessor(api_key=api_key)
-                data = processor.extract_liabilities_data(pdf_bytes)
-
                 if not data.get('error'):
-                    period = data.get('declaration_period', period_label)
                     total_ai_cost += processor.cost_stats['flash_cost']
-                    reasoning = data.get('reasoning', '')
                     
-                    total_wht = round(data['wht_10_usd'] + data['wht_15_usd'], 2)
-                    if total_wht > 0:
-                        desc = f"Being accrued for Withholding tax expenses in {period}"
+                    exchange_rate = data.get('exchange_rate', 0.0)
+                    tos_instr = data.get('tos_instruction') or f"TOS Extracted (Rate: {exchange_rate})"
+                    wht_instr = data.get('wht_instruction') or f"WHT Extracted (Rate: {exchange_rate})"
+                    fbt_instr = data.get('fbt_instruction') or f"FBT Extracted (Rate: {exchange_rate})"
+                    general_instr = data.get('general_instruction') or f"Salary/Meals Extracted (Rate: {exchange_rate})"
+
+                    if staff_meals_usd == 0.0:
+                        staff_meals_usd = data.get('staff_meals_usd', 0.0)
+
+                    # 1. Process Salary & TOS (If Salary Payable was provided)
+                    if salary_payable_usd > 0:
+                        tax_res_usd = data.get('tos_resident_usd', 0.0)
+                        tax_non_res_usd = data.get('tos_non_resident_usd', 0.0)
+                        total_tos = round(tax_res_usd + tax_non_res_usd, 2)
+
                         transaction_lines.extend([
-                            {"vendor": vendor_tax, "account_id": "725420", "instruction": reasoning, "desc": desc, "debit": total_wht, "credit": 0.0},
-                            {"vendor": vendor_tax, "account_id": "210040", "instruction": reasoning, "desc": desc, "debit": 0.0, "credit": total_wht}
+                            {"vendor": vendor_staff, "account_id": "705000", "instruction": general_instr, "desc": f"Salary expense {period_label}", "debit": salary_payable_usd, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "725410", "instruction": tos_instr, "desc": f"Salary tax expense {period_label}", "debit": total_tos, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "210030", "instruction": tos_instr, "desc": f"Salary tax expense {period_label}", "debit": 0.0, "credit": tax_res_usd},
+                            {"vendor": vendor_tax, "account_id": "210030", "instruction": tos_instr, "desc": f"NR Salary tax expense {period_label}", "debit": 0.0, "credit": tax_non_res_usd},
+                            {"vendor": vendor_staff, "account_id": "225070", "instruction": general_instr, "desc": f"Being accrued for salary expense {period_label}", "debit": 0.0, "credit": salary_payable_usd}
                         ])
 
-                    fbt = round(data['fbt_usd'], 2)
-                    if fbt > 0:
-                        desc = f"Being accrued for Fringe Benefit tax expenses in {period}"
+                    if staff_meals_usd > 0:
                         transaction_lines.extend([
-                            {"vendor": vendor_tax, "account_id": "705010", "instruction": reasoning, "desc": desc, "debit": fbt, "credit": 0.0},
-                            {"vendor": vendor_tax, "account_id": "210031", "instruction": reasoning, "desc": desc, "debit": 0.0, "credit": fbt}
+                            {"vendor": vendor_staff, "account_id": "705070", "instruction": general_instr, "desc": f"Staff meals {period_label}", "debit": staff_meals_usd, "credit": 0.0},
+                            {"vendor": vendor_staff, "account_id": "225070", "instruction": general_instr, "desc": f"Being accrued for staff meals {period_label}", "debit": 0.0, "credit": staff_meals_usd}
+                        ])
+
+                    # 2. Process Withholding Taxes
+                    total_wht = round(data.get('wht_10_usd', 0.0) + data.get('wht_15_usd', 0.0), 2)
+                    if total_wht > 0:
+                        desc = f"Being accrued for Withholding tax expenses in {period_label}"
+                        transaction_lines.extend([
+                            {"vendor": vendor_tax, "account_id": "725420", "instruction": wht_instr, "desc": desc, "debit": total_wht, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "210040", "instruction": wht_instr, "desc": desc, "debit": 0.0, "credit": total_wht}
+                        ])
+
+                    # 3. Process Fringe Benefit Tax
+                    fbt = round(data.get('fbt_usd', 0.0), 2)
+                    if fbt > 0:
+                        desc = f"Being accrued for Fringe Benefit tax expenses in {period_label}"
+                        transaction_lines.extend([
+                            {"vendor": vendor_tax, "account_id": "705010", "instruction": fbt_instr, "desc": desc, "debit": fbt, "credit": 0.0},
+                            {"vendor": vendor_tax, "account_id": "210031", "instruction": fbt_instr, "desc": desc, "debit": 0.0, "credit": fbt}
                         ])
 
             # =========================================================
@@ -2342,7 +2374,6 @@ def monthly_closing_view(request):
                     debit_amt = round(a_form.cleaned_data['debit'], 2)
                     desc = a_form.cleaned_data['description']
                     
-                    # Convert string ID back to Database Instance
                     vendor_id_str = a_form.cleaned_data.get('vendor')
                     vendor_instance = None
                     if vendor_id_str:
@@ -2368,33 +2399,27 @@ def monthly_closing_view(request):
                     end_bal_khr = f_form.cleaned_data['ending_balance']
                     fx_rate = f_form.cleaned_data['exchange_rate']
                     desc = f_form.cleaned_data['description']
+                    
                     fx_account_id = f_form.cleaned_data['account_id'] 
-
-                    # Convert string ID back to Database Instance
-                    vendor_id_str = f_form.cleaned_data.get('vendor')
-                    vendor_instance = None
-                    if vendor_id_str:
-                        try:
-                            vendor_instance = Vendor.objects.get(id=int(vendor_id_str), client=client)
-                        except (ValueError, Vendor.DoesNotExist):
-                            pass
+                    bank_account_id = f_form.cleaned_data['bank_account_id']
 
                     month_end_usd = round(end_bal_khr / fx_rate, 2)
                     fx_diff = round(month_end_usd - open_bal_usd, 2)
                     instruction_txt = f"FX Calculation: (End Bal KHR {end_bal_khr} / Rate {fx_rate}) - Open Bal USD {open_bal_usd} = {fx_diff}"
                     
+                    # Note: We pass None to "vendor" because FX adjustments are internal bank revaluations.
                     if fx_diff < 0:
                         loss_amt = abs(fx_diff)
                         transaction_lines.extend([
-                            {"vendor": vendor_instance, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0},
-                            {"vendor": vendor_instance, "account_id": "100210", "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt}
+                            {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0},
+                            {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt}
                         ])
                         fx_count += 1
                     elif fx_diff > 0:
                         gain_amt = fx_diff
                         transaction_lines.extend([
-                            {"vendor": vendor_instance, "account_id": "100210", "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0},
-                            {"vendor": vendor_instance, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt}
+                            {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0},
+                            {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt}
                         ])
                         fx_count += 1
 
@@ -2405,6 +2430,7 @@ def monthly_closing_view(request):
 
             if transaction_lines:
                 try:
+                    from django.db import transaction
                     with transaction.atomic():
                         for line in transaction_lines:
                             jv = JournalVoucher.objects.create(
@@ -2426,7 +2452,7 @@ def monthly_closing_view(request):
                             try:
                                 AICostLog.objects.create(
                                     file_name=f"Monthly Closing Batch - {period_label}",
-                                    total_pages=2, flash_cost=total_ai_cost, total_cost=total_ai_cost
+                                    total_pages=1, flash_cost=total_ai_cost, total_cost=total_ai_cost
                                 )
                             except NameError:
                                 pass
@@ -2449,7 +2475,6 @@ def monthly_closing_view(request):
             except Exception:
                 form.fields['client'].queryset = Client.objects.none()
                 
-        # Inject kwargs for GET request rendering
         accrual_formset = AccrualFormSet(prefix='accrual', form_kwargs=form_kwargs_dict)
         fx_formset = FXFormSet(prefix='fx', form_kwargs=form_kwargs_dict)
 
@@ -2570,7 +2595,14 @@ def manual_journal_voucher_entry_view(request):
                     journal_voucher=jv_record
                 )
                 acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
-                JournalLine.objects.create(journal_entry=je, account=acct, description=jv_record.description or "Journal Voucher", debit=jv_record.debit or 0.0, credit=jv_record.credit or 0.0)
+                safe_desc = jv_record.description[:255] if jv_record.description else "Journal Voucher"
+                debit_val = jv_record.debit or 0.0
+                credit_val = jv_record.credit or 0.0
+                if debit_val > 0 and credit_val > 0:
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=0.0)
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=0.0, credit=credit_val)
+                else:
+                    JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=credit_val)
             
             messages.success(request, f"Successfully created journal voucher and posted to GL.")
             return redirect('tools:journal_voucher_list') 
@@ -2648,7 +2680,14 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
                 journal_voucher=jv_record
             )
             acct, _ = Account.objects.get_or_create(client_id=jv_record.client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
-            JournalLine.objects.create(journal_entry=je, account=acct, description=jv_record.description or "Journal Voucher", debit=jv_record.debit or 0.0, credit=jv_record.credit or 0.0)
+            safe_desc = jv_record.description[:255] if jv_record.description else "Journal Voucher"
+            debit_val = jv_record.debit or 0.0
+            credit_val = jv_record.credit or 0.0
+            if debit_val > 0 and credit_val > 0:
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=0.0)
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=0.0, credit=credit_val)
+            else:
+                JournalLine.objects.create(journal_entry=je, account=acct, description=safe_desc, debit=debit_val, credit=credit_val)
         messages.success(self.request, "Journal voucher and General Ledger entries updated successfully!")
         return HttpResponseRedirect(reverse('tools:journal_voucher_detail', kwargs={'pk': self.object.pk}))
 

@@ -1,5 +1,7 @@
 {% extends 'base_4_kpi.html' %} 
 
+{% block title %}Monthly Closing{% endblock %}
+
 {% block content %}
 <script src="https://unpkg.com/htmx.org@1.9.11"></script>
 
@@ -36,21 +38,20 @@
                 <hr class="mt-2 mb-3">
                 
                 <div class="col-md-6 mb-3">
-                    <label for="{{ form.tos_pdf.id_for_label }}" class="form-label fw-bold">{{ form.tos_pdf.label }}</label>
-                    {{ form.tos_pdf }}
-                    <small class="text-muted mt-1 d-block">Upload 'Tax on Salary' Declaration (PDF)</small>
+                    <label for="{{ form.tax_declaration_pdf.id_for_label }}" class="form-label fw-bold">{{ form.tax_declaration_pdf.label|default:"Tax Declaration PDF" }}</label>
+                    {{ form.tax_declaration_pdf }}
+                    <small class="text-muted mt-1 d-block">Upload Unified Tax Declaration (TOS, WHT, FBT)</small>
                 </div>
                 <div class="col-md-6 mb-3">
                     <label for="{{ form.salary_payable.id_for_label }}" class="form-label fw-bold">Salary Payable</label>
                     {{ form.salary_payable }}
-                    <small class="text-muted mt-1 d-block">Required if TOS is uploaded (USD)</small>
+                    <small class="text-muted mt-1 d-block">Required if calculating Tax on Salary splits (USD)</small>
                 </div>
-
-                <div class="col-md-12 mb-2">
-                    <label for="{{ form.tax_liabilities_pdf.id_for_label }}" class="form-label fw-bold">{{ form.tax_liabilities_pdf.label }}</label>
-                    {{ form.tax_liabilities_pdf }}
-                    <small class="text-muted mt-1 d-block">Upload 'Tax Liabilities' Declaration for WHT/FBT (PDF)</small>
-                </div>
+            <div class="col-md-6 mb-3">
+                <label for="{{ form.staff_meals.id_for_label }}" class="form-label fw-bold">Staff Meals</label>
+                {{ form.staff_meals }}
+                <small class="text-muted mt-1 d-block">Optional override for AI extracted meals (USD)</small>
+            </div>
             </div>
         </div>
 
@@ -106,7 +107,7 @@
 
         <div class="card mb-4 shadow-sm border-warning">
             <div class="card-header bg-warning text-dark">
-                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Scenario C: FX Gain/Loss (Auto-Offsets to 100210)</h5>
+                <h5 class="mb-0"><i class="fas fa-exchange-alt me-2"></i>Scenario C: FX Gain/Loss (Internal Bank Revaluation)</h5>
             </div>
             <div class="card-body p-0">
                 {{ fx_formset.management_form }}
@@ -114,8 +115,8 @@
                     <table class="table table-hover mb-0 align-middle">
                         <thead class="table-light">
                             <tr>
-                                <th width="20%">FX Account ID</th>
-                                <th width="20%">Vendor</th>
+                                <th width="20%">FX Gain/Loss Account</th>
+                                <th width="20%">KHR Bank Account</th>
                                 <th width="20%">Description</th>
                                 <th width="12%">Open Bal (USD)</th>
                                 <th width="13%">End Bal (KHR)</th>
@@ -127,7 +128,7 @@
                             {% for f_form in fx_formset %}
                             <tr>
                                 <td>{{ f_form.account_id }}</td>
-                                <td>{{ f_form.vendor }}</td>
+                                <td>{{ f_form.bank_account_id }}</td>
                                 <td>{{ f_form.description }}</td>
                                 <td>{{ f_form.openning_balance }}</td>
                                 <td>{{ f_form.ending_balance }}</td>
@@ -150,7 +151,7 @@
             <tbody id="empty-fx-form">
                 <tr>
                     <td>{{ fx_formset.empty_form.account_id }}</td>
-                    <td>{{ fx_formset.empty_form.vendor }}</td>
+                    <td>{{ fx_formset.empty_form.bank_account_id }}</td>
                     <td>{{ fx_formset.empty_form.description }}</td>
                     <td>{{ fx_formset.empty_form.openning_balance }}</td>
                     <td>{{ fx_formset.empty_form.ending_balance }}</td>
@@ -190,7 +191,7 @@ document.addEventListener("DOMContentLoaded", function() {
     setupDynamicFormset("add-accrual-btn", "accrual-tbody", "empty-accrual-form", "id_accrual-TOTAL_FORMS");
     setupDynamicFormset("add-fx-btn", "fx-tbody", "empty-fx-form", "id_fx-TOTAL_FORMS");
 
-    // --- 2. BULLETPROOF VENDOR SYNC (REPLACES HTMX) ---
+    // --- 2. BULLETPROOF VENDOR SYNC ---
     const clientSelect = document.getElementById('id_client');
     
     if (clientSelect) {
@@ -198,14 +199,11 @@ document.addEventListener("DOMContentLoaded", function() {
             const clientId = this.value;
             
             if (clientId) {
-                // Fetch the new vendor HTML partial from your existing Django view
                 fetch(`/tools/ajax/load-vendors/?client=${clientId}`)
                     .then(response => response.text())
                     .then(html => {
-                        // Grab EVERY vendor dropdown on the page (Accruals, FX, and hidden templates)
                         const vendorDropdowns = document.querySelectorAll('.dynamic-vendor-select');
                         
-                        // Loop through and update them all simultaneously
                         vendorDropdowns.forEach(dropdown => {
                             dropdown.innerHTML = html;
                         });
@@ -214,6 +212,15 @@ document.addEventListener("DOMContentLoaded", function() {
             }
         });
     }
+
+    // --- 3. HOVER TOOLTIPS FOR FULL TEXT ---
+    document.addEventListener('mouseover', function(e) {
+        if (e.target && (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA')) {
+            if (e.target.value) {
+                e.target.title = e.target.value;
+            }
+        }
+    });
 });
 </script>
 {% endblock %}

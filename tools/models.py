@@ -102,7 +102,7 @@ class Old(models.Model):
 class JournalVoucher(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
     date = models.DateField(blank=True, null=True)
-    account_id = models.IntegerField(blank=True, null=True)
+    account_id = models.CharField(max_length=20, blank=True, null=True)
     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
     description = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 

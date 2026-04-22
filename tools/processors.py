@@ -282,11 +282,12 @@ class GeminiInvoiceProcessor:
 # --- PYDANTIC SCHEMAS FOR HISTORICAL DATA MIGRATION ---
 # ====================================================================
 class HistoricalLine(BaseModel):
-    gl_no: str = Field(..., description="The ID or Voucher No. from the original file.")
-    date: str = Field(..., description="Transaction Date in YYYY-MM-DD format.")
+    # Relaxed strictness: using defaults prevents Pydantic ValidationErrors when Excel columns are empty
+    gl_no: str = Field(default="UNGROUPED", description="The ID or Voucher No. from the original file. Use 'UNGROUPED' if none exists.")
+    date: str = Field(default="", description="Transaction Date in YYYY-MM-DD format. Leave empty if missing.")
     account_id: str = Field(..., description="The matched 6-digit GL Account code from the TIER_1 Chart of Accounts.")
-    description: str = Field(..., description="Combined entity name and transaction description.")
-    instruction: str = Field(..., description="Brief AI reasoning for why this specific account_id was chosen.")
+    description: str = Field(default="Historical Entry", description="Combined entity name and transaction description.")
+    instruction: str = Field(default="Standard mapping applied.", description="Brief AI reasoning for why this specific account_id was chosen.")
     debit: float = Field(default=0.0, description="Debit amount (0 if empty).")
     credit: float = Field(default=0.0, description="Credit amount (0 if empty).")
 
@@ -316,6 +317,8 @@ class GLMigrationProcessor:
 
     def _load_chart_of_accounts(self, client_id):
         """Dynamically loads the Chart of Accounts and Rules from the Django Database."""
+        # Ensure Account and AccountMappingRule are imported at the top of your file
+        from .models import Account, AccountMappingRule 
         try:
             accounts = Account.objects.filter(client_id=client_id)
             rules = AccountMappingRule.objects.filter(client_id=client_id).select_related('account')
@@ -347,6 +350,7 @@ class GLMigrationProcessor:
         2. Cross-reference them with the <TIER_1_CHART_OF_ACCOUNTS> to find the precise 6-digit `account_id`.
         3. Combine the 'Vendor/Customer', 'Reference' (which contains commercial and tax invoice) and 'Description' into a single, clean `description` string.
         4. Maintain the exact original Debit and Credit values.
+        5. If a column is blank or null, output empty strings or 0.0 as defined in the schema. Do not crash.
         </TIER_2_MIGRATION_RULES>
         """
 
@@ -381,6 +385,14 @@ class GLMigrationProcessor:
         
         # Group by ID (Voucher/Transaction Number) so we process complete, balanced Double-Entries together
         group_cols = ['ID'] if 'ID' in df.columns else ['Date', 'Vendor / Customer / Employee']
+        
+        # Fallback if standard grouping columns are missing (e.g., Opening Balance file)
+        missing_cols = [col for col in group_cols if col not in df.columns]
+        if missing_cols:
+            print(f"⚠️ Warning: Missing expected grouping columns {missing_cols}. Grouping by index instead.")
+            df['__temp_id__'] = df.index // 5  # Group every 5 rows together
+            group_cols = ['__temp_id__']
+            
         grouped = df.groupby(group_cols, dropna=False, sort=False)
 
         # Batch processing to optimize token usage
@@ -388,6 +400,10 @@ class GLMigrationProcessor:
         current_chunk_size = 0
         
         for keys, group in grouped:
+            # Prevent passing completely blank rows
+            if group.replace('', np.nan).dropna(how='all').empty:
+                continue
+                
             current_chunk_text += group.to_string(index=False) + "\n---\n"
             current_chunk_size += len(group)
             
@@ -397,7 +413,7 @@ class GLMigrationProcessor:
                     parsed_batch = self._parse_cluster(current_chunk_text)
                     results.extend([line.model_dump() for line in parsed_batch.lines])
                 except Exception as e:
-                    print(f"Failed to parse GL chunk: {e}")
+                    print(f"❌ Failed to parse GL chunk: {e}")
                 
                 # Reset chunk
                 current_chunk_text = ""
@@ -409,13 +425,13 @@ class GLMigrationProcessor:
                 parsed_batch = self._parse_cluster(current_chunk_text)
                 results.extend([line.model_dump() for line in parsed_batch.lines])
             except Exception as e:
-                print(f"Failed to parse final GL chunk: {e}")
+                print(f"❌ Failed to parse final GL chunk: {e}")
 
         total_cost = self.cost_stats['flash_cost'] + self.cost_stats['pro_cost']
         print(f"💰 Total Staging AI Cost: ${total_cost:.5f}")
         
         return results, self.cost_stats
-
+        
 # --------------------------------------------------------------------
 # 1. DEFINE THE STRICT DATA SCHEMA (Pydantic)
 # --------------------------------------------------------------------
@@ -637,7 +653,6 @@ class EngagementLetterProcessor:
 # SCHEMA 1: Tax on Salary (TOS)
 # ====================================================================
 class TaxOnSalaryData(BaseModel):
-    declaration_period: str = Field(description="The declaration period formatted as 'MMM''YY' (e.g., \"Jan'26\").")
     exchange_rate: float = Field(description="Official exchange rate. (e.g., 4050.0)")
     net_salary_usd: float = Field(description="Total Net Salary. Clean float (e.g., 7443.0).")
     tos_tax_resident_khr: float = Field(description="Total Tax on Salary (Resident) in KHR. Strip commas.")
@@ -665,8 +680,7 @@ class TOSPDFProcessor:
         1. Exhaustive Extraction: Scan the ENTIRE document to find tax amounts for Residents and Non-Residents.
         2. Float Formatting: Return purely numeric floats without commas or currency symbols.
         3. Exchange Rate: Locate the official exchange rate.
-        4. Date Formatting: Extract period exactly as "MMM'YY" (e.g., "Jan'26").
-        5. Missing Data: If a tax doesn't exist, return 0.0.
+        4. Missing Data: If a tax doesn't exist, return 0.0.
         """
         config = types.GenerateContentConfig(response_mime_type="application/json", response_schema=TaxOnSalaryData, temperature=0.0)
         try:
@@ -685,7 +699,6 @@ class TOSPDFProcessor:
 # SCHEMA 2: Tax Liabilities (WHT & FBT)
 # ====================================================================
 class TaxLiabilitiesData(BaseModel):
-    declaration_period: str = Field(description="The declaration period formatted as 'MMM''YY' (e.g., \"Jan'26\").")
     fbt_usd: float = Field(description="Total 20% Fringe Benefit Tax in USD. Clean float (e.g., 65.82). Return 0.0 if missing.")
     wht_10_usd: float = Field(description="Total 10% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
     wht_15_usd: float = Field(description="Total 15% Withholding Tax in USD. Clean float. Return 0.0 if missing.")
@@ -722,4 +735,66 @@ class TaxLiabilitiesProcessor:
             return json.loads(response.text)
         except Exception as e:
             print(f"Liabilities AI Error: {str(e)}")
+            return {"error": True}
+
+# ====================================================================
+# UNIFIED SCHEMA: Tax on Salary, FBT, and WHT
+# ====================================================================
+class UnifiedTaxData(BaseModel):
+    exchange_rate: float = Field(description="Official exchange rate. (e.g., 4000.0)")
+    net_salary_usd: float = Field(default=0.0, description="Total Net Salary base in USD if present on the document. Return 0.0 if not found.")
+    tos_resident_usd: float = Field(default=0.0, description="Total Tax on Salary (Resident) in USD. Clean float.")
+    tos_non_resident_usd: float = Field(default=0.0, description="Total Tax on Salary (Non-resident) in USD. Clean float.")
+    fbt_usd: float = Field(default=0.0, description="Total 20% Fringe Benefit Tax in USD. Clean float.")
+    wht_10_usd: float = Field(default=0.0, description="Total 10% Withholding Tax in USD. Clean float.")
+    wht_15_usd: float = Field(default=0.0, description="Total 15% Withholding Tax in USD. Clean float.")
+    staff_meals_usd: float = Field(default=0.0, description="Total Staff meals in USD if present on the document. Return 0.0 if not found.")
+    tos_instruction: str = Field(default="", description="Specific explanation for Tax on Salary (e.g., 'TOS Resident: 204.03 USD. Rate: 3988').")
+    fbt_instruction: str = Field(default="", description="Specific explanation for Fringe Benefit Tax.")
+    wht_instruction: str = Field(default="", description="Specific explanation for Withholding Tax, including the nature (e.g., '10% WHT for Rental, 15% for Services').")
+    general_instruction: str = Field(default="", description="Explanation for Net Salary or Staff Meals.")
+
+class UnifiedTaxProcessor:
+    def __init__(self, api_key: str):
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = 'gemini-2.5-flash'
+        self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
+
+    def _calculate_cost(self, usage):
+        """Calculates the cost of a Gemini API call based on token usage."""
+        if usage:
+            return ((usage.prompt_token_count / 1e6) * 0.075) + ((usage.candidates_token_count / 1e6) * 0.30)
+        return 0.0
+
+    def extract_tax_data(self, pdf_bytes: bytes) -> dict:
+        document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+        prompt = """
+        You are an expert tax accountant. Read the attached Notification of Tax Declaration.
+        CRITICAL INSTRUCTIONS (EXHAUSTIVE EXTRACTION):
+        1. Unified Extraction: Scan the table to find Tax on Salary (Resident & Non-Resident), Fringe Benefit Tax, and Withholding Taxes (10% and 15%).
+        2. Extract USD Values: Locate the USD column and extract the USD float values directly. If only KHR is available, divide by the exchange rate to get USD.
+        3. Float Formatting: Return purely numeric floats without commas or currency symbols.
+        4. Missing Data: If a specific tax category does not exist, return 0.0.
+        5. Staff Meals: Extract Staff meals if available on the document.
+        6. Explanations: Provide distinct, specific explanations for TOS, WHT, FBT, and a General note for Salary/Meals. Include the exchange rate and the exact nature of the tax (e.g. 'WHT 10% for Rental').
+        """
+        config = types.GenerateContentConfig(
+            response_mime_type="application/json", 
+            response_schema=UnifiedTaxData, 
+            temperature=0.0
+        )
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name, 
+                contents=[prompt, document_part], 
+                config=config
+            )
+            
+            # Cost Tracking
+            cost = self._calculate_cost(response.usage_metadata)
+            self.cost_stats["flash_cost"] += cost
+            
+            return json.loads(response.text)
+        except Exception as e:
+            print(f"Unified Tax AI Error: {str(e)}")
             return {"error": True}

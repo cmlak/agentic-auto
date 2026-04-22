@@ -733,10 +733,20 @@ class MonthlyClosingForm(forms.Form):
         widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
         label="Voucher Date"
     )
-    tos_pdf = forms.FileField(required=False, widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}), label="Tax on Salary PDF")
-    salary_payable = forms.FloatField(required=False, widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Total Salary Payable (USD)'}))
-    tax_liabilities_pdf = forms.FileField(required=False, widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}), label="Tax Liabilities PDF")
-
+    salary_payable = forms.FloatField(
+        required=False, 
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Total Salary Payable (USD)'})
+    )
+    staff_meals = forms.FloatField(
+        required=False, 
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Total Staff Meals (USD)'})
+    )
+    # Unified File Upload
+    tax_declaration_pdf = forms.FileField(
+        required=False, 
+        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'}), 
+        label="Tax Declaration PDF (TOS & Liabilities)"
+    )
 
 class AccrualForm(forms.Form):
     account_id = forms.ChoiceField(widget=forms.Select(attrs={'class': 'form-select'}))
@@ -760,30 +770,47 @@ class AccrualForm(forms.Form):
         self.fields['account_id'].choices = account_choices
         self.fields['vendor'].choices = vendor_choices
 
-
 class FXForm(forms.Form):
-    account_id = forms.ChoiceField(widget=forms.Select(attrs={'class': 'form-select'}))
-    
-    # Target class added for JS: 'dynamic-vendor-select'
-    vendor = forms.ChoiceField(
-        required=False, 
-        widget=forms.Select(attrs={'class': 'form-select dynamic-vendor-select', 'autocomplete': 'off'})
+    account_id = forms.ChoiceField(
+        label="FX Gain/Loss Account", 
+        widget=forms.Select(attrs={'class': 'form-select'})
     )
     
-    description = forms.CharField(max_length=255, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'}))
-    openning_balance = forms.FloatField(label="Opening Bal (USD)", widget=forms.NumberInput(attrs={'class': 'form-control'}))
-    ending_balance = forms.FloatField(label="Ending Bal (KHR)", widget=forms.NumberInput(attrs={'class': 'form-control'}))
-    exchange_rate = forms.FloatField(label="FX Rate", widget=forms.NumberInput(attrs={'class': 'form-control'}))
+    bank_account_id = forms.ChoiceField(
+        label="KHR Bank Account", 
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    
+    description = forms.CharField(
+        max_length=255, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'})
+    )
+    openning_balance = forms.FloatField(
+        label="Opening Bal (USD)", 
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
+    )
+    ending_balance = forms.FloatField(
+        label="Ending Bal (KHR)", 
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
+    )
+    exchange_rate = forms.FloatField(
+        label="FX Rate", 
+        widget=forms.NumberInput(attrs={'class': 'form-control'})
+    )
 
     def __init__(self, *args, **kwargs):
         client_id = kwargs.pop('client_id', None)
         account_choices = kwargs.pop('account_choices', [('', '--- Select Account ---')])
-        vendor_choices = kwargs.pop('vendor_choices', [('', '--- No Vendor ---')])
+        
+        # Remove vendor_choices from kwargs so it doesn't throw a KeyError, 
+        # as FX forms no longer use vendors.
+        kwargs.pop('vendor_choices', None) 
         
         super().__init__(*args, **kwargs)
         
+        # Populate both dropdowns with the Chart of Accounts
         self.fields['account_id'].choices = account_choices
-        self.fields['vendor'].choices = vendor_choices
+        self.fields['bank_account_id'].choices = account_choices
 
 AccrualFormSet = formset_factory(AccrualForm, extra=3, can_delete=True)
 FXFormSet = formset_factory(FXForm, extra=3, can_delete=True)

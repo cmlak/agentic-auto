@@ -105,6 +105,8 @@ class BankReviewForm(forms.ModelForm):
             self.fields['debit_amount'].initial = self.initial.get('debit_amount')
         if self.initial.get('credit_amount'): 
             self.fields['credit_amount'].initial = self.initial.get('credit_amount')
+        if self.initial.get('bank_ref_id'):
+            self.fields['bank_ref_id'].initial = self.initial.get('bank_ref_id')
 
         if self.prefix:
             try:
@@ -347,6 +349,10 @@ class CashReviewForm(forms.ModelForm):
             self.fields['debit_amount'].initial = self.initial.get('debit_amount')
         if self.initial.get('credit_amount'): 
             self.fields['credit_amount'].initial = self.initial.get('credit_amount')
+        if self.initial.get('invoice_no'):
+            self.fields['invoice_no'].initial = self.initial.get('invoice_no')
+        if self.initial.get('voucher_no'):
+            self.fields['voucher_no'].initial = self.initial.get('voucher_no')
 
         if self.prefix:
             try:
@@ -407,6 +413,8 @@ class CashReviewForm(forms.ModelForm):
             'debit': forms.HiddenInput(),
             'credit': forms.HiddenInput(),
             'balance': forms.TextInput(attrs={'class': 'number-format text-end'}),
+            'voucher_no': forms.TextInput(attrs={'class': 'form-control fw-bold text-primary'}),
+            'invoice_no': forms.TextInput(attrs={'class': 'form-control fw-bold'}),
         }
         
     def clean(self):

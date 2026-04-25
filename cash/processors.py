@@ -398,6 +398,15 @@ class CashStandardExcelProcessor:
         debit_aliases = ['debit', 'dr', 'in', 'deposit', 'receipt', 'cash in', 'paid in']
         credit_aliases = ['credit', 'cr', 'out', 'withdrawal', 'payment', 'cash out', 'paid out']
 
+        # Dynamically identify columns outside the loop to handle variations like "Invoice No." or "Page No"
+        cols = list(df.columns)
+        vendor_col = next((col for col in cols if any(x in col for x in ['vendor', 'payee', 'customer'])), 'vendor')
+        date_col = next((col for col in cols if any(x in col for x in ['date', 'txn date', 'transaction date'])), 'date')
+        desc_col = next((col for col in cols if any(x in col for x in ['description', 'particular', 'memo', 'detail'])), 'description')
+        inv_col = next((col for col in cols if any(x in col for x in ['invoice', 'inv'])), 'invoice_no')
+        vch_col = next((col for col in cols if any(x in col for x in ['voucher', 'vch'])), 'voucher_no')
+        page_col = next((col for col in cols if any(x in col for x in ['page', 'pg'])), 'page')
+
         for index, row in df.iterrows():
             # Attempt to extract debit/credit values using aliases
             d_val, c_val = 0.0, 0.0
@@ -417,25 +426,20 @@ class CashStandardExcelProcessor:
             if amt == 0.0:
                 continue
                 
-            # Vendor alias fallback
-            vendor_col = next((col for col in ['vendor', 'payee', 'customer'] if col in row), 'vendor')
             raw_vendor = str(row.get(vendor_col, '')).strip() if pd.notna(row.get(vendor_col)) else ''
-            
-            date_col = next((col for col in ['date', 'txn date', 'transaction date'] if col in row), 'date')
             raw_date = row.get(date_col)
             clean_date = str(raw_date)[:10] if pd.notna(raw_date) and str(raw_date).strip() != '' else None
-            
-            desc_col = next((col for col in ['description', 'particulars', 'memo', 'details'] if col in row), 'description')
             
             entry_dict = {
                 'batch': batch_name,
                 'date': clean_date,
-                'voucher_no': str(row.get('voucher_no', '')) if pd.notna(row.get('voucher_no')) else '',
+                'voucher_no': str(row.get(vch_col, '')) if pd.notna(row.get(vch_col)) else '',
                 'description': str(row.get(desc_col, '')) if pd.notna(row.get(desc_col)) else '',
                 
                 'company': raw_vendor,
                 'vendor_choice': '',
-                'invoice_no': str(row.get('invoice_no', '')) if pd.notna(row.get('invoice_no')) else '',
+                'invoice_no': str(row.get(inv_col, '')) if pd.notna(row.get(inv_col)) else '',
+                'page': str(row.get(page_col, '')) if pd.notna(row.get(page_col)) else '',
                 
                 'debit': d_val,
                 'credit': c_val,
@@ -503,7 +507,8 @@ class GeminiReconciliationEngine:
             d) Any other revenue or liability account based on keyword mappings.
         
         MECHANICAL RULE 3: DATA CROSS-REFERENCING
-        - You MUST use the 'remark', 'raw_remark', and 'note' fields from the <TRANSACTIONS> data to search for matches within <OPEN_PURCHASES>, <OPEN_SALES>, and <HISTORICAL_LEDGER>.
+        - You MUST use the 'description', 'remark', 'raw_remark', 'note', 'page', and 'invoice_no' fields from the <TRANSACTIONS> data to search for matches within <OPEN_PURCHASES>, <OPEN_SALES>, and <HISTORICAL_LEDGER>.
+        - CRITICAL: If 'page' or 'invoice_no' is present in the transaction, prioritize matching it against the corresponding fields in <OPEN_PURCHASES> or <OPEN_SALES>. If they are missing, you MUST still attempt to match based on amount, date, and vendor name.
         - If a payment covers multiple invoices, you MUST include all matched IDs in the 'matched_purchase_ids' or 'matched_sale_ids' list.
         - If you absolutely cannot find a relevant 6-digit code in the <CHART_OF_ACCOUNTS>, output 'UNKNOWN' for the account ID.
         </TIER_1_CORE_RECONCILIATION_RULES>

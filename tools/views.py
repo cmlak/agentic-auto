@@ -707,7 +707,7 @@ def export_purchase_invoices(request, client_id):
         return redirect('main')
 
     # Base Queryset: Ensure sequential order based on entry processing instead of randomly descending
-    queryset = Purchase.objects.filter(client_id=client.id).order_by('id')
+    queryset = Purchase.objects.filter(client_id=client.id).select_related('client', 'vendor').prefetch_related('journal_entries__lines__account').order_by('id')
 
     # Pass the client_id directly into the Resource
     resource = PurchaseResource(client_id=client.id)
@@ -1334,14 +1334,14 @@ def export_purchase_csv(request):
             messages.error(request, "You do not have permission to export data for this client.")
             return redirect('main')
 
-    purchases = purchases.order_by('-date')
+    purchases = purchases.select_related('client', 'vendor').prefetch_related('journal_entries__lines__account').order_by('id')
 
     # Apply the same filter parameters passed via the GET request
     purchase_filter = PurchaseFilter(request.GET, queryset=purchases)
     filtered_purchases = purchase_filter.qs
 
     # Generate the CSV using django-import-export
-    resource = PurchaseResource()
+    resource = PurchaseResource(client_id=client_id)
     dataset = resource.export(queryset=filtered_purchases)
     
     # Create and return the HTTP response with a UTF-8 BOM so Excel reads Chinese characters properly

@@ -18,6 +18,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib.auth.mixins import LoginRequiredMixin
 from django.views.generic import DetailView, UpdateView, DeleteView
 from django.db import transaction
+from django.db.models import Max
 
 from .forms import BankBatchUploadForm, BankFormSet, CashBatchUploadForm, CashReviewForm, CashFormSet, ManualBankEntryForm, ManualCashEntryForm
 from .processors import GeminiABABankProcessor, GeminiCanadiaBankProcessor, ClientBCustomBankProcessor, \
@@ -150,7 +151,7 @@ def bank_ai_upload_view(request):
                 open_purchases = list(Purchase.objects.filter(
                     client=selected_client,
                     payment_status__in=['Open', 'Prepayment']
-                ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'))
+                ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status', 'page'))
                 print(f"✅ Found {len(open_purchases)} open purchase invoices.", flush=True)
                 
                 # 2B. Open Sales
@@ -400,6 +401,7 @@ def bank_review_view(request):
                             # --- STATUS TRIGGER ---
                             matched_ids_str = form.cleaned_data.get('matched_purchase_ids')
                             if matched_ids_str:
+                                instance.matched_purchase_ids = matched_ids_str
                                 matched_ids = [int(id_str) for id_str in matched_ids_str.split(',') if id_str.isdigit()]
                                 
                                 if matched_ids:
@@ -417,6 +419,7 @@ def bank_review_view(request):
                             # --- STATUS TRIGGER FOR SALES ---
                             matched_s_ids_str = form.cleaned_data.get('matched_sale_ids')
                             if matched_s_ids_str:
+                                instance.matched_sale_ids = matched_s_ids_str
                                 matched_s_ids = [int(id_str) for id_str in matched_s_ids_str.split(',') if id_str.isdigit()]
                                 if matched_s_ids:
                                     try:
@@ -645,7 +648,7 @@ def cash_upload_view(request):
                     client=selected_client,
                     payment_status__in=['Open', 'Prepayment']
                 ).values(
-                    'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'
+                    'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status', 'page'
                 ))
                 print(f"✅ Found {len(open_purchases)} open purchase invoices for {selected_client.name}.")
                 
@@ -658,6 +661,10 @@ def cash_upload_view(request):
                         'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'
                     ))
                 except ImportError: pass
+                
+                # Fetch COA
+                client_accounts = Account.objects.filter(client=selected_client).values_list('account_id', 'name')
+                coa_list_str = "\n".join([f"{acct[0]} - {acct[1]}" for acct in client_accounts])
                 
                 # 3. AI RECONCILIATION WITH 3-TIER PROMPT
                 recon_costs = {"flash_cost": 0.0, "pro_cost": 0.0}
@@ -698,7 +705,8 @@ def cash_upload_view(request):
                             transactions_data=tx_data_str, 
                             open_purchases_data=pur_data_str,
                             open_sales_data=sal_data_str,
-                            prompt_memo=tier_2_rules
+                            prompt_memo=tier_2_rules,
+                            chart_of_accounts_data=coa_list_str
                         )
                         
                         recon_costs['flash_cost'] += step_costs.get('flash_cost', 0)
@@ -825,6 +833,71 @@ def cash_review_view(request):
     db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
+    # --- PRE-FILL VOUCHER NO & INVOICE NO FOR PREVIEW ---
+    modified_session = False
+    seq_tracker_preview = {}
+    for item in extracted_data:
+        # 1. Pre-fill invoice_no from matched purchase/sale
+        if not item.get('invoice_no'):
+            matched_p_ids = item.get('matched_purchase_ids')
+            if matched_p_ids:
+                try:
+                    first_p_id = int(str(matched_p_ids).split(',')[0])
+                    purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
+                    if purchase and purchase.invoice_no:
+                        item['invoice_no'] = purchase.invoice_no
+                        modified_session = True
+                except ValueError:
+                    pass
+            else:
+                matched_s_ids = item.get('matched_sale_ids')
+                if matched_s_ids:
+                    try:
+                        from sale.models import Sale
+                        first_s_id = int(str(matched_s_ids).split(',')[0])
+                        sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
+                        if sale and sale.invoice_no:
+                            item['invoice_no'] = sale.invoice_no
+                            modified_session = True
+                    except (ValueError, ImportError):
+                        pass
+
+        # 2. Pre-fill voucher_no
+        if not item.get('voucher_no') or str(item.get('voucher_no')).strip() == '':
+            tx_date_str = item.get('date')
+            if tx_date_str:
+                if isinstance(tx_date_str, str):
+                    try:
+                        tx_date = datetime.strptime(tx_date_str[:10], '%Y-%m-%d').date()
+                    except ValueError:
+                        tx_date = date.today()
+                else:
+                    tx_date = tx_date_str
+            else:
+                tx_date = date.today()
+                
+            ym_prefix = tx_date.strftime("CPV-%Y-%m-")
+            if ym_prefix not in seq_tracker_preview:
+                existing_vouchers = Cash.objects.filter(
+                    client_id=client_id, 
+                    voucher_no__startswith=ym_prefix
+                ).values_list('voucher_no', flat=True)
+                max_v = 0
+                for v in existing_vouchers:
+                    try:
+                        num = int(v.split('-')[-1])
+                        if num > max_v: max_v = num
+                    except (ValueError, IndexError): pass
+                seq_tracker_preview[ym_prefix] = max_v
+            
+            seq_tracker_preview[ym_prefix] += 1
+            item['voucher_no'] = f"{ym_prefix}{seq_tracker_preview[ym_prefix]}"
+            modified_session = True
+
+    if modified_session:
+        request.session['extracted_cash'] = extracted_data
+        request.session.modified = True
+
     page_number = request.GET.get('page', 1)
     items_per_page = 20
     paginator = Paginator(extracted_data, items_per_page)
@@ -837,6 +910,7 @@ def cash_review_view(request):
         
         if formset.is_valid():
             saved_instances = []
+            seq_tracker = {}
             try:
                 with transaction.atomic():
                     for form in formset:
@@ -848,6 +922,25 @@ def cash_review_view(request):
                             if instance.debit_account_id == 'DUPLICATE' or instance.credit_account_id == 'DUPLICATE':
                                 print(f"   ⏭️ SKIPPING Transaction {instance.voucher_no}: Flagged as Cash Replenishment duplicate.")
                                 continue # Skips creating the Journal Entry and Cash record for this row entirely
+                            
+                            # --- SEQUENCE GENERATION (CPV-Year-Month-{1}) ---
+                            if not instance.voucher_no or str(instance.voucher_no).strip() == '':
+                                tx_date = instance.date or date.today()
+                                ym_prefix = tx_date.strftime("CPV-%Y-%m-")
+                                if ym_prefix not in seq_tracker:
+                                    existing_vouchers = Cash.objects.filter(
+                                        client_id=client_id, 
+                                        voucher_no__startswith=ym_prefix
+                                    ).values_list('voucher_no', flat=True)
+                                    max_v = 0
+                                    for v in existing_vouchers:
+                                        try:
+                                            num = int(v.split('-')[-1])
+                                            if num > max_v: max_v = num
+                                        except (ValueError, IndexError): pass
+                                    seq_tracker[ym_prefix] = max_v
+                                seq_tracker[ym_prefix] += 1
+                                instance.voucher_no = f"{ym_prefix}{seq_tracker[ym_prefix]}"
                             
                             # 1. Resolve Vendor
                             vc = form.cleaned_data.get('vendor_choice')
@@ -864,12 +957,15 @@ def cash_review_view(request):
                             # --- 2. THE TRIGGER: LINK INVOICE & UPDATE STATUS ---
                             matched_ids_str = form.cleaned_data.get('matched_purchase_ids')
                             if matched_ids_str:
+                                instance.matched_purchase_ids = matched_ids_str
                                 matched_ids = [int(id_str) for id_str in matched_ids_str.split(',') if id_str.isdigit()]
 
                                 if matched_ids:
                                     try:
                                         first_purchase = Purchase.objects.get(id=matched_ids[0], client_id=client_id)
                                         instance.matched_purchase = first_purchase
+                                        if not instance.invoice_no:
+                                            instance.invoice_no = first_purchase.invoice_no
                                     except Purchase.DoesNotExist:
                                         pass
                                 
@@ -879,12 +975,15 @@ def cash_review_view(request):
                                 
                             matched_s_ids_str = form.cleaned_data.get('matched_sale_ids')
                             if matched_s_ids_str:
+                                instance.matched_sale_ids = matched_s_ids_str
                                 matched_s_ids = [int(id_str) for id_str in matched_s_ids_str.split(',') if id_str.isdigit()]
                                 if matched_s_ids:
                                     try:
                                         from sale.models import Sale
                                         first_sale = Sale.objects.get(id=matched_s_ids[0], client_id=client_id)
                                         instance.matched_sale = first_sale
+                                        if not instance.invoice_no:
+                                            instance.invoice_no = first_sale.invoice_no
                                         sales_to_pay = Sale.objects.filter(id__in=matched_s_ids, client_id=client_id)
                                         sales_to_pay.update(payment_status='Paid')
                                     except (ImportError, Exception): pass
@@ -1329,7 +1428,7 @@ def CashListView(request):
         vendor_queryset = Vendor.objects.none()
         messages.info(request, "Please select a client to view cash transactions.")
 
-    cash_qs = cash_qs.order_by('-date', '-id')
+    cash_qs = cash_qs.order_by('-id')
     cash_filter = CashFilter(request.GET, queryset=cash_qs)
     cash_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(cash_filter.qs, 20)

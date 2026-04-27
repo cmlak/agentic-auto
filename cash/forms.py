@@ -206,26 +206,45 @@ class BankReviewForm(forms.ModelForm):
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
 class ManualBankEntryForm(forms.ModelForm):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        label="Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-success'})
+    )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
+    customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
     credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
     
     def __init__(self, *args, **kwargs):
         account_choices = kwargs.pop('account_choices', [])
         vendor_choices = kwargs.pop('vendor_choices', [])
+        customer_choices = kwargs.pop('customer_choices', [])
         super().__init__(*args, **kwargs)
         self.fields['debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
         if vendor_choices:
             self.fields['vendor_choice'].choices = vendor_choices
+        if customer_choices:
+            self.fields['customer_choice'].choices = customer_choices
+
+        if self.instance and getattr(self.instance, 'pk', None):
+            if self.instance.vendor_id:
+                self.fields['vendor_choice'].initial = self.instance.vendor_id
+            if self.instance.customer_id:
+                self.fields['customer_choice'].initial = self.instance.customer_id
 
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
+                Column('client', css_class='form-group col-md-8'),
                 Column('date', css_class='form-group col-md-4'),
-                Column('bank_ref_id', css_class='form-group col-md-4'),
-                Column('trans_type', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('bank_ref_id', css_class='form-group col-md-6'),
+                Column('trans_type', css_class='form-group col-md-6'),
             ),
             Row(
                 Column('counterparty', css_class='form-group col-md-6'),
@@ -235,7 +254,8 @@ class ManualBankEntryForm(forms.ModelForm):
                 Column('remark', css_class='form-group col-md-12'),
             ),
             Row(
-                Column('vendor_choice', css_class='form-group col-md-12'),
+                Column('vendor_choice', css_class='form-group col-md-6'),
+                Column('customer_choice', css_class='form-group col-md-6'),
             ),
             Row(
                 Column('debit_account_id', css_class='form-group col-md-6'),
@@ -251,11 +271,13 @@ class ManualBankEntryForm(forms.ModelForm):
     class Meta:
         model = Bank
         fields = [
-            'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
+            'client', 'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
             'debit_account_id', 'credit_account_id', 'debit', 'credit'
         ]
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
+            'counterparty': forms.Textarea(attrs={'rows': 2}),
+            'remark': forms.Textarea(attrs={'rows': 2}),
             'purpose': forms.Textarea(attrs={'rows': 2}),
             'debit': forms.TextInput(attrs={'class': 'number-format text-end'}),
             'credit': forms.TextInput(attrs={'class': 'number-format text-end'}),
@@ -298,7 +320,8 @@ class CashBatchUploadForm(forms.Form):
 
 class CashReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
-    vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False)
+    vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold'}))
+    customer_choice = forms.ChoiceField(label="Matched Customer DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold text-primary'}))
     
     # --- DOUBLE ENTRY ACCOUNTING FIELDS ---
     debit_account_id = forms.ChoiceField(
@@ -323,6 +346,7 @@ class CashReviewForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         dynamic_choices = kwargs.pop('dynamic_choices', None)
+        dynamic_customer_choices = kwargs.pop('dynamic_customer_choices', None)
         account_choices = kwargs.pop('account_choices', [])
         start_sequence = kwargs.pop('start_sequence', 0)
         super().__init__(*args, **kwargs)
@@ -333,6 +357,12 @@ class CashReviewForm(forms.ModelForm):
         if self.initial.get('vendor_choice'): 
             self.fields['vendor_choice'].initial = self.initial.get('vendor_choice')
             
+        # Populate dynamic customers
+        if dynamic_customer_choices:
+            self.fields['customer_choice'].choices = dynamic_customer_choices
+        if self.initial.get('customer_choice'):
+            self.fields['customer_choice'].initial = self.initial.get('customer_choice')
+
         # Populate dynamic accounts
         if account_choices:
             self.fields['debit_account_id'].choices = account_choices
@@ -381,8 +411,9 @@ class CashReviewForm(forms.ModelForm):
                 css_class='mt-4 border-top pt-3 border-2 border-warning'
             ),
             Row(
-                Column('vendor_choice', css_class='form-group col-md-4'),
-                Column('description', css_class='form-group col-md-8'),
+                Column('vendor_choice', css_class='form-group col-md-3'),
+                Column('customer_choice', css_class='form-group col-md-3'),
+                Column('description', css_class='form-group col-md-6'),
             ),
             Row(
                 Column('debit_account_id', css_class='form-group col-md-3 pe-3'),
@@ -399,6 +430,7 @@ class CashReviewForm(forms.ModelForm):
             Field('debit', type="hidden"),
             Field('credit', type="hidden"),
             Field('vendor', type="hidden"),
+            Field('customer', type="hidden"),
             Field('matched_purchase_ids'),
             Field('matched_sale_ids')
         )
@@ -437,28 +469,46 @@ CashFormSet = formset_factory(CashReviewForm, extra=0, can_delete=True)
 
 
 class ManualCashEntryForm(forms.ModelForm):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        label="Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-warning'})
+    )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
+    customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
     credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
     
     def __init__(self, *args, **kwargs):
         vendor_choices = kwargs.pop('vendor_choices', [])
+        customer_choices = kwargs.pop('customer_choices', [])
         account_choices = kwargs.pop('account_choices', [])
         super().__init__(*args, **kwargs)
         self.fields['vendor_choice'].choices = vendor_choices
+        if customer_choices:
+            self.fields['customer_choice'].choices = customer_choices
         self.fields['debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
+
+        if self.instance and getattr(self.instance, 'pk', None):
+            if self.instance.vendor_id:
+                self.fields['vendor_choice'].initial = self.instance.vendor_id
+            if self.instance.customer_id:
+                self.fields['customer_choice'].initial = self.instance.customer_id
 
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('date', css_class='form-group col-md-4'),
-                Column('voucher_no', css_class='form-group col-md-4'),
-                Column('invoice_no', css_class='form-group col-md-4'),
+                Column('client', css_class='form-group col-md-3'),
+                Column('date', css_class='form-group col-md-3'),
+                Column('voucher_no', css_class='form-group col-md-3'),
+                Column('invoice_no', css_class='form-group col-md-3'),
             ),
             Row(
-                Column('vendor_choice', css_class='form-group col-md-12'),
+                Column('vendor_choice', css_class='form-group col-md-6'),
+                Column('customer_choice', css_class='form-group col-md-6'),
             ),
             Row(
                 Column('description', css_class='form-group col-md-12'),
@@ -477,7 +527,7 @@ class ManualCashEntryForm(forms.ModelForm):
     class Meta:
         model = Cash
         fields = [
-            'date', 'voucher_no', 'invoice_no', 'description', 
+            'client', 'date', 'voucher_no', 'invoice_no', 'description', 
             'debit_account_id', 'credit_account_id', 'debit', 'credit'
         ]
         widgets = {

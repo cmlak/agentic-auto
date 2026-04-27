@@ -25,9 +25,11 @@
             <div class="row">
                 <div class="col-12">
                     <div class="bg-light p-3 rounded">
-                        <h6 class="text-muted">Description</h6>
+                        <h6 class="text-muted">Payment Status:</h6>
+                        <p class="mb-2">{{ jv_record.payment_status }}</p>
+                        <h6 class="text-muted">Description:</h6>
                         <p class="mb-2">{{ jv_record.description }}</p>
-                        <h6 class="text-muted mt-3">Reasoning / Instruction</h6>
+                        <h6 class="text-muted mt-3">Reasoning / Instruction:</h6>
                         <p class="mb-0">{{ jv_record.instruction|default:"No special instructions." }}</p>
                     </div>
                 </div>

@@ -39,18 +39,6 @@ class PurchaseEntry(BaseModel):
     credit_account_id: Optional[str] = Field(None, description="Main Credit Account ID strictly from the Chart of Accounts (e.g., Trade Payable).")
     wht_account_id: Optional[str] = Field(None, description="Credit Account ID for WHT Payable strictly from the Chart of Accounts. Leave null if no WHT.")
     
-    debit_account_id_2: Optional[str] = Field(None, description="Secondary Debit Account ID (e.g., 215090 Other accrued expenses).")
-    debit_amount_2: float = Field(0.0, description="Amount for the secondary debit account.")
-    debit_desc_2: str = Field("", description="Description for the secondary debit account.")
-    
-    debit_account_id_3: Optional[str] = Field(None, description="Tertiary Debit Account ID (e.g., 215090 Other accrued expenses).")
-    debit_amount_3: float = Field(0.0, description="Amount for the tertiary debit account.")
-    debit_desc_3: str = Field("", description="Description for the tertiary debit account.")
-    
-    debit_account_id_4: Optional[str] = Field(None, description="Quaternary Debit Account ID (e.g., 215090 Other accrued expenses).")
-    debit_amount_4: float = Field(0.0, description="Amount for the quaternary debit account.")
-    debit_desc_4: str = Field("", description="Description for the quaternary debit account.")
-    
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
     
     unreg_usd: float = Field(0.0, description="Amount from unregistered vendors without a VAT TIN.")
@@ -200,7 +188,6 @@ class GeminiInvoiceProcessor:
             5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately. Ensure you respect the difference between Commercial and Tax Invoices as per the MEMO.
             6. BALANCED ASSIGNMENT (ACCOUNT IDS): Assign ALL appropriate account IDs strictly from the <CHART_OF_ACCOUNTS>. 
                - The Main Credit Account is typically Trade Payable.
-               - ACCRUAL SPLITTING: If the invoice covers multiple months for recurring services (e.g., quarterly or bi-monthly), you MUST recognize it as a monthly expense for the current month (Main Debit) and the remaining months as accrued expenses in the past (Secondary/Tertiary Debits). For these past months, use 'debit_account_id_2', 'debit_amount_2', 'debit_desc_2', etc., and map them to the Accrued Expenses account (e.g., 215090).
                - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
                - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
             7. INVOICE & PAGE NUMBERS: STRICTLY FOLLOW any custom starting 'invoice_no' or 'page' provided in the [BATCH LEVEL], [INDUSTRY LEVEL], or [COMPANY LEVEL] instructions. If not provided, output the invoice number exactly as printed, or 'NEEDS_SEQ' if missing/short.

@@ -13,7 +13,7 @@
         <div class="col-sm-12 col-md-10 col-lg-8">
             <form action="" method="post" id="txnForm">
                 {% csrf_token %}
-                {{ form | crispy }}
+                {% crispy form %}
                 <div class="row d-flex justify-content-center">
                     <div class="col text-center py-4">
                         <button type="submit" id="submitBtn" class="btn btn-primary mx-2" style="width: 150px;">Save Transaction</button>
@@ -26,13 +26,3 @@
 </div>
 {% endblock %}
 
-{% block scripts %}
-<script>
-    $(document).ready(function() {
-        $('#id_remark').select2({ tags: true }); 
-        $("#txnForm").on("submit", function() {
-            $("#submitBtn").prop("disabled", true).html('<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> Processing...');
-        });
-    });
-</script>
-{% endblock %}

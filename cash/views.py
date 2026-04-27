@@ -342,6 +342,33 @@ def bank_review_view(request):
     temp_customers = list(dict.fromkeys(temp_customers))
     dynamic_customer_choices = [('', '--- Select Customer ---')] + db_customers + temp_customers
 
+    # --- PRE-FILL VENDOR & CUSTOMER FROM AI RECONCILIATION MATCHES ---
+    modified_session = False
+    for item in extracted_data:
+        matched_p_ids = item.get('matched_purchase_ids')
+        if matched_p_ids:
+            try:
+                first_p_id = int(str(matched_p_ids).split(',')[0])
+                purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
+                if purchase and purchase.vendor_id and not item.get('vendor_choice'):
+                    item['vendor_choice'] = purchase.vendor_id
+                    modified_session = True
+            except ValueError: pass
+        
+        matched_s_ids = item.get('matched_sale_ids')
+        if matched_s_ids:
+            try:
+                first_s_id = int(str(matched_s_ids).split(',')[0])
+                sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
+                if sale and sale.customer_id and not item.get('customer_choice'):
+                    item['customer_choice'] = sale.customer_id
+                    modified_session = True
+            except (ValueError, ImportError): pass
+                
+    if modified_session:
+        request.session['extracted_bank'] = extracted_data
+        request.session.modified = True
+
     if request.method == 'POST':
         formset = BankFormSet(request.POST, form_kwargs={'account_choices': account_choices, 'dynamic_choices': dynamic_choices, 'dynamic_customer_choices': dynamic_customer_choices}) 
         if formset.is_valid():
@@ -837,30 +864,37 @@ def cash_review_view(request):
     modified_session = False
     seq_tracker_preview = {}
     for item in extracted_data:
-        # 1. Pre-fill invoice_no from matched purchase/sale
-        if not item.get('invoice_no'):
-            matched_p_ids = item.get('matched_purchase_ids')
-            if matched_p_ids:
-                try:
-                    first_p_id = int(str(matched_p_ids).split(',')[0])
-                    purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
-                    if purchase and purchase.invoice_no:
+        # 1. Pre-fill invoice_no and vendor/customer from matched purchase/sale
+        matched_p_ids = item.get('matched_purchase_ids')
+        if matched_p_ids:
+            try:
+                first_p_id = int(str(matched_p_ids).split(',')[0])
+                purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
+                if purchase:
+                    if not item.get('invoice_no') and purchase.invoice_no:
                         item['invoice_no'] = purchase.invoice_no
                         modified_session = True
-                except ValueError:
-                    pass
-            else:
-                matched_s_ids = item.get('matched_sale_ids')
-                if matched_s_ids:
-                    try:
-                        from sale.models import Sale
-                        first_s_id = int(str(matched_s_ids).split(',')[0])
-                        sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
-                        if sale and sale.invoice_no:
+                    if not item.get('vendor_choice') and purchase.vendor_id:
+                        item['vendor_choice'] = purchase.vendor_id
+                        modified_session = True
+            except ValueError:
+                pass
+        else:
+            matched_s_ids = item.get('matched_sale_ids')
+            if matched_s_ids:
+                try:
+                    from sale.models import Sale
+                    first_s_id = int(str(matched_s_ids).split(',')[0])
+                    sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
+                    if sale:
+                        if not item.get('invoice_no') and sale.invoice_no:
                             item['invoice_no'] = sale.invoice_no
                             modified_session = True
-                    except (ValueError, ImportError):
-                        pass
+                        if not item.get('customer_choice') and sale.customer_id:
+                            item['customer_choice'] = sale.customer_id
+                            modified_session = True
+                except (ValueError, ImportError):
+                    pass
 
         # 2. Pre-fill voucher_no
         if not item.get('voucher_no') or str(item.get('voucher_no')).strip() == '':
@@ -905,8 +939,20 @@ def cash_review_view(request):
     current_slice = page_obj.object_list
     start_sequence = (page_obj.number - 1) * items_per_page
 
+    try: from sale.models import Customer
+    except ImportError: Customer = None
+
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    temp_customers = []
+    for item in extracted_data:
+        if item.get('is_new_customer'):
+            temp_customers.append((item['customer_temp_id'], f"✨ NEW: {item.get('customer_company', 'Unknown')}"))
+    
+    temp_customers = list(dict.fromkeys(temp_customers))
+    dynamic_customer_choices = [('', '--- Select Customer ---')] + db_customers + temp_customers
+
     if request.method == 'POST':
-        formset = CashFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices, 'start_sequence': start_sequence})
+        formset = CashFormSet(request.POST, form_kwargs={'dynamic_choices': dynamic_choices, 'dynamic_customer_choices': dynamic_customer_choices, 'account_choices': account_choices, 'start_sequence': start_sequence})
         
         if formset.is_valid():
             saved_instances = []
@@ -952,6 +998,23 @@ def cash_review_view(request):
                             elif vc:
                                 try: instance.vendor = Vendor.objects.get(id=int(vc), client_id=client_id)
                                 except (ValueError, Vendor.DoesNotExist): pass
+
+                            # 1.5 Resolve Customer
+                            cc = form.cleaned_data.get('customer_choice')
+                            if cc:
+                                if str(cc).startswith('TEMP_'):
+                                    new_cid = cc.replace('TEMP_', '')
+                                    raw_cname = 'Unknown Customer'
+                                    for choice_val, choice_label in dynamic_customer_choices:
+                                        if choice_val == cc:
+                                            raw_cname = choice_label.replace('✨ NEW: ', '')
+                                            break
+                                    if Customer:
+                                        new_customer, _ = Customer.objects.get_or_create(client_id=client_id, customer_id=new_cid, defaults={'name': raw_cname.title()})
+                                        instance.customer = new_customer
+                                else:
+                                    try: instance.customer_id = int(cc)
+                                    except ValueError: pass
                                     
                                     
                             # --- 2. THE TRIGGER: LINK INVOICE & UPDATE STATUS ---
@@ -1052,7 +1115,7 @@ def cash_review_view(request):
             messages.error(request, "Validation failed. Please check the form for errors.")
             
     else:
-        formset = CashFormSet(initial=current_slice, form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices, 'start_sequence': start_sequence})
+        formset = CashFormSet(initial=current_slice, form_kwargs={'dynamic_choices': dynamic_choices, 'dynamic_customer_choices': dynamic_customer_choices, 'account_choices': account_choices, 'start_sequence': start_sequence})
 
     return render(request, 'cash_review.html', {
         'formset': formset, 
@@ -1253,7 +1316,7 @@ def manual_bank_entry_view(request):
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
     else:
-        form = ManualBankEntryForm(account_choices=account_choices, vendor_choices=vendor_choices)
+        form = ManualBankEntryForm(account_choices=account_choices, vendor_choices=vendor_choices, customer_choices=customer_choices)
     return render(request, 'cash/manual_bank_entry.html', {'form': form})
 
 class BankDetailView(LoginRequiredMixin, DetailView):
@@ -1309,12 +1372,21 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
+        
+        try:
+            from sale.models import Customer
+        except ImportError:
+            Customer = None
+        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+        kwargs['customer_choices'] = [('', '--- Select Existing Customer ---')] + db_customers
         return kwargs
 
     def get_initial(self):
         initial = super().get_initial()
         if self.object.vendor:
             initial['vendor_choice'] = self.object.vendor.id
+        if self.object.customer:
+            initial['customer_choice'] = self.object.customer.id
         return initial
 
     def form_valid(self, form):
@@ -1322,6 +1394,8 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             bank = form.save(commit=False)
             vc = form.cleaned_data.get('vendor_choice')
             if vc: bank.vendor_id = int(vc)
+            cc = form.cleaned_data.get('customer_choice')
+            if cc: bank.customer_id = int(cc)
             bank.save()
             JournalEntry.objects.filter(bank=bank).delete()
             client_id = self.request.session.get('active_client_id')
@@ -1493,7 +1567,7 @@ def manual_cash_entry_view(request):
             messages.success(request, f"Manual Cash transaction posted securely!")
             return redirect('cash:cash_list')
     else:
-        form = ManualCashEntryForm(vendor_choices=vendor_choices, account_choices=account_choices)
+        form = ManualCashEntryForm(vendor_choices=vendor_choices, customer_choices=customer_choices, account_choices=account_choices)
     return render(request, 'cash/manual_cash_entry.html', {'form': form})
 
 class CashDetailView(LoginRequiredMixin, DetailView):
@@ -1547,6 +1621,14 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
         client_id = self.request.session.get('active_client_id')
         db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
+        
+        try:
+            from sale.models import Customer
+        except ImportError:
+            Customer = None
+        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+        kwargs['customer_choices'] = [('', '--- Select Existing Customer ---')] + db_customers
+        
         db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         return kwargs
@@ -1555,6 +1637,8 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
         initial = super().get_initial()
         if self.object.vendor:
             initial['vendor_choice'] = self.object.vendor.id
+        if self.object.customer:
+            initial['customer_choice'] = self.object.customer.id
         return initial
 
     def form_valid(self, form):
@@ -1562,6 +1646,8 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             cash = form.save(commit=False)
             vc = form.cleaned_data.get('vendor_choice')
             if vc: cash.vendor_id = int(vc)
+            cc = form.cleaned_data.get('customer_choice')
+            if cc: cash.customer_id = int(cc)
             cash.save()
             
             JournalEntry.objects.filter(cash=cash).delete()

@@ -106,6 +106,14 @@ class JournalVoucher(models.Model):
     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
     description = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
+    
+    PAYMENT_STATUS_CHOICES = [
+        ('Open', 'Open'),
+        ('Prepayment', 'Prepayment'),
+        ('Paid', 'Paid'),
+    ]
+    payment_status = models.CharField(max_length=50, choices=PAYMENT_STATUS_CHOICES, default='Open')
+
     debit = models.FloatField(blank=True, null=True)
     credit = models.FloatField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)

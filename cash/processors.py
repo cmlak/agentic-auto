@@ -190,6 +190,7 @@ class GeminiABABankProcessor:
                 
                 trans_type = str(t.get('trans_type', '')).lower()
                 purpose = str(t.get('purpose', '')).lower()
+                raw_remark_lower = str(t.get('raw_remark', '')).lower()
                 
                 is_money_out = float(t.get('credit') or 0.0) > 0
                 is_money_in = float(t.get('debit') or 0.0) > 0
@@ -204,10 +205,15 @@ class GeminiABABankProcessor:
                     'bank fee', 
                     'maintenance fee', 
                     'checkbook', 
-                    'bank commission'
+                    'bank commission',
+                    'fee for account facilities',
+                    'account facilities',
+                    'transfer fee',
+                    'monthly fee',
+                    'annual fee'
                 ]
                 
-                if is_money_out and any(keyword in trans_type or keyword in purpose for keyword in bank_fee_triggers):
+                if is_money_out and any(keyword in trans_type or keyword in purpose or keyword in raw_remark_lower for keyword in bank_fee_triggers):
                     raw_vendor = self.bank_name
                 # =========================================================
 
@@ -225,15 +231,14 @@ class GeminiABABankProcessor:
                         if not exact_match:
                             best_coverage = 0.0
                             for v in Vendor.objects.filter(client_id=client_id):
-                                if not v.normalized_name or not target_norm or v.normalized_name[0] != target_norm[0]: 
+                                if not v.normalized_name or not target_norm: 
                                     continue
-                                matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
-                                match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
-                                if match.a == 0 and match.b == 0:
-                                    coverage = match.size / len(target_norm)
-                                    if coverage >= 0.8 and coverage > best_coverage:
-                                        best_coverage = coverage
-                                        best_vendor = v
+                                ratio = difflib.SequenceMatcher(None, target_norm, v.normalized_name).ratio()
+                                containment_score = 0.85 if (f" {target_norm} " in f" {v.normalized_name} " or f" {v.normalized_name} " in f" {target_norm} ") else 0.0
+                                score = max(ratio, containment_score)
+                                if score >= 0.75 and score > best_coverage:
+                                    best_coverage = score
+                                    best_vendor = v
                         
                         is_new = False
                         temp_vid, temp_id = None, None
@@ -295,15 +300,14 @@ class GeminiABABankProcessor:
                         if not exact_match:
                             best_coverage = 0.0
                             for c in Customer.objects.filter(client_id=client_id):
-                                if not c.normalized_name or not target_norm or c.normalized_name[0] != target_norm[0]: 
+                                if not c.normalized_name or not target_norm: 
                                     continue
-                                matcher = difflib.SequenceMatcher(None, target_norm, c.normalized_name)
-                                match = matcher.find_longest_match(0, len(target_norm), 0, len(c.normalized_name))
-                                if match.a == 0 and match.b == 0:
-                                    coverage = match.size / len(target_norm)
-                                    if coverage >= 0.8 and coverage > best_coverage:
-                                        best_coverage = coverage
-                                        best_customer = c
+                                ratio = difflib.SequenceMatcher(None, target_norm, c.normalized_name).ratio()
+                                containment_score = 0.85 if (f" {target_norm} " in f" {c.normalized_name} " or f" {c.normalized_name} " in f" {target_norm} ") else 0.0
+                                score = max(ratio, containment_score)
+                                if score >= 0.75 and score > best_coverage:
+                                    best_coverage = score
+                                    best_customer = c
                         
                         is_new = False
                         temp_cid, temp_id = None, None
@@ -506,10 +510,11 @@ class GeminiReconciliationEngine:
             c) A Share Capital account for capital injections.
             d) Any other revenue or liability account based on keyword mappings.
         
-        MECHANICAL RULE 3: DATA CROSS-REFERENCING
-        - You MUST use the 'description', 'remark', 'raw_remark', 'note', 'page', and 'invoice_no' fields from the <TRANSACTIONS> data to search for matches within <OPEN_PURCHASES>, <OPEN_SALES>, and <HISTORICAL_LEDGER>.
-        - CRITICAL: If 'page' or 'invoice_no' is present in the transaction, prioritize matching it against the corresponding fields in <OPEN_PURCHASES> or <OPEN_SALES>. If they are missing, you MUST still attempt to match based on amount, date, and vendor name.
-        - If a payment covers multiple invoices, you MUST include all matched IDs in the 'matched_purchase_ids' or 'matched_sale_ids' list.
+        MECHANICAL RULE 3: DATA CROSS-REFERENCING (STRICT PRIORITY)
+        - HIGHEST PRIORITY (PAGE + AMOUNT MATCH): If the transaction's 'page' AND amount ('credit' for purchases, 'debit' for sales) match the 'page' and 'total_usd' of an invoice in <OPEN_PURCHASES> or <OPEN_SALES>, this is a GUARANTEED MATCH. You MUST link them in 'matched_purchase_ids' or 'matched_sale_ids'. Do NOT let a mismatched description or vendor name override this rule.
+        - SECONDARY PRIORITY: If 'page' is missing or unmatched, search for exact matches using 'invoice_no'.
+        - TERTIARY PRIORITY: If no direct ID match exists, use 'description', 'remark', 'raw_remark', 'note', amount, date, and vendor name to infer the correct match against <OPEN_PURCHASES>, <OPEN_SALES>, and <HISTORICAL_LEDGER>.
+        - MULTIPLE INVOICES: If a payment exactly covers the sum of multiple invoices, you MUST include ALL matched IDs in the 'matched_purchase_ids' or 'matched_sale_ids' list.
         - If you absolutely cannot find a relevant 6-digit code in the <CHART_OF_ACCOUNTS>, output 'UNKNOWN' for the account ID.
         </TIER_1_CORE_RECONCILIATION_RULES>
 

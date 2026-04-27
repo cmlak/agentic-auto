@@ -381,6 +381,7 @@ def bank_review_view(request):
                             instance = form.save(commit=False)
                             instance.client_id = client_id 
                             instance.batch = metadata.get('batch_name')
+                            instance.user = request.user
                             
                             # 1. Resolve Vendor
                             vc = form.cleaned_data.get('vendor_choice')
@@ -963,6 +964,7 @@ def cash_review_view(request):
                         if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                             instance = form.save(commit=False)
                             instance.client_id = client_id
+                            instance.user = request.user
                             
                             # --- NEW ANTI-DOUBLE ENTRY CHECK ---
                             if instance.debit_account_id == 'DUPLICATE' or instance.credit_account_id == 'DUPLICATE':
@@ -1250,7 +1252,7 @@ def BankListView(request):
         vendor_queryset = Vendor.objects.none()
         messages.info(request, "Please select a client to view bank transactions.")
 
-    banks = banks.order_by('-date', '-id')
+    banks = banks.order_by('-id')
     bank_filter = BankFilter(request.GET, queryset=banks)
     bank_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(bank_filter.qs, 20)
@@ -1289,8 +1291,15 @@ def manual_bank_entry_view(request):
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
 
+    try:
+        from sale.models import Customer
+    except ImportError:
+        Customer = None
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    customer_choices = [('', '--- Select Existing Customer ---')] + db_customers
+
     if request.method == 'POST':
-        form = ManualBankEntryForm(request.POST, account_choices=account_choices, vendor_choices=vendor_choices)
+        form = ManualBankEntryForm(request.POST, account_choices=account_choices, vendor_choices=vendor_choices, customer_choices=customer_choices)
         if form.is_valid():
             with transaction.atomic():
                 bank = form.save(commit=False)

@@ -154,7 +154,12 @@ def invoice_ai_upload_view(request):
                 # Fallback to today's date if the user didn't provide a valid YYYYMMDD string
                 date_prefix = datetime.now().strftime("%Y%m%d")
 
-            print(f"🔢 Target Sequence Starting at: {current_seq} | Prefix: INV-{date_prefix}-")
+            try:
+                base_num = int(date_prefix) + current_seq - 1
+                display_next = f"INV-{base_num}"
+            except ValueError:
+                display_next = f"INV-{date_prefix}-{current_seq}"
+            print(f"🔢 Target Sequence Starting at: {current_seq} | Next Expected: {display_next}")
 
             # ==========================================================
             # --- DYNAMIC MULTI-TENANT RULE INJECTION ---
@@ -347,6 +352,7 @@ def review_invoices(request):
                         if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                             purchase_instance = form.save(commit=False) 
                             purchase_instance.client_id = client_id # Map to client
+                            purchase_instance.user = request.user
                             purchase_instance.batch = metadata.get('batch_name')
                             
                             # --- DATA CLEANING ---
@@ -886,6 +892,7 @@ def gl_review_view(request):
                             # 1. PROCESS AND SAVE TO 'Old' MODEL
                             old_record = Old.objects.create(
                                 client=selected_client,
+                                user=request.user,
                                 date=item['date'] or date.today(),
                                 account_id=item['account_id'],
                                 description=item['description'],
@@ -1386,7 +1393,9 @@ def manual_old_entry_view(request):
         form = OldEntryForm(request.POST, account_choices=account_choices)
         if form.is_valid():
             with transaction.atomic():
-                old_record = form.save()
+                old_record = form.save(commit=False)
+                old_record.user = request.user
+                old_record.save()
 
                 # Post to General Ledger, linking via reference_number
                 je = JournalEntry.objects.create(
@@ -2216,6 +2225,8 @@ def monthly_closing_view(request):
         accrual_formset = AccrualFormSet(request.POST, prefix='accrual', form_kwargs=form_kwargs_dict)
         fx_formset = FXFormSet(request.POST, prefix='fx', form_kwargs=form_kwargs_dict)
 
+        print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
+
         if form.is_valid() and accrual_formset.is_valid() and fx_formset.is_valid():
             client = form.cleaned_data['client']
             date = form.cleaned_data['date']
@@ -2234,8 +2245,6 @@ def monthly_closing_view(request):
             period_label = date.strftime("%b'%y")
             total_ai_cost = 0.0
 
-            print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
-            
             # =========================================================
             # SCENARIO A: Unified Tax & Salary Liabilities
             # =========================================================
@@ -2243,6 +2252,9 @@ def monthly_closing_view(request):
                 pdf_bytes = form.cleaned_data['tax_declaration_pdf'].read()
                 salary_payable_usd = form.cleaned_data.get('salary_payable') or 0.0
                 staff_meals_usd = form.cleaned_data.get('staff_meals') or 0.0
+                
+                print(f"\n[ MODULE 1 & 2 ] Processing Tax Declaration PDF...")
+                print(f"   [DEBUG] Salary Payable input: {salary_payable_usd} | Staff Meals input: {staff_meals_usd}")
                 
                 processor = UnifiedTaxProcessor(api_key=api_key)
                 data = processor.extract_tax_data(pdf_bytes)
@@ -2297,16 +2309,21 @@ def monthly_closing_view(request):
                             {"vendor": vendor_tax, "account_id": "210031", "instruction": fbt_instr, "desc": desc, "debit": 0.0, "credit": fbt}
                         ])
 
+                else:
+                    print("   ❌ [DEBUG] Tax PDF Extraction returned an error.")
+            else:
+                print("\n[ MODULE 1 & 2 ] Skipped. No Tax Declaration PDF provided.")
+
             # =========================================================
             # SCENARIO B: Accrued Expenses
             # =========================================================
             print("\n[ MODULE 3 ] Processing Manual Accruals...")
-            accrual_count = 0
+            print(f"   [DEBUG] Total Accrual forms submitted: {len(accrual_formset)}")
             for a_form in accrual_formset:
                 if a_form.cleaned_data and not a_form.cleaned_data.get('DELETE', False) and a_form.cleaned_data.get('debit', 0) > 0:
                     debit_amt = round(a_form.cleaned_data['debit'], 2)
                     desc = a_form.cleaned_data['description']
-                    p_status = a_form.cleaned_data.get('payment_status', 'Open')
+                    p_status = a_form.cleaned_data.get('payment_status') or 'Open'
                     
                     vendor_id_str = a_form.cleaned_data.get('vendor')
                     vendor_instance = None
@@ -2320,20 +2337,28 @@ def monthly_closing_view(request):
                         {"vendor": vendor_instance, "account_id": a_form.cleaned_data['account_id'], "instruction": "Manual Accrual", "desc": desc, "debit": debit_amt, "credit": 0.0, "payment_status": p_status},
                         {"vendor": vendor_instance, "account_id": "215090", "instruction": "Manual Accrual", "desc": desc, "debit": 0.0, "credit": debit_amt, "payment_status": p_status}
                     ])
-                    accrual_count += 1
+                    print(f"      ✅ [DEBUG] Accrual added for '{desc}' (${debit_amt})")
+                else:
+                    has_data = bool(a_form.cleaned_data)
+                    is_del = a_form.cleaned_data.get('DELETE', False) if has_data else False
+                    deb = a_form.cleaned_data.get('debit', 0) if has_data else 0
+                    if has_data and not is_del and deb == 0:
+                        print(f"      ⏭️ [DEBUG] Skipped Accrual row: Debit is 0")
+                    elif has_data and is_del:
+                        print(f"      ⏭️ [DEBUG] Skipped Accrual row: Marked for DELETE")
 
             # =========================================================
             # SCENARIO C: FX Gain/Loss
             # =========================================================
             print("\n[ MODULE 4 ] Processing FX Gain/Loss...")
-            fx_count = 0
+            print(f"   [DEBUG] Total FX forms submitted: {len(fx_formset)}")
             for f_form in fx_formset:
                 if f_form.cleaned_data and not f_form.cleaned_data.get('DELETE', False) and f_form.cleaned_data.get('exchange_rate', 0) > 0:
                     open_bal_usd = f_form.cleaned_data['openning_balance']
                     end_bal_khr = f_form.cleaned_data['ending_balance']
                     fx_rate = f_form.cleaned_data['exchange_rate']
                     desc = f_form.cleaned_data['description']
-                    p_status = f_form.cleaned_data.get('payment_status', 'Paid')
+                    p_status = f_form.cleaned_data.get('payment_status') or 'Paid'
                     
                     fx_account_id = f_form.cleaned_data['account_id'] 
                     bank_account_id = f_form.cleaned_data['bank_account_id']
@@ -2349,19 +2374,29 @@ def monthly_closing_view(request):
                             {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0, "payment_status": p_status},
                             {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt, "payment_status": p_status}
                         ])
-                        fx_count += 1
+                        print(f"      ✅ [DEBUG] FX Loss added for '{desc}' (${loss_amt})")
                     elif fx_diff > 0:
                         gain_amt = fx_diff
                         transaction_lines.extend([
                             {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0, "payment_status": p_status},
                             {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt, "payment_status": p_status}
                         ])
-                        fx_count += 1
+                        print(f"      ✅ [DEBUG] FX Gain added for '{desc}' (${gain_amt})")
+                else:
+                    has_data = bool(f_form.cleaned_data)
+                    is_del = f_form.cleaned_data.get('DELETE', False) if has_data else False
+                    rate = f_form.cleaned_data.get('exchange_rate', 0) if has_data else 0
+                    if has_data and not is_del and rate == 0:
+                        print(f"      ⏭️ [DEBUG] Skipped FX row: Exchange Rate is 0")
+                    elif has_data and is_del:
+                        print(f"      ⏭️ [DEBUG] Skipped FX row: Marked for DELETE")
 
             # =========================================================
             # ATOMIC DATABASE SAVE 
             # =========================================================
+            print(f"\n[ SUMMARY ] Total raw transaction lines generated: {len(transaction_lines)}")
             transaction_lines = [line for line in transaction_lines if line['debit'] > 0 or line['credit'] > 0]
+            print(f"[ SUMMARY ] Transaction lines remaining after filtering $0 amounts: {len(transaction_lines)}")
 
             if transaction_lines:
                 try:
@@ -2369,9 +2404,9 @@ def monthly_closing_view(request):
                     with transaction.atomic():
                         for line in transaction_lines:
                             jv = JournalVoucher.objects.create(
-                                client=client, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
+                                client=client, user=request.user, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
                                 description=line['desc'], debit=line['debit'], credit=line['credit'], 
-                                payment_status=line.get('payment_status', 'Open')
+                                payment_status=line.get('payment_status') or 'Open'
                             )
                             je = JournalEntry.objects.create(
                                 client=client, date=date, description=f"Monthly Closing Automation - {period_label}"[:255], 
@@ -2399,6 +2434,13 @@ def monthly_closing_view(request):
                     messages.error(request, f"Database Error: {str(db_error)}")
             else:
                 messages.warning(request, "No valid transactions were extracted or entered.")
+                
+        else:
+            print("\n❌ [DEBUG] FORM VALIDATION FAILED in Monthly Closing:")
+            print(f"   Main Form Errors: {form.errors}")
+            print(f"   Accrual Formset Errors: {accrual_formset.errors}")
+            print(f"   FX Formset Errors: {fx_formset.errors}")
+            messages.error(request, "Validation failed. Please check the form fields.")
 
     else:
         # ---------------------------------------------------------
@@ -2524,7 +2566,9 @@ def manual_journal_voucher_entry_view(request):
         form = JournalVoucherEntryForm(request.POST, account_choices=account_choices)
         if form.is_valid():
             with transaction.atomic():
-                jv_record = form.save()
+                jv_record = form.save(commit=False)
+                jv_record.user = request.user
+                jv_record.save()
                 je = JournalEntry.objects.create(
                     client=jv_record.client, date=jv_record.date or date.today(),
                     description=f"Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",

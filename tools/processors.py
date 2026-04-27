@@ -26,7 +26,7 @@ class RoutingDecision(BaseModel):
 class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
     
-    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed, OR follow custom starting instructions from prompt. If missing and no instruction, output 'NEEDS_SEQ'.")
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If missing, not printed, or unclear, output 'NEEDS_SEQ'. DO NOT hallucinate sequences.")
     
     vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
@@ -41,8 +41,8 @@ class PurchaseEntry(BaseModel):
     
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
     
-    unreg_usd: float = Field(0.0, description="Amount from unregistered vendors without a VAT TIN.")
-    exempt_usd: float = Field(0.0, description="Amount from registered vendors (has TIN) but no VAT is charged.")
+    unreg_usd: float = Field(0.0, description="Amount for ALL non-tax invoices (no VAT is charged). If the invoice has 0 VAT, place the total amount here.")
+    exempt_usd: float = Field(0.0, description="Leave as 0.0. All non-tax amounts should go to unreg_usd instead.")
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
     vat_usd: float = Field(0.0, description="The 10% VAT amount.")
     total_usd: float
@@ -55,6 +55,9 @@ class PurchaseEntry(BaseModel):
             except: pass
         if self.date and str(self.date).lower() in ["unknown", "n/a", "none"]:
             self.date = None
+        if self.vat_usd == 0.0 and self.exempt_usd > 0.0:
+            self.unreg_usd += self.exempt_usd
+            self.exempt_usd = 0.0
         return self
 
 class AccountingBatch(BaseModel):
@@ -109,14 +112,13 @@ class GeminiInvoiceProcessor:
 
         best_vendor, best_coverage = None, 0.0
         for v in Vendor.objects.filter(client_id=client_id):
-            if not v.normalized_name or v.normalized_name[0] != target_norm[0]: continue
-            matcher = difflib.SequenceMatcher(None, target_norm, v.normalized_name)
-            match = matcher.find_longest_match(0, len(target_norm), 0, len(v.normalized_name))
-            if match.a == 0 and match.b == 0:
-                coverage = match.size / len(target_norm)
-                if coverage >= 0.6 and coverage > best_coverage:
-                    best_coverage = coverage
-                    best_vendor = v
+            if not v.normalized_name or not target_norm: continue
+            ratio = difflib.SequenceMatcher(None, target_norm, v.normalized_name).ratio()
+            containment_score = 0.85 if (f" {target_norm} " in f" {v.normalized_name} " or f" {v.normalized_name} " in f" {target_norm} ") else 0.0
+            score = max(ratio, containment_score)
+            if score >= 0.75 and score > best_coverage:
+                best_coverage = score
+                best_vendor = v
 
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
@@ -185,12 +187,12 @@ class GeminiInvoiceProcessor:
             2. DATE: Format strictly as YYYY-MM-DD.
             3. VENDOR NAME: Extract the company/shop name.
             4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
-            5. TAX AMOUNTS: Map to unreg_usd, exempt_usd, vat_base_usd, or vat_usd appropriately. Ensure you respect the difference between Commercial and Tax Invoices as per the MEMO.
+            5. TAX AMOUNTS: Map to unreg_usd, vat_base_usd, or vat_usd appropriately. If NO VAT is charged (non-tax invoice), the entire amount MUST be recorded in unreg_usd (DO NOT use exempt_usd).
             6. BALANCED ASSIGNMENT (ACCOUNT IDS): Assign ALL appropriate account IDs strictly from the <CHART_OF_ACCOUNTS>. 
                - The Main Credit Account is typically Trade Payable.
                - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
                - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
-            7. INVOICE & PAGE NUMBERS: STRICTLY FOLLOW any custom starting 'invoice_no' or 'page' provided in the [BATCH LEVEL], [INDUSTRY LEVEL], or [COMPANY LEVEL] instructions. If not provided, output the invoice number exactly as printed, or 'NEEDS_SEQ' if missing/short.
+            7. INVOICE NUMBERS: Output the invoice number EXACTLY as visually printed. If the invoice number is missing, not printed, or you are unsure, you MUST output 'NEEDS_SEQ'. DO NOT generate, hallucinate, or auto-increment invoice numbers yourself, even if instructed otherwise in the BATCH LEVEL.
             </OUTPUT_INSTRUCTIONS>
             
             DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
@@ -218,8 +220,18 @@ class GeminiInvoiceProcessor:
                 first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
                 
                 # Rule: Check length (< 7 characters requires dynamic generation)
-                if first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7:
-                    base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
+                # Or if the AI hallucinated the prefix (e.g. INV-20260101) without a proper sequence
+                is_hallucinated_seq = first_entry_inv.startswith("INV-202") and len(first_entry_inv) <= 12
+                
+                if (first_entry_inv == "NEEDS_SEQ" or 
+                    first_entry_inv.upper() == "UNKNOWN" or 
+                    len(first_entry_inv) < 7 or 
+                    is_hallucinated_seq):
+                    try:
+                        base_num = int(date_prefix) + current_invoice_seq - 1
+                        base_inv_no = f"INV-{base_num}"
+                    except ValueError:
+                        base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
                     current_invoice_seq += 1 
                 else:
                     base_inv_no = first_entry_inv

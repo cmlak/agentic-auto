@@ -1,4 +1,5 @@
 from django.db import models
+from django.contrib.auth.models import User
 import re
 
 class Client(models.Model):
@@ -38,6 +39,7 @@ class Vendor(models.Model):
 # ====================================================================
 class Purchase(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     batch = models.CharField(max_length=255, blank=True, null=True) 
     
     date = models.DateField(blank=True, null=True)
@@ -88,6 +90,7 @@ class Purchase(models.Model):
 class Old(models.Model):
 
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     date = models.DateField(blank=True, null=True)
     account_id = models.IntegerField(blank=True, null=True)
     description = models.TextField(blank=True, null=True)
@@ -101,6 +104,7 @@ class Old(models.Model):
 
 class JournalVoucher(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     date = models.DateField(blank=True, null=True)
     account_id = models.CharField(max_length=20, blank=True, null=True)
     vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)

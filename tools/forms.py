@@ -667,7 +667,7 @@ class MonthlyClosingForm(forms.Form):
         )
 
 class AccrualForm(forms.Form):
-    account_id = forms.ChoiceField(widget=forms.Select(attrs={'class': 'form-select'}))
+    account_id = forms.ChoiceField(required=False, widget=forms.Select(attrs={'class': 'form-select'}))
     
     # Target class added for JS: 'dynamic-vendor-select'
     vendor = forms.ChoiceField(
@@ -675,13 +675,31 @@ class AccrualForm(forms.Form):
         widget=forms.Select(attrs={'class': 'form-select dynamic-vendor-select', 'autocomplete': 'off'})
     )
     
-    description = forms.CharField(max_length=255, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'}))
-    debit = forms.FloatField(widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Amount (USD)'}))
+    description = forms.CharField(required=False, max_length=255, widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'}))
+    debit = forms.FloatField(required=False, widget=forms.NumberInput(attrs={'class': 'form-control', 'placeholder': 'Amount (USD)'}))
     payment_status = forms.ChoiceField(
+        required=False,
         choices=JournalVoucher.PAYMENT_STATUS_CHOICES, 
         initial='Open', 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
     )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        debit = cleaned_data.get('debit')
+        
+        # Only validate the row if the user actually inputted a monetary amount
+        if debit and not cleaned_data.get('DELETE', False):
+            if not cleaned_data.get('account_id'):
+                self.add_error('account_id', 'Account is required.')
+            if not cleaned_data.get('description'):
+                self.add_error('description', 'Description is required.')
+
+        # Safe-guard None values to prevent Python TypeError crashes in the view
+        if cleaned_data.get('debit') is None:
+            cleaned_data['debit'] = 0.0
+
+        return cleaned_data
 
     def __init__(self, *args, **kwargs):
         client_id = kwargs.pop('client_id', None)
@@ -709,36 +727,67 @@ class AccrualForm(forms.Form):
 
 class FXForm(forms.Form):
     account_id = forms.ChoiceField(
+        required=False,
         label="FX Gain/Loss Account", 
         widget=forms.Select(attrs={'class': 'form-select'})
     )
     
     bank_account_id = forms.ChoiceField(
+        required=False,
         label="KHR Bank Account", 
         widget=forms.Select(attrs={'class': 'form-select'})
     )
     
     description = forms.CharField(
+        required=False,
         max_length=255, 
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Description'})
     )
     openning_balance = forms.FloatField(
+        required=False,
         label="Opening Bal (USD)", 
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
     ending_balance = forms.FloatField(
+        required=False,
         label="Ending Bal (KHR)", 
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
     exchange_rate = forms.FloatField(
+        required=False,
         label="FX Rate", 
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
     payment_status = forms.ChoiceField(
+        required=False,
         choices=JournalVoucher.PAYMENT_STATUS_CHOICES, 
         initial='Paid', 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
     )
+
+    def clean(self):
+        cleaned_data = super().clean()
+        fx_rate = cleaned_data.get('exchange_rate')
+
+        # Only validate the row if the user actually inputted an exchange rate
+        if fx_rate and not cleaned_data.get('DELETE', False):
+            if not cleaned_data.get('account_id'):
+                self.add_error('account_id', 'FX Account is required.')
+            if not cleaned_data.get('bank_account_id'):
+                self.add_error('bank_account_id', 'Bank Account is required.')
+            if not cleaned_data.get('description'):
+                self.add_error('description', 'Description is required.')
+            if cleaned_data.get('openning_balance') is None:
+                self.add_error('openning_balance', 'Opening Balance is required.')
+            if cleaned_data.get('ending_balance') is None:
+                self.add_error('ending_balance', 'Ending Balance is required.')
+
+        # Safe-guard None values to prevent Python TypeError crashes in the view
+        if cleaned_data.get('exchange_rate') is None: cleaned_data['exchange_rate'] = 0.0
+        if cleaned_data.get('openning_balance') is None: cleaned_data['openning_balance'] = 0.0
+        if cleaned_data.get('ending_balance') is None: cleaned_data['ending_balance'] = 0.0
+
+        return cleaned_data
 
     def __init__(self, *args, **kwargs):
         client_id = kwargs.pop('client_id', None)

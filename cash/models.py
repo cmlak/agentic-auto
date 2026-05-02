@@ -31,8 +31,10 @@ class Bank(models.Model):
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_payments')
     matched_sale = models.ForeignKey('sale.Sale', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_receipts')
+    matched_jv = models.ForeignKey('tools.JournalVoucher', on_delete=models.CASCADE, null=True, blank=True, related_name='bank_payments')
     matched_purchase_ids = models.CharField(max_length=255, blank=True, null=True)
     matched_sale_ids = models.CharField(max_length=255, blank=True, null=True)
+    matched_jv_ids = models.CharField(max_length=255, blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
@@ -43,51 +45,88 @@ class Bank(models.Model):
         return f"{self.date} | {self.bank_ref_id} | In: {self.debit} | Out: {self.credit}"
         
     def save(self, *args, **kwargs):
-        old_purchase = None
-        old_sale = None
+        old_p_ids = set()
+        old_s_ids = set()
+        old_jv_ids = set()
         if self.pk:
             old_instance = Bank.objects.filter(pk=self.pk).first()
             if old_instance:
-                if old_instance.matched_purchase_id != self.matched_purchase_id:
-                    old_purchase = old_instance.matched_purchase
-                if hasattr(old_instance, 'matched_sale_id') and getattr(old_instance, 'matched_sale_id', None) != getattr(self, 'matched_sale_id', None):
-                    old_sale = getattr(old_instance, 'matched_sale', None)
+                if old_instance.matched_purchase_ids:
+                    old_p_ids = set([int(x) for x in str(old_instance.matched_purchase_ids).split(',') if x.strip().isdigit()])
+                elif old_instance.matched_purchase_id:
+                    old_p_ids = {old_instance.matched_purchase_id}
+
+                if getattr(old_instance, 'matched_sale_ids', None):
+                    old_s_ids = set([int(x) for x in str(old_instance.matched_sale_ids).split(',') if x.strip().isdigit()])
+                elif getattr(old_instance, 'matched_sale_id', None):
+                    old_s_ids = {old_instance.matched_sale_id}
+
+                if getattr(old_instance, 'matched_jv_ids', None):
+                    old_jv_ids = set([int(x) for x in str(old_instance.matched_jv_ids).split(',') if x.strip().isdigit()])
+                elif getattr(old_instance, 'matched_jv_id', None):
+                    old_jv_ids = {old_instance.matched_jv_id}
         
         super().save(*args, **kwargs)
         
-        from tools.models import Purchase
+        from tools.models import Purchase, JournalVoucher
         try:
             from sale.models import Sale
         except ImportError:
             Sale = None
 
-        if old_purchase:
-            if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
-                old_purchase.payment_status = 'Open'
-                old_purchase.save(update_fields=['payment_status'])
-        if old_sale and Sale:
-            if not getattr(old_sale, 'bank_receipts', None).exists() and not getattr(old_sale, 'cash_receipts', None).exists():
-                old_sale.payment_status = 'Open'
-                old_sale.save(update_fields=['payment_status'])
-                
+        new_p_ids = set()
         if self.matched_purchase_ids:
-            p_ids = [int(x) for x in str(self.matched_purchase_ids).split(',') if x.strip().isdigit()]
-            if p_ids:
-                Purchase.objects.filter(id__in=p_ids).exclude(payment_status='Paid').update(payment_status='Paid')
-        elif self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
-            self.matched_purchase.payment_status = 'Paid'
-            self.matched_purchase.save(update_fields=['payment_status'])
+            new_p_ids = set([int(x) for x in str(self.matched_purchase_ids).split(',') if x.strip().isdigit()])
+        elif self.matched_purchase_id:
+            new_p_ids = {self.matched_purchase_id}
             
+        new_s_ids = set()
         if getattr(self, 'matched_sale_ids', None) and Sale:
-            s_ids = [int(x) for x in str(self.matched_sale_ids).split(',') if x.strip().isdigit()]
-            if s_ids:
-                Sale.objects.filter(id__in=s_ids).exclude(payment_status='Paid').update(payment_status='Paid')
-        elif getattr(self, 'matched_sale', None) and getattr(self.matched_sale, 'payment_status', None) != 'Paid':
-            self.matched_sale.payment_status = 'Paid'
-            self.matched_sale.save(update_fields=['payment_status'])
+            new_s_ids = set([int(x) for x in str(self.matched_sale_ids).split(',') if x.strip().isdigit()])
+        elif getattr(self, 'matched_sale_id', None):
+            new_s_ids = {self.matched_sale_id}
+
+        new_jv_ids = set()
+        if getattr(self, 'matched_jv_ids', None):
+            new_jv_ids = set([int(x) for x in str(self.matched_jv_ids).split(',') if x.strip().isdigit()])
+        elif getattr(self, 'matched_jv_id', None):
+            new_jv_ids = {self.matched_jv_id}
+
+        removed_p_ids = old_p_ids - new_p_ids
+        if removed_p_ids:
+            purchases = Purchase.objects.filter(id__in=removed_p_ids)
+            for p in purchases:
+                if not p.bank_payments.exists() and not getattr(p, 'cash_payments', Purchase.objects.none()).exists():
+                    p.payment_status = 'Open'
+                    p.save(update_fields=['payment_status'])
+
+        removed_s_ids = old_s_ids - new_s_ids
+        if removed_s_ids and Sale:
+            sales = Sale.objects.filter(id__in=removed_s_ids)
+            for s in sales:
+                if not getattr(s, 'bank_receipts', None).exists() and not getattr(s, 'cash_receipts', None).exists():
+                    s.payment_status = 'Open'
+                    s.save(update_fields=['payment_status'])
+
+        removed_jv_ids = old_jv_ids - new_jv_ids
+        if removed_jv_ids:
+            jvs = JournalVoucher.objects.filter(id__in=removed_jv_ids)
+            for jv in jvs:
+                if not getattr(jv, 'bank_payments', None).exists() and not getattr(jv, 'cash_payments', None).exists():
+                    jv.payment_status = 'Open'
+                    jv.save(update_fields=['payment_status'])
+
+        if new_p_ids:
+            Purchase.objects.filter(id__in=new_p_ids).exclude(payment_status='Paid').update(payment_status='Paid')
+            
+        if new_s_ids and Sale:
+            Sale.objects.filter(id__in=new_s_ids).exclude(payment_status='Paid').update(payment_status='Paid')
+            
+        if new_jv_ids:
+            JournalVoucher.objects.filter(id__in=new_jv_ids).exclude(payment_status='Paid').update(payment_status='Paid')
 
     def delete(self, *args, **kwargs):
-        from tools.models import Purchase
+        from tools.models import Purchase, JournalVoucher
         try:
             from sale.models import Sale
         except ImportError:
@@ -105,6 +144,12 @@ class Bank(models.Model):
         elif getattr(self, 'matched_sale_id', None):
             s_ids = [self.matched_sale_id]
 
+        jv_ids = []
+        if getattr(self, 'matched_jv_ids', None):
+            jv_ids = [int(x) for x in str(self.matched_jv_ids).split(',') if x.strip().isdigit()]
+        elif getattr(self, 'matched_jv_id', None):
+            jv_ids = [self.matched_jv_id]
+
         result = super().delete(*args, **kwargs)
         
         if p_ids:
@@ -119,6 +164,12 @@ class Bank(models.Model):
                 if not getattr(sale, 'bank_receipts', None).exists() and not getattr(sale, 'cash_receipts', None).exists():
                     sale.payment_status = 'Open'
                     sale.save(update_fields=['payment_status'])
+        if jv_ids:
+            jvs = JournalVoucher.objects.filter(id__in=jv_ids)
+            for jv in jvs:
+                if not getattr(jv, 'bank_payments', None).exists() and not getattr(jv, 'cash_payments', None).exists():
+                    jv.payment_status = 'Open'
+                    jv.save(update_fields=['payment_status'])
         return result
 
 
@@ -146,8 +197,10 @@ class Cash(models.Model):
     # --- AI & RECONCILIATION FIELDS ---
     matched_purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_payments')
     matched_sale = models.ForeignKey('sale.Sale', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_receipts')
+    matched_jv = models.ForeignKey('tools.JournalVoucher', on_delete=models.CASCADE, null=True, blank=True, related_name='cash_payments')
     matched_purchase_ids = models.CharField(max_length=255, blank=True, null=True)
     matched_sale_ids = models.CharField(max_length=255, blank=True, null=True)
+    matched_jv_ids = models.CharField(max_length=255, blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
@@ -160,51 +213,88 @@ class Cash(models.Model):
         return f"{self.date} | {desc} | In: {self.debit} | Out: {self.credit}"
 
     def save(self, *args, **kwargs):
-        old_purchase = None
-        old_sale = None
+        old_p_ids = set()
+        old_s_ids = set()
+        old_jv_ids = set()
         if self.pk:
             old_instance = Cash.objects.filter(pk=self.pk).first()
             if old_instance:
-                if old_instance.matched_purchase_id != self.matched_purchase_id:
-                    old_purchase = old_instance.matched_purchase
-                if hasattr(old_instance, 'matched_sale_id') and getattr(old_instance, 'matched_sale_id', None) != getattr(self, 'matched_sale_id', None):
-                    old_sale = getattr(old_instance, 'matched_sale', None)
+                if old_instance.matched_purchase_ids:
+                    old_p_ids = set([int(x) for x in str(old_instance.matched_purchase_ids).split(',') if x.strip().isdigit()])
+                elif old_instance.matched_purchase_id:
+                    old_p_ids = {old_instance.matched_purchase_id}
+
+                if getattr(old_instance, 'matched_sale_ids', None):
+                    old_s_ids = set([int(x) for x in str(old_instance.matched_sale_ids).split(',') if x.strip().isdigit()])
+                elif getattr(old_instance, 'matched_sale_id', None):
+                    old_s_ids = {old_instance.matched_sale_id}
+
+                if getattr(old_instance, 'matched_jv_ids', None):
+                    old_jv_ids = set([int(x) for x in str(old_instance.matched_jv_ids).split(',') if x.strip().isdigit()])
+                elif getattr(old_instance, 'matched_jv_id', None):
+                    old_jv_ids = {old_instance.matched_jv_id}
         
         super().save(*args, **kwargs)
         
-        from tools.models import Purchase
+        from tools.models import Purchase, JournalVoucher
         try:
             from sale.models import Sale
         except ImportError:
             Sale = None
 
-        if old_purchase:
-            if not old_purchase.bank_payments.exists() and not old_purchase.cash_payments.exists():
-                old_purchase.payment_status = 'Open'
-                old_purchase.save(update_fields=['payment_status'])
-        if old_sale and Sale:
-            if not getattr(old_sale, 'bank_receipts', None).exists() and not getattr(old_sale, 'cash_receipts', None).exists():
-                old_sale.payment_status = 'Open'
-                old_sale.save(update_fields=['payment_status'])
-                
+        new_p_ids = set()
         if self.matched_purchase_ids:
-            p_ids = [int(x) for x in str(self.matched_purchase_ids).split(',') if x.strip().isdigit()]
-            if p_ids:
-                Purchase.objects.filter(id__in=p_ids).exclude(payment_status='Paid').update(payment_status='Paid')
-        elif self.matched_purchase and self.matched_purchase.payment_status != 'Paid':
-            self.matched_purchase.payment_status = 'Paid'
-            self.matched_purchase.save(update_fields=['payment_status'])
+            new_p_ids = set([int(x) for x in str(self.matched_purchase_ids).split(',') if x.strip().isdigit()])
+        elif self.matched_purchase_id:
+            new_p_ids = {self.matched_purchase_id}
             
+        new_s_ids = set()
         if getattr(self, 'matched_sale_ids', None) and Sale:
-            s_ids = [int(x) for x in str(self.matched_sale_ids).split(',') if x.strip().isdigit()]
-            if s_ids:
-                Sale.objects.filter(id__in=s_ids).exclude(payment_status='Paid').update(payment_status='Paid')
-        elif getattr(self, 'matched_sale', None) and getattr(self.matched_sale, 'payment_status', None) != 'Paid':
-            self.matched_sale.payment_status = 'Paid'
-            self.matched_sale.save(update_fields=['payment_status'])
+            new_s_ids = set([int(x) for x in str(self.matched_sale_ids).split(',') if x.strip().isdigit()])
+        elif getattr(self, 'matched_sale_id', None):
+            new_s_ids = {self.matched_sale_id}
+
+        new_jv_ids = set()
+        if getattr(self, 'matched_jv_ids', None):
+            new_jv_ids = set([int(x) for x in str(self.matched_jv_ids).split(',') if x.strip().isdigit()])
+        elif getattr(self, 'matched_jv_id', None):
+            new_jv_ids = {self.matched_jv_id}
+
+        removed_p_ids = old_p_ids - new_p_ids
+        if removed_p_ids:
+            purchases = Purchase.objects.filter(id__in=removed_p_ids)
+            for p in purchases:
+                if not p.bank_payments.exists() and not getattr(p, 'cash_payments', Purchase.objects.none()).exists():
+                    p.payment_status = 'Open'
+                    p.save(update_fields=['payment_status'])
+
+        removed_s_ids = old_s_ids - new_s_ids
+        if removed_s_ids and Sale:
+            sales = Sale.objects.filter(id__in=removed_s_ids)
+            for s in sales:
+                if not getattr(s, 'bank_receipts', None).exists() and not getattr(s, 'cash_receipts', None).exists():
+                    s.payment_status = 'Open'
+                    s.save(update_fields=['payment_status'])
+
+        removed_jv_ids = old_jv_ids - new_jv_ids
+        if removed_jv_ids:
+            jvs = JournalVoucher.objects.filter(id__in=removed_jv_ids)
+            for jv in jvs:
+                if not getattr(jv, 'bank_payments', None).exists() and not getattr(jv, 'cash_payments', None).exists():
+                    jv.payment_status = 'Open'
+                    jv.save(update_fields=['payment_status'])
+
+        if new_p_ids:
+            Purchase.objects.filter(id__in=new_p_ids).exclude(payment_status='Paid').update(payment_status='Paid')
+            
+        if new_s_ids and Sale:
+            Sale.objects.filter(id__in=new_s_ids).exclude(payment_status='Paid').update(payment_status='Paid')
+            
+        if new_jv_ids:
+            JournalVoucher.objects.filter(id__in=new_jv_ids).exclude(payment_status='Paid').update(payment_status='Paid')
 
     def delete(self, *args, **kwargs):
-        from tools.models import Purchase
+        from tools.models import Purchase, JournalVoucher
         try:
             from sale.models import Sale
         except ImportError:
@@ -222,6 +312,12 @@ class Cash(models.Model):
         elif getattr(self, 'matched_sale_id', None):
             s_ids = [self.matched_sale_id]
 
+        jv_ids = []
+        if getattr(self, 'matched_jv_ids', None):
+            jv_ids = [int(x) for x in str(self.matched_jv_ids).split(',') if x.strip().isdigit()]
+        elif getattr(self, 'matched_jv_id', None):
+            jv_ids = [self.matched_jv_id]
+
         result = super().delete(*args, **kwargs)
         
         if p_ids:
@@ -236,4 +332,10 @@ class Cash(models.Model):
                 if not getattr(sale, 'bank_receipts', None).exists() and not getattr(sale, 'cash_receipts', None).exists():
                     sale.payment_status = 'Open'
                     sale.save(update_fields=['payment_status'])
+        if jv_ids:
+            jvs = JournalVoucher.objects.filter(id__in=jv_ids)
+            for jv in jvs:
+                if not getattr(jv, 'bank_payments', None).exists() and not getattr(jv, 'cash_payments', None).exists():
+                    jv.payment_status = 'Open'
+                    jv.save(update_fields=['payment_status'])
         return result

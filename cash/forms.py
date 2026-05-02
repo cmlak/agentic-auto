@@ -214,8 +214,31 @@ class ManualBankEntryForm(forms.ModelForm):
     )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
-    debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
-    credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
+    debit_account_id = forms.ChoiceField(
+        label="Debit Account (Dr)", 
+        required=False,
+        help_text="Main account for Money In, or Unallocated Fallback for Money Out.",
+        widget=forms.Select(attrs={'class': 'form-select text-success'})
+    )
+    credit_account_id = forms.ChoiceField(
+        label="Credit Account (Cr)", 
+        required=False,
+        help_text="Main account for Money Out, or Unallocated Fallback for Money In.",
+        widget=forms.Select(attrs={'class': 'form-select text-danger'})
+    )
+    matched_purchase_ids = forms.CharField(
+        label="Matched Purchase IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 10, 11, 12'})
+    )
+    matched_sale_ids = forms.CharField(
+        label="Matched Sale IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 20, 21'})
+    )
+    matched_jv_ids = forms.CharField(
+        label="Matched JV IDs", required=False, 
+        help_text="Offsets will automatically distribute across these JVs.",
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
+    )
     
     def __init__(self, *args, **kwargs):
         account_choices = kwargs.pop('account_choices', [])
@@ -258,6 +281,11 @@ class ManualBankEntryForm(forms.ModelForm):
                 Column('customer_choice', css_class='form-group col-md-6'),
             ),
             Row(
+                Column('matched_purchase_ids', css_class='form-group col-md-4'),
+                Column('matched_sale_ids', css_class='form-group col-md-4'),
+                Column('matched_jv_ids', css_class='form-group col-md-4'),
+            ),
+            Row(
                 Column('debit_account_id', css_class='form-group col-md-6'),
                 Column('credit_account_id', css_class='form-group col-md-6'),
             ),
@@ -272,7 +300,8 @@ class ManualBankEntryForm(forms.ModelForm):
         model = Bank
         fields = [
             'client', 'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
-            'debit_account_id', 'credit_account_id', 'debit', 'credit'
+            'debit_account_id', 'credit_account_id', 'debit', 'credit', 
+            'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
@@ -289,6 +318,10 @@ class ManualBankEntryForm(forms.ModelForm):
         credit = cleaned_data.get('credit') or 0.0
         if debit > 0 and credit > 0:
             raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
+        if not debit and not credit:
+            raise forms.ValidationError("You must enter either a Debit or a Credit amount.")
+        if not cleaned_data.get('debit_account_id') and not cleaned_data.get('credit_account_id'):
+            raise forms.ValidationError("You must specify either a Debit or a Credit account.")
         return cleaned_data
 
 
@@ -477,8 +510,31 @@ class ManualCashEntryForm(forms.ModelForm):
     )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
-    debit_account_id = forms.ChoiceField(label="Debit Account (Dr)", widget=forms.Select(attrs={'class': 'form-select text-success'}))
-    credit_account_id = forms.ChoiceField(label="Credit Account (Cr)", widget=forms.Select(attrs={'class': 'form-select text-danger'}))
+    debit_account_id = forms.ChoiceField(
+        label="Debit Account (Dr)", 
+        required=False,
+        help_text="Main account for Money In, or Unallocated Fallback for Money Out.",
+        widget=forms.Select(attrs={'class': 'form-select text-success'})
+    )
+    credit_account_id = forms.ChoiceField(
+        label="Credit Account (Cr)", 
+        required=False,
+        help_text="Main account for Money Out, or Unallocated Fallback for Money In.",
+        widget=forms.Select(attrs={'class': 'form-select text-danger'})
+    )
+    matched_purchase_ids = forms.CharField(
+        label="Matched Purchase IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 10, 11, 12'})
+    )
+    matched_sale_ids = forms.CharField(
+        label="Matched Sale IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 20, 21'})
+    )
+    matched_jv_ids = forms.CharField(
+        label="Matched JV IDs", required=False, 
+        help_text="Offsets will automatically distribute across these JVs.",
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
+    )
     
     def __init__(self, *args, **kwargs):
         vendor_choices = kwargs.pop('vendor_choices', [])
@@ -511,6 +567,11 @@ class ManualCashEntryForm(forms.ModelForm):
                 Column('customer_choice', css_class='form-group col-md-6'),
             ),
             Row(
+                Column('matched_purchase_ids', css_class='form-group col-md-4'),
+                Column('matched_sale_ids', css_class='form-group col-md-4'),
+                Column('matched_jv_ids', css_class='form-group col-md-4'),
+            ),
+            Row(
                 Column('description', css_class='form-group col-md-12'),
             ),
             Row(
@@ -527,8 +588,9 @@ class ManualCashEntryForm(forms.ModelForm):
     class Meta:
         model = Cash
         fields = [
-            'client', 'date', 'voucher_no', 'invoice_no', 'description', 
-            'debit_account_id', 'credit_account_id', 'debit', 'credit'
+            'client', 'date', 'voucher_no', 'invoice_no', 'description',
+            'debit_account_id', 'credit_account_id', 'debit', 'credit',
+            'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
@@ -545,4 +607,6 @@ class ManualCashEntryForm(forms.ModelForm):
             raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
         if not debit and not credit:
             raise forms.ValidationError("You must enter either a Debit or a Credit amount.")
+        if not cleaned_data.get('debit_account_id') and not cleaned_data.get('credit_account_id'):
+            raise forms.ValidationError("You must specify either a Debit or a Credit account.")
         return cleaned_data

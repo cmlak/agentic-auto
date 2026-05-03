@@ -1,7 +1,6 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.db.models import Q
-from tools.models import Client
 
 # ====================================================================
 # --- 1. CHART OF ACCOUNTS ---
@@ -15,7 +14,7 @@ class Account(models.Model):
         ('Expense', 'Expense'),
     ]
 
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='accounts')
+    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE, related_name='accounts')
     account_id = models.CharField(max_length=20) 
     name = models.CharField(max_length=255)      
     account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPES)
@@ -31,7 +30,7 @@ class Account(models.Model):
 # --- 2. JOURNAL ENTRY (The Header with Explicit FKs) ---
 # ====================================================================
 class JournalEntry(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE)
+    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE)
     date = models.DateField()
     description = models.CharField(max_length=1000)
     reference_number = models.CharField(max_length=100, blank=True, null=True, help_text="Store Invoice No or Voucher No for safe-keeping")
@@ -124,7 +123,7 @@ class JournalLine(models.Model):
 
 class AccountMappingRule(models.Model):
     """Stores the AI trigger keywords and reasoning guidelines for each account."""
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='mapping_rules')
+    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE, related_name='mapping_rules')
     account = models.ForeignKey('Account', on_delete=models.CASCADE)
     
     trigger_keywords = models.CharField(max_length=500, help_text="e.g., 'Vital drinking water, Rice for worker'")
@@ -146,7 +145,7 @@ class ClientPromptMemo(models.Model):
         ('PURCHASE', 'Purchase & Expense Rules'),
         ('VENDOR_CUSTOMER', 'Vendor & Customer Rules'),
     ]
-    client = models.ForeignKey(Client, on_delete=models.CASCADE)
+    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='GENERAL')
     memo_text = models.TextField()
 

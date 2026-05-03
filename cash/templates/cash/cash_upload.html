@@ -33,7 +33,7 @@
             <form id="upload-form" method="post" enctype="multipart/form-data">
                 {% csrf_token %}
                 <h4 class="mb-4 text-primary border-bottom pb-2">Upload Cash Statement</h4>
-                <div class="mb-4">{% crispy form %}</div>
+                <div class="mb-4">{{ form|crispy }}</div>
                 <button class="btn btn-primary w-100 btn-lg shadow-sm" type="submit">Start Extraction</button>
             </form>
         </div>

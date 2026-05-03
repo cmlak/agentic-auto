@@ -26,7 +26,7 @@ class RoutingDecision(BaseModel):
 class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
     
-    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If missing, not printed, or unclear, output 'NEEDS_SEQ'. DO NOT hallucinate sequences.")
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed (do not pad short numbers). If a sequence rule applies, calculate the offset (Start + Physical Page - 1). If missing and no rule applies, output 'NEEDS_SEQ'.")
     
     vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
@@ -46,7 +46,7 @@ class PurchaseEntry(BaseModel):
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
     vat_usd: float = Field(0.0, description="The 10% VAT amount.")
     total_usd: float
-    page: int = Field(..., description="The page number. Follow instructions if a specific starting page is provided, otherwise use the physical page.")
+    page: int = Field(..., description="The page number. Strictly calculate offset if a starting page is provided (Start Page + Physical Page - 1), otherwise use the physical page.")
 
     @model_validator(mode='after')
     def validate_tax_integrity(self):
@@ -192,7 +192,12 @@ class GeminiInvoiceProcessor:
                - The Main Credit Account is typically Trade Payable.
                - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
                - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
-            7. INVOICE NUMBERS: Output the invoice number EXACTLY as visually printed. If the invoice number is missing, not printed, or you are unsure, you MUST output 'NEEDS_SEQ'. DO NOT generate, hallucinate, or auto-increment invoice numbers yourself, even if instructed otherwise in the BATCH LEVEL.
+            7. SEQUENCES & INVOICE NUMBERS: 
+               - INSTRUCTIONS: You MUST strictly follow any [INDUSTRY LEVEL] RULES or [BATCH LEVEL] instructions to assign sequence numbers. 
+                 * MATH OFFSET: If a rule specifies a starting value (e.g., Page 9 or INV-20260101), you MUST calculate the correct value for THIS specific page by adding (Physical Page {pg} - 1) to the starting value. 
+                 * Example: If starting Page is 9 and Physical Page is 3, you MUST output 11. If starting Invoice is INV-20260101 and Physical Page is 3, you MUST output INV-20260103. DO NOT output the baseline starting value on every page!
+               - EXTRACTION (LENGTH & FORMATTING): Per [COMPANY LEVEL] MEMOS, extract the printed invoice number exactly as it appears. Do not attempt to pad it or format short numbers (e.g., "001" or "1234") yourself.
+               - MISSING NUMBERS: If there is absolutely no invoice number printed on the page and no sequence rule applies, you MUST output the exact string "NEEDS_SEQ".
             </OUTPUT_INSTRUCTIONS>
             
             DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
@@ -219,14 +224,10 @@ class GeminiInvoiceProcessor:
                 # ==========================================================
                 first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
                 
-                # Rule: Check length (< 7 characters requires dynamic generation)
-                # Or if the AI hallucinated the prefix (e.g. INV-20260101) without a proper sequence
-                is_hallucinated_seq = first_entry_inv.startswith("INV-202") and len(first_entry_inv) <= 12
                 
                 if (first_entry_inv == "NEEDS_SEQ" or 
                     first_entry_inv.upper() == "UNKNOWN" or 
-                    len(first_entry_inv) < 7 or 
-                    is_hallucinated_seq):
+                    len(first_entry_inv) < 7):
                     try:
                         base_num = int(date_prefix) + current_invoice_seq - 1
                         base_inv_no = f"INV-{base_num}"

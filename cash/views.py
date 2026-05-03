@@ -142,6 +142,14 @@ def bank_ai_upload_view(request):
         request.session.pop('bank_report_path', None)
         
         form = BankBatchUploadForm(request.POST, request.FILES)
+        
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Exception as e:
+                print(f"⚠️ Profile Error for user {user} (POST): {e}")
+                form.fields['client'].queryset = Client.objects.none()
+
         if form.is_valid():
             selected_client = form.cleaned_data['client']
             
@@ -376,12 +384,16 @@ def bank_ai_upload_view(request):
             finally:
                 if os.path.exists(tmp_pdf_path):
                     os.remove(tmp_pdf_path)
+        else:
+            print(f"❌ Bank Form Validation Failed: {form.errors}")
+            messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = BankBatchUploadForm()
         if not (user.is_staff or user.is_superuser):
             try:
                 form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
+            except Exception as e:
+                print(f"⚠️ Profile Error for user {user} (GET): {e}")
                 form.fields['client'].queryset = Client.objects.none()
                 
     return render(request, 'bank_upload.html', {'form': form})
@@ -700,11 +712,25 @@ CASH_PROCESSOR_MAP = {
 @login_required
 def cash_upload_view(request):
     """Upload Cash Excel, Route via Strategy Map, Process, Reconcile, and Store."""
+    print(f"\n[{datetime.now().strftime('%H:%M:%S')}] 🔥 cash_upload_view triggered | Method: {request.method}", flush=True)
     user = request.user
 
     if request.method == 'POST':
+        print(f"📥 POST keys: {list(request.POST.keys())}", flush=True)
+        print(f"📥 FILES keys: {list(request.FILES.keys())}", flush=True)
+        
         form = CashBatchUploadForm(request.POST, request.FILES)
+        
+        if not (user.is_staff or user.is_superuser):
+            try:
+                form.fields['client'].queryset = user.profile.clients.all()
+            except Exception as e:
+                print(f"⚠️ Profile Error for user {user} (POST): {e}")
+                print(f"⚠️ Profile Error for user {user} (POST): {e}", flush=True)
+                form.fields['client'].queryset = Client.objects.none()
+
         if form.is_valid():
+            print(f"✅ Form validation PASSED. Selected client ID: {form.cleaned_data['client'].id}", flush=True)
             selected_client = form.cleaned_data['client']
             
             has_access = user.is_staff or user.is_superuser
@@ -714,7 +740,11 @@ def cash_upload_view(request):
                         has_access = True
                 except Profile.DoesNotExist:
                     pass
+                except Exception as e:
+                    print(f"⚠️ Profile check error: {e}", flush=True)
+                    
             if not has_access:
+                print(f"⛔ ACCESS DENIED: User {user} does not have access to client {selected_client.name}", flush=True)
                 messages.error(request, "You do not have permission to upload data for this client.")
                 return redirect('cash:cash_upload')
                 
@@ -725,6 +755,7 @@ def cash_upload_view(request):
             ProcessorStrategyClass = CASH_PROCESSOR_MAP.get(selected_config)
             
             if not ProcessorStrategyClass:
+                print(f"❌ INVALID CONFIG: '{selected_config}' not found in CASH_PROCESSOR_MAP", flush=True)
                 messages.error(request, "Invalid processor configuration.")
                 return redirect('cash:cash_upload')
             
@@ -732,6 +763,7 @@ def cash_upload_view(request):
 
             try:
                 print(f"📥 Received Cash Book file: {uploaded_file.name} (Size: {uploaded_file.size} bytes)")
+                print(f"📥 Received Cash Book file: {uploaded_file.name} (Size: {uploaded_file.size} bytes)", flush=True)
                 
                 _, file_ext = os.path.splitext(uploaded_file.name)
                 if file_ext.lower() == '.xls': ext = '.xls'
@@ -739,6 +771,7 @@ def cash_upload_view(request):
                 else: ext = '.xlsx'
 
                 print(f"💾 Saving temporary file with extension: {ext}")
+                print(f"💾 Saving temporary file with extension: {ext}", flush=True)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp_file:
                     for chunk in uploaded_file.chunks():
                         tmp_file.write(chunk)
@@ -904,6 +937,10 @@ def cash_upload_view(request):
             finally:
                 if tmp_file_path and os.path.exists(tmp_file_path):
                     os.remove(tmp_file_path)
+        else:
+            print(f"❌ Cash Form Validation Failed: {form.errors}")
+            print(f"❌ Cash Form Validation Failed: {form.errors}", flush=True)
+            messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = CashBatchUploadForm()
         
@@ -911,7 +948,9 @@ def cash_upload_view(request):
         if not (user.is_staff or user.is_superuser):
             try:
                 form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
+            except Exception as e:
+                print(f"⚠️ Profile Error for user {user} (GET): {e}")
+                print(f"⚠️ Profile Error for user {user} (GET): {e}", flush=True)
                 form.fields['client'].queryset = Client.objects.none()
     return render(request, 'cash_upload.html', {'form': form})
 
@@ -1444,6 +1483,9 @@ def manual_bank_entry_view(request):
                 
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
+        else:
+            print(f"❌ Manual Bank Entry Form Validation Failed: {form.errors}")
+            messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = ManualBankEntryForm(account_choices=account_choices, vendor_choices=vendor_choices, customer_choices=customer_choices)
     return render(request, 'cash/manual_bank_entry.html', {'form': form})
@@ -1767,6 +1809,9 @@ def manual_cash_entry_view(request):
                 
             messages.success(request, f"Manual Cash transaction posted securely!")
             return redirect('cash:cash_list')
+        else:
+            print(f"❌ Manual Cash Entry Form Validation Failed: {form.errors}")
+            messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = ManualCashEntryForm(vendor_choices=vendor_choices, customer_choices=customer_choices, account_choices=account_choices)
     return render(request, 'cash/manual_cash_entry.html', {'form': form})

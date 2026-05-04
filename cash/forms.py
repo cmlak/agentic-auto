@@ -216,12 +216,12 @@ class ManualBankEntryForm(forms.ModelForm):
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
         label="Debit Account (Dr)", 
-        required=True,
+        required=False,
         widget=forms.Select(attrs={'class': 'form-select text-success fw-bold'})
     )
     credit_account_id = forms.ChoiceField(
         label="Credit Account (Cr)", 
-        required=True,
+        required=False,
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
     matched_purchase_ids = forms.CharField(
@@ -234,7 +234,7 @@ class ManualBankEntryForm(forms.ModelForm):
     )
     matched_jv_ids = forms.CharField(
         label="Matched JV IDs", required=False, 
-        help_text="Offsets will automatically distribute across these JVs.",
+        help_text="Offsets will automatically distribute across these JVs. Any variance (e.g., FX differences on Tax Payables) will be routed to the Realized FX Gain/Loss account.",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
     )
     
@@ -321,12 +321,24 @@ class ManualBankEntryForm(forms.ModelForm):
         if not debit and not credit:
             raise forms.ValidationError("You must enter the transaction amount in either Debit or Credit (or both).")
             
-        if not cleaned_data.get('debit_account_id') or not cleaned_data.get('credit_account_id'):
-            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
+        debit_acct = str(cleaned_data.get('debit_account_id') or '').strip()
+        credit_acct = str(cleaned_data.get('credit_account_id') or '').strip()
+        
+        matched_p = cleaned_data.get('matched_purchase_ids')
+        matched_s = cleaned_data.get('matched_sale_ids')
+        matched_jv = cleaned_data.get('matched_jv_ids')
+        has_matches = bool(matched_p or matched_s or matched_jv)
+
+        if not has_matches:
+            if not debit_acct or not credit_acct:
+                raise forms.ValidationError("You must specify BOTH a Debit and a Credit account when not matching with open invoices/JVs.")
+        else:
+            if debit > 0 and not debit_acct:
+                raise forms.ValidationError("You must specify the Debit Account (Money In) for the Bank/Cash account.")
+            if credit > 0 and not credit_acct:
+                raise forms.ValidationError("You must specify the Credit Account (Money Out) for the Bank/Cash account.")
             
         amt = debit if debit > 0 else credit
-        debit_acct = str(cleaned_data.get('debit_account_id', ''))
-        credit_acct = str(cleaned_data.get('credit_account_id', ''))
         
         if credit_acct.startswith('10'):
             cleaned_data['debit'] = 0.0
@@ -529,12 +541,12 @@ class ManualCashEntryForm(forms.ModelForm):
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
         label="Debit Account (Dr)", 
-        required=True,
+        required=False,
         widget=forms.Select(attrs={'class': 'form-select text-success fw-bold'})
     )
     credit_account_id = forms.ChoiceField(
         label="Credit Account (Cr)", 
-        required=True,
+        required=False,
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
     matched_purchase_ids = forms.CharField(
@@ -547,7 +559,7 @@ class ManualCashEntryForm(forms.ModelForm):
     )
     matched_jv_ids = forms.CharField(
         label="Matched JV IDs", required=False, 
-        help_text="Offsets will automatically distribute across these JVs.",
+        help_text="Offsets will automatically distribute across these JVs. Any variance (e.g., FX differences on Tax Payables) will be routed to the Gain/loss on exchange rate difference account (725300).",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
     )
     
@@ -625,12 +637,24 @@ class ManualCashEntryForm(forms.ModelForm):
         if not debit and not credit:
             raise forms.ValidationError("You must enter the transaction amount in either Debit or Credit (or both).")
             
-        if not cleaned_data.get('debit_account_id') or not cleaned_data.get('credit_account_id'):
-            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
+        debit_acct = str(cleaned_data.get('debit_account_id') or '').strip()
+        credit_acct = str(cleaned_data.get('credit_account_id') or '').strip()
+        
+        matched_p = cleaned_data.get('matched_purchase_ids')
+        matched_s = cleaned_data.get('matched_sale_ids')
+        matched_jv = cleaned_data.get('matched_jv_ids')
+        has_matches = bool(matched_p or matched_s or matched_jv)
+
+        if not has_matches:
+            if not debit_acct or not credit_acct:
+                raise forms.ValidationError("You must specify BOTH a Debit and a Credit account when not matching with open invoices/JVs.")
+        else:
+            if debit > 0 and not debit_acct:
+                raise forms.ValidationError("You must specify the Debit Account (Money In) for the Bank/Cash account.")
+            if credit > 0 and not credit_acct:
+                raise forms.ValidationError("You must specify the Credit Account (Money Out) for the Bank/Cash account.")
             
         amt = debit if debit > 0 else credit
-        debit_acct = str(cleaned_data.get('debit_account_id', ''))
-        credit_acct = str(cleaned_data.get('credit_account_id', ''))
         
         if credit_acct.startswith('10'):
             cleaned_data['debit'] = 0.0

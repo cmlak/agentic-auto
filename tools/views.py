@@ -2570,13 +2570,21 @@ def manual_journal_voucher_entry_view(request):
             with transaction.atomic():
                 jv_record = form.save(commit=False)
                 jv_record.user = request.user
+                
+                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+                
+                if acct.account_type and acct.account_type.lower() in ['asset', 'liability']:
+                    jv_record.payment_status = 'Open'
+                else:
+                    jv_record.payment_status = 'Paid'
+                    
                 jv_record.save()
+                
                 je = JournalEntry.objects.create(
                     client=jv_record.client, date=jv_record.date or date.today(),
                     description=f"Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
                     journal_voucher=jv_record
                 )
-                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
                 safe_desc = jv_record.description[:255] if jv_record.description else "Journal Voucher"
                 debit_val = jv_record.debit or 0.0
                 credit_val = jv_record.credit or 0.0
@@ -2653,7 +2661,17 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
 
     def form_valid(self, form):
         with transaction.atomic():
-            jv_record = form.save()
+            jv_record = form.save(commit=False)
+            
+            acct, _ = Account.objects.get_or_create(client_id=jv_record.client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+            
+            if acct.account_type and acct.account_type.lower() in ['asset', 'liability']:
+                jv_record.payment_status = 'Open'
+            else:
+                jv_record.payment_status = 'Paid'
+                
+            jv_record.save()
+            
             JournalEntry.objects.filter(Q(journal_voucher=jv_record) | Q(reference_number=f"JV-{jv_record.id}")).delete()
             
             je = JournalEntry.objects.create(
@@ -2661,7 +2679,6 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
                 description=f"Updated Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
                 journal_voucher=jv_record
             )
-            acct, _ = Account.objects.get_or_create(client_id=jv_record.client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
             safe_desc = jv_record.description[:255] if jv_record.description else "Journal Voucher"
             debit_val = jv_record.debit or 0.0
             credit_val = jv_record.credit or 0.0

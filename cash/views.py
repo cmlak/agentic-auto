@@ -38,7 +38,7 @@ BANK_PROCESSOR_MAP = {
     'client_b_custom': ClientBCustomBankProcessor,
 }
 
-def _distribute_settlement_lines(je, is_money_in, amount, dr_acct, cr_acct, matched_jv_ids, matched_purchase_ids, matched_sale_ids, client_id, je_desc):
+def _distribute_settlement_lines(je, is_money_in, amount, dr_acct, cr_acct, matched_jv_ids, matched_purchase_ids, matched_sale_ids, client_id, je_desc, fx_account_id='735000'):
     """Helper to dynamically generate offset JournalLines across multiple distinct accounts."""
     # 1. Post the main Bank/Cash tracking line
     base_acct = dr_acct if is_money_in else cr_acct
@@ -118,17 +118,35 @@ def _distribute_settlement_lines(je, is_money_in, amount, dr_acct, cr_acct, matc
     if processed_any:
         # 3. Dump any overpayment, underpayment, or FX differences into the FX Gain/Loss Account
         if round(imbalance, 2) != 0:
-            fx_acct, _ = Account.objects.get_or_create(
-                client_id=client_id, account_id='735000', 
-                defaults={'name': 'Realized FX Gain/Loss', 'account_type': 'Expense'}
-            )
+            if fx_account_id == '100000':
+                fx_acct, _ = Account.objects.get_or_create(
+                    client_id=client_id, account_id=fx_account_id, 
+                    defaults={'name': 'Cash on Hand (USD) 库存现金美元', 'account_type': 'Asset'}
+                )
+            elif fx_account_id == '725300':
+                fx_acct, _ = Account.objects.get_or_create(
+                    client_id=client_id, account_id=fx_account_id, 
+                    defaults={'name': 'Gain/loss on exchange rate difference 汇率差异损益', 'account_type': 'Expense'}
+                )
+            else:
+                fx_acct, _ = Account.objects.get_or_create(
+                    client_id=client_id, account_id=fx_account_id, 
+                    defaults={'name': 'Realized FX Gain/Loss', 'account_type': 'Expense'}
+                )
+                
             if round(imbalance, 2) > 0:
-                JournalLine.objects.create(journal_entry=je, account=fx_acct, credit=round(imbalance, 2), description=f"FX Gain/Loss Offset - {je_desc[:200]}")
+                JournalLine.objects.create(journal_entry=je, account=fx_acct, credit=round(imbalance, 2), description=f"Settlement Difference / FX Offset - {je_desc[:200]}")
             elif round(imbalance, 2) < 0:
-                JournalLine.objects.create(journal_entry=je, account=fx_acct, debit=abs(round(imbalance, 2)), description=f"FX Gain/Loss Offset - {je_desc[:200]}")
+                JournalLine.objects.create(journal_entry=je, account=fx_acct, debit=abs(round(imbalance, 2)), description=f"Settlement Difference / FX Offset - {je_desc[:200]}")
         return
 
     # 4. Standard entry (no JVs/Purchases/Sales matched): Dump remaining balance into the Fallback Account
+    if fallback_acct is None:
+        fallback_acct, _ = Account.objects.get_or_create(
+            client_id=client_id, account_id='999999', 
+            defaults={'name': 'Uncategorized Suspense', 'account_type': 'Liability' if is_money_in else 'Asset'}
+        )
+        
     if round(imbalance, 2) > 0:
         JournalLine.objects.create(journal_entry=je, account=fallback_acct, credit=round(imbalance, 2), description=je_desc[:255])
     elif round(imbalance, 2) < 0:
@@ -1221,7 +1239,11 @@ def cash_review_view(request):
                                 cash=instance
                             )
 
-                            _distribute_settlement_lines(je, instance.debit > 0, amount, dr_acct, cr_acct, instance.matched_jv_ids, instance.matched_purchase_ids, instance.matched_sale_ids, client_id, safe_je_desc)
+                            _distribute_settlement_lines(
+                                je, instance.debit > 0, amount, dr_acct, cr_acct, 
+                                instance.matched_jv_ids, instance.matched_purchase_ids, instance.matched_sale_ids, 
+                                client_id, safe_je_desc, fx_account_id='725300'
+                            )
                             print(f"   💾 Saved Cash Transaction [Voucher: {instance.voucher_no}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
             except Exception as e:
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
@@ -1462,12 +1484,18 @@ def manual_bank_entry_view(request):
 
                 bank.save()
 
-                dr_acct_id = str(bank.debit_account_id)
-                cr_acct_id = str(bank.credit_account_id)
-                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                dr_acct_id = str(bank.debit_account_id) if bank.debit_account_id else None
+                cr_acct_id = str(bank.credit_account_id) if bank.credit_account_id else None
+                
+                dr_acct = None
+                cr_acct = None
+                if dr_acct_id and dr_acct_id.lower() != 'none':
+                    dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                if cr_acct_id and cr_acct_id.lower() != 'none':
+                    cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = bank.debit if bank.debit > 0 else bank.credit
+                is_money_in = bank.debit > 0
                 
                 je_desc = f"Manual Bank Txn: {bank.counterparty or bank.purpose}"
                 if matched_p_ids:
@@ -1479,8 +1507,12 @@ def manual_bank_entry_view(request):
                 je_desc = je_desc[:500]
 
                 je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
-                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
-                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+                _distribute_settlement_lines(
+                    je, is_money_in, amount, dr_acct, cr_acct, 
+                    bank.matched_jv_ids, bank.matched_purchase_ids, bank.matched_sale_ids, 
+                    client_id, je_desc
+                )
                 
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
@@ -1600,12 +1632,18 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             JournalEntry.objects.filter(bank=bank).delete()
             client_id = self.request.session.get('active_client_id')
             
-            dr_acct_id = str(bank.debit_account_id)
-            cr_acct_id = str(bank.credit_account_id)
-            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+            dr_acct_id = str(bank.debit_account_id) if bank.debit_account_id else None
+            cr_acct_id = str(bank.credit_account_id) if bank.credit_account_id else None
+            
+            dr_acct = None
+            cr_acct = None
+            if dr_acct_id and dr_acct_id.lower() != 'none':
+                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+            if cr_acct_id and cr_acct_id.lower() != 'none':
+                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = bank.debit if bank.debit > 0 else bank.credit
+            is_money_in = bank.debit > 0
             
             je_desc = f"Updated Bank Txn: {bank.counterparty or bank.purpose}"
             if matched_p_ids:
@@ -1617,8 +1655,12 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             je_desc = je_desc[:500]
 
             je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
-            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
-            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+            
+            _distribute_settlement_lines(
+                je, is_money_in, amount, dr_acct, cr_acct, 
+                bank.matched_jv_ids, bank.matched_purchase_ids, bank.matched_sale_ids, 
+                client_id, je_desc
+            )
             
         messages.success(self.request, "Bank transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:bank_detail', kwargs={'pk': self.object.pk}))
@@ -1760,6 +1802,40 @@ def manual_cash_entry_view(request):
     if request.method == 'POST':
         form = ManualCashEntryForm(request.POST, vendor_choices=vendor_choices, customer_choices=customer_choices, account_choices=account_choices)
         if form.is_valid():
+            
+            matched_p_ids = form.cleaned_data.get('matched_purchase_ids')
+            if matched_p_ids:
+                p_ids = [int(x.strip()) for x in str(matched_p_ids).split(',') if x.strip().isdigit()]
+                if p_ids:
+                    from tools.models import Purchase
+                    invalid_p = Purchase.objects.filter(id__in=p_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    if invalid_p.exists():
+                        form.add_error('matched_purchase_ids', f"Purchase IDs {', '.join(str(p.id) for p in invalid_p)} are already paid or not Open.")
+
+            matched_s_ids = form.cleaned_data.get('matched_sale_ids')
+            if matched_s_ids:
+                s_ids = [int(x.strip()) for x in str(matched_s_ids).split(',') if x.strip().isdigit()]
+                if s_ids:
+                    try:
+                        from sale.models import Sale
+                        invalid_s = Sale.objects.filter(id__in=s_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                        if invalid_s.exists():
+                            form.add_error('matched_sale_ids', f"Sale IDs {', '.join(str(s.id) for s in invalid_s)} are already paid or not Open.")
+                    except ImportError:
+                        pass
+                        
+            matched_jv_ids = form.cleaned_data.get('matched_jv_ids')
+            if matched_jv_ids:
+                jv_ids = [int(x.strip()) for x in str(matched_jv_ids).split(',') if x.strip().isdigit()]
+                if jv_ids:
+                    from tools.models import JournalVoucher
+                    invalid_jv = JournalVoucher.objects.filter(id__in=jv_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    if invalid_jv.exists():
+                        form.add_error('matched_jv_ids', f"JV IDs {', '.join(str(jv.id) for jv in invalid_jv)} are already paid or not Open.")
+
+            if form.errors:
+                return render(request, 'cash/manual_cash_entry.html', {'form': form})
+
             with transaction.atomic():
                 cash = form.save(commit=False)
                 cash.client_id = client_id
@@ -1790,12 +1866,18 @@ def manual_cash_entry_view(request):
                 
                 cash.save()
 
-                dr_acct_id = str(cash.debit_account_id)
-                cr_acct_id = str(cash.credit_account_id)
-                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                dr_acct_id = str(cash.debit_account_id) if cash.debit_account_id else None
+                cr_acct_id = str(cash.credit_account_id) if cash.credit_account_id else None
+                
+                dr_acct = None
+                cr_acct = None
+                if dr_acct_id and dr_acct_id.lower() != 'none':
+                    dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                if cr_acct_id and cr_acct_id.lower() != 'none':
+                    cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = cash.debit if cash.debit > 0 else cash.credit
+                is_money_in = cash.debit > 0
                 
                 je_desc = f"Manual Cash Txn: {cash.description}"
                 if matched_p_ids:
@@ -1807,8 +1889,13 @@ def manual_cash_entry_view(request):
                 je_desc = je_desc[:500]
 
                 je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
-                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
-                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+                _distribute_settlement_lines(
+                    je, is_money_in, amount, dr_acct, cr_acct, 
+                    cash.matched_jv_ids, cash.matched_purchase_ids, cash.matched_sale_ids, 
+                    client_id, je_desc,
+                    fx_account_id='725300'
+                )
                 
             messages.success(request, f"Manual Cash transaction posted securely!")
             return redirect('cash:cash_list')
@@ -1891,6 +1978,56 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
         return initial
 
     def form_valid(self, form):
+        client_id = self.request.session.get('active_client_id')
+        
+        old_p_ids = []
+        if self.object.pk and self.object.matched_purchase_ids:
+            old_p_ids = [int(x.strip()) for x in str(self.object.matched_purchase_ids).split(',') if x.strip().isdigit()]
+            
+        old_s_ids = []
+        if self.object.pk and self.object.matched_sale_ids:
+            old_s_ids = [int(x.strip()) for x in str(self.object.matched_sale_ids).split(',') if x.strip().isdigit()]
+            
+        old_jv_ids = []
+        if self.object.pk and self.object.matched_jv_ids:
+            old_jv_ids = [int(x.strip()) for x in str(self.object.matched_jv_ids).split(',') if x.strip().isdigit()]
+
+        matched_p_ids = form.cleaned_data.get('matched_purchase_ids')
+        if matched_p_ids:
+            p_ids = [int(x.strip()) for x in str(matched_p_ids).split(',') if x.strip().isdigit()]
+            check_p_ids = [pid for pid in p_ids if pid not in old_p_ids]
+            if check_p_ids:
+                from tools.models import Purchase
+                invalid_p = Purchase.objects.filter(id__in=check_p_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                if invalid_p.exists():
+                    form.add_error('matched_purchase_ids', f"Purchase IDs {', '.join(str(p.id) for p in invalid_p)} are already paid or not Open.")
+
+        matched_s_ids = form.cleaned_data.get('matched_sale_ids')
+        if matched_s_ids:
+            s_ids = [int(x.strip()) for x in str(matched_s_ids).split(',') if x.strip().isdigit()]
+            check_s_ids = [sid for sid in s_ids if sid not in old_s_ids]
+            if check_s_ids:
+                try:
+                    from sale.models import Sale
+                    invalid_s = Sale.objects.filter(id__in=check_s_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    if invalid_s.exists():
+                        form.add_error('matched_sale_ids', f"Sale IDs {', '.join(str(s.id) for s in invalid_s)} are already paid or not Open.")
+                except ImportError:
+                    pass
+
+        matched_jv_ids = form.cleaned_data.get('matched_jv_ids')
+        if matched_jv_ids:
+            jv_ids = [int(x.strip()) for x in str(matched_jv_ids).split(',') if x.strip().isdigit()]
+            check_jv_ids = [jvid for jvid in jv_ids if jvid not in old_jv_ids]
+            if check_jv_ids:
+                from tools.models import JournalVoucher
+                invalid_jv = JournalVoucher.objects.filter(id__in=check_jv_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                if invalid_jv.exists():
+                    form.add_error('matched_jv_ids', f"JV IDs {', '.join(str(jv.id) for jv in invalid_jv)} are already paid or not Open.")
+
+        if form.errors:
+            return self.form_invalid(form)
+
         with transaction.atomic():
             cash = form.save(commit=False)
             vc = form.cleaned_data.get('vendor_choice')
@@ -1930,12 +2067,18 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             JournalEntry.objects.filter(cash=cash).delete()
             client_id = self.request.session.get('active_client_id')
             
-            dr_acct_id = str(cash.debit_account_id)
-            cr_acct_id = str(cash.credit_account_id)
-            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+            dr_acct_id = str(cash.debit_account_id) if cash.debit_account_id else None
+            cr_acct_id = str(cash.credit_account_id) if cash.credit_account_id else None
+            
+            dr_acct = None
+            cr_acct = None
+            if dr_acct_id and dr_acct_id.lower() != 'none':
+                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+            if cr_acct_id and cr_acct_id.lower() != 'none':
+                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = cash.debit if cash.debit > 0 else cash.credit
+            is_money_in = cash.debit > 0
             
             je_desc = f"Updated Cash Txn: {cash.description}"
             if matched_p_ids:
@@ -1947,8 +2090,13 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             je_desc = je_desc[:500]
 
             je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
-            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
-            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+            
+            _distribute_settlement_lines(
+                je, is_money_in, amount, dr_acct, cr_acct, 
+                cash.matched_jv_ids, cash.matched_purchase_ids, cash.matched_sale_ids, 
+                client_id, je_desc,
+                fx_account_id='725300'
+            )
             
         messages.success(self.request, "Cash transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:cash_detail', kwargs={'pk': self.object.pk}))

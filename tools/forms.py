@@ -525,6 +525,12 @@ class JournalVoucherEntryForm(forms.ModelForm):
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
+            HTML("""
+                <div class="alert alert-warning mb-3">
+                    <strong>Note on Accounting Treatment:</strong> Journal Vouchers currently enforce single-account entries (unbalanced). 
+                    For manual double-entry accounting fixes, please use the <strong>Adjustments</strong> module instead.
+                </div>
+            """),
             Row(
                 Column('client', css_class='form-group col-md-8'),
                 Column('date', css_class='form-group col-md-4'),

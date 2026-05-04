@@ -665,7 +665,10 @@ def account_ledger_detail_view(request, account_id):
     ).select_related('journal_entry').prefetch_related(
         'journal_entry__purchase',
         'journal_entry__bank',
-        'journal_entry__cash'
+        'journal_entry__cash',
+        'journal_entry__journal_voucher',
+        'journal_entry__old',
+        'journal_entry__adjustment'
     ).order_by('journal_entry__date', 'id')
 
     report_filter = ReportFilter(request.GET, queryset=base_qs)
@@ -692,12 +695,14 @@ def account_ledger_detail_view(request, account_id):
         cash_id = line.journal_entry.cash_id
         journal_voucher_id = line.journal_entry.journal_voucher_id
         old_id = line.journal_entry.old_id
+        adjustment_id = getattr(line.journal_entry, 'adjustment_id', None)
         
         purchase_detail = getattr(line.journal_entry.purchase, 'company', "Details") if purchase_id and getattr(line.journal_entry, 'purchase', None) else "Details"
         bank_detail = (getattr(line.journal_entry.bank, 'counterparty', "") or getattr(line.journal_entry.bank, 'purpose', "Details")) if bank_id and getattr(line.journal_entry, 'bank', None) else "Details"
         cash_detail = getattr(line.journal_entry.cash, 'description', "Details") if cash_id and getattr(line.journal_entry, 'cash', None) else "Details"
         jv_detail = getattr(line.journal_entry.journal_voucher, 'description', "Details") if journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None) else "Details"
         old_detail = getattr(line.journal_entry.old, 'description', "Details") if old_id and getattr(line.journal_entry, 'old', None) else "Details"
+        adjustment_detail = getattr(line.journal_entry.adjustment, 'description', "Details") if adjustment_id and getattr(line.journal_entry, 'adjustment', None) else "Details"
 
         ledger_data.append({
             'date': line.journal_entry.date,
@@ -708,11 +713,13 @@ def account_ledger_detail_view(request, account_id):
             'cash_id': cash_id,
             'journal_voucher_id': journal_voucher_id,
             'old_id': old_id,
+            'adjustment_id': adjustment_id,
             'purchase_detail': purchase_detail,
             'bank_detail': bank_detail,
             'cash_detail': cash_detail,
             'jv_detail': jv_detail,
             'old_detail': old_detail,
+            'adjustment_detail': adjustment_detail,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance
@@ -1124,7 +1131,10 @@ def export_account_ledger_detail(request, account_id):
     ).select_related('journal_entry').prefetch_related(
         'journal_entry__purchase',
         'journal_entry__bank',
-        'journal_entry__cash'
+        'journal_entry__cash',
+        'journal_entry__journal_voucher',
+        'journal_entry__old',
+        'journal_entry__adjustment'
     ).order_by('journal_entry__date', 'id')
 
     report_filter = ReportFilter(request.GET, queryset=base_qs)
@@ -1159,6 +1169,8 @@ def export_account_ledger_detail(request, account_id):
             source_display = f"Journal Voucher: {getattr(line.journal_entry.journal_voucher, 'description', 'Details')}"
         elif old_id and getattr(line.journal_entry, 'old', None):
             source_display = f"Historical: {getattr(line.journal_entry.old, 'description', 'Details')}"
+        elif getattr(line.journal_entry, 'adjustment_id', None) and getattr(line.journal_entry, 'adjustment', None):
+            source_display = f"Adjustment: {getattr(line.journal_entry.adjustment, 'description', 'Details')}"
 
         ledger_data.append({
             'date': line.journal_entry.date,

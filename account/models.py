@@ -43,7 +43,8 @@ class JournalEntry(models.Model):
     cash = models.ForeignKey('cash.Cash', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
     journal_voucher = models.ForeignKey('tools.JournalVoucher', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
     old = models.ForeignKey('tools.Old', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
-    
+    adjustment = models.ForeignKey('tools.Adjustment', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -53,12 +54,13 @@ class JournalEntry(models.Model):
         constraints = [
             models.CheckConstraint(
                 check=(
-                    models.Q(purchase__isnull=False, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True) |
-                    models.Q(purchase__isnull=True, bank__isnull=False, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True) |
-                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=False, journal_voucher__isnull=True, old__isnull=True) |
-                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=False, old__isnull=True) |
-                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=False) |
-                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True) # Manual Entry
+                    models.Q(purchase__isnull=False, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True, adjustment__isnull=True) |
+                    models.Q(purchase__isnull=True, bank__isnull=False, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True, adjustment__isnull=True) |
+                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=False, journal_voucher__isnull=True, old__isnull=True, adjustment__isnull=True) |
+                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=False, old__isnull=True, adjustment__isnull=True) |
+                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=False, adjustment__isnull=True) |
+                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True, adjustment__isnull=False) |
+                    models.Q(purchase__isnull=True, bank__isnull=True, cash__isnull=True, journal_voucher__isnull=True, old__isnull=True, adjustment__isnull=True) # Manual Entry
                 ),
                 name='exclusive_source_document_constraint'
             )
@@ -69,14 +71,14 @@ class JournalEntry(models.Model):
         APPLICATION-LEVEL PROTECTION:
         Validates the model before saving via forms or standard ORM `save()` calls.
         """
-        sources = [self.purchase, self.bank, self.cash, self.journal_voucher, self.old]
+        sources = [self.purchase, self.bank, self.cash, self.journal_voucher, self.old, getattr(self, 'adjustment', None)]
         # Count how many sources are actually populated
         populated_sources = sum(1 for source in sources if source is not None)
         
         if populated_sources > 1:
             raise ValidationError(
                 "A Journal Entry cannot be linked to multiple source documents simultaneously. "
-                "Please select only ONE of: Purchase, Bank, Cash, Journal Voucher, or Historical (Old)."
+                "Please select only ONE of: Purchase, Bank, Cash, Journal Voucher, Historical (Old), or Adjustment."
             )
             
     def save(self, *args, **kwargs):
@@ -95,6 +97,7 @@ class JournalEntry(models.Model):
         if self.cash_id: return "Cash Book"
         if self.journal_voucher_id: return "Journal Voucher"
         if self.old_id: return "Historical"
+        if getattr(self, 'adjustment_id', None): return "Adjustment"
         return "Manual Entry"
 
 # ====================================================================

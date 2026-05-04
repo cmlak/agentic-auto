@@ -52,5 +52,12 @@ urlpatterns = [
     path('journal-vouchers/<int:pk>/update/', views.JournalVoucherUpdateView.as_view(), name='journal_voucher_update'),
     path('journal-vouchers/<int:pk>/delete/', views.JournalVoucherDeleteView.as_view(), name='journal_voucher_delete'),
 
+    # Adjustment CRUD
+    path('adjustments/', views.AdjustmentListView, name='adjustment_list'),
+    path('adjustments/new/', views.manual_adjustment_entry_view, name='manual_adjustment_entry'),
+    path('adjustments/<int:pk>/', views.AdjustmentDetailView.as_view(), name='adjustment_detail'),
+    path('adjustments/<int:pk>/update/', views.AdjustmentUpdateView.as_view(), name='adjustment_update'),
+    path('adjustments/<int:pk>/delete/', views.AdjustmentDeleteView.as_view(), name='adjustment_delete'),
+
     path('ajax/load-vendors/', views.load_client_vendors, name='ajax_load_vendors'),
 ]

@@ -2,7 +2,8 @@ import django_filters
 from django import forms
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, HTML
-from .models import Purchase, Vendor, JournalVoucher
+from .models import Purchase, Vendor, JournalVoucher, Adjustment
+from sale.models import Customer
 
 class PurchaseFilter(django_filters.FilterSet):
     vendor = django_filters.ModelChoiceFilter(
@@ -117,4 +118,49 @@ class JournalVoucherFilter(django_filters.FilterSet):
 
     class Meta:
         model = JournalVoucher
+        fields = []
+
+class AdjustmentFilter(django_filters.FilterSet):
+    vendor = django_filters.ModelChoiceFilter(
+        queryset=Vendor.objects.all().order_by('vendor_id'),
+        label='Vendor',
+        empty_label='All Vendors',
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    customer = django_filters.ModelChoiceFilter(
+        queryset=Customer.objects.all().order_by('customer_id'),
+        label='Customer',
+        empty_label='All Customers',
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    start_date = django_filters.DateFilter(
+        field_name="date", lookup_expr="gte", label="Date From",
+        widget=forms.DateInput(attrs={"type": "date", "class": "form-control"})
+    )
+    end_date = django_filters.DateFilter(
+        field_name="date", lookup_expr="lte", label="Date To",
+        widget=forms.DateInput(attrs={"type": "date", "class": "form-control"})
+    )
+
+    @property
+    def form(self):
+        form = super().form
+        form.helper = FormHelper()
+        form.helper.form_method = 'GET'
+        form.helper.layout = Layout(
+            Row(
+                Column('vendor', css_class='form-group col-md-3 mb-3'),
+                Column('customer', css_class='form-group col-md-3 mb-3'),
+                Column('start_date', css_class='form-group col-md-3 mb-3'),
+                Column('end_date', css_class='form-group col-md-3 mb-3'),
+                css_class='row'
+            ),
+            Row(
+                Column(Submit('submit', 'Filter', css_class='btn btn-primary px-4 me-2'), HTML('<a href="{% url \'tools:adjustment_list\' %}" class="btn btn-secondary px-4">Clear</a>'), css_class='col-12 text-center mb-2'),
+            )
+        )
+        return form
+
+    class Meta:
+        model = Adjustment
         fields = []

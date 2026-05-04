@@ -1,0 +1,116 @@
+{% extends "base_1_tools.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}Adjustments{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="row align-items-center mb-4">
+        <div class="col-md-8">
+            <h2 class="text-primary mb-1">Adjustments</h2>
+            <p class="text-muted">Manage manual adjustment records.</p>
+        </div>
+        <div class="col-md-4 text-md-end">
+            <a href="{% url 'tools:manual_adjustment_entry' %}" class="btn btn-success shadow-sm">➕ Add New Adjustment</a>
+        </div>
+    </div>
+
+    <div class="row mb-4">
+        <div class="col-12">
+            <div class="card shadow-sm border-0">
+                <div class="card-body">
+                    <form method="post" class="d-flex align-items-center gap-3">
+                        {% csrf_token %}
+                        <div class="flex-grow-1">
+                            {{ client_form.client|as_crispy_field }}
+                        </div>
+                        <div class="mt-3">
+                            <button type="submit" class="btn btn-primary px-4">Switch Client</button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    {% if request.session.active_client_id %}
+    <div class="card shadow-sm border-0 mb-4 bg-light">
+        <div class="card-body">
+            <h5 class="card-title mb-3">🔍 Filter Records</h5>
+            <form method="get">
+                {% crispy filter.form %}
+            </form>
+        </div>
+    </div>
+
+    <div class="card shadow-sm border-0">
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover align-middle mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>ID</th>
+                            <th>Date</th>
+                            <th>Description</th>
+                            <th>Vendor</th>
+                            <th>Customer</th>
+                            <th>Debit Account</th>
+                            <th>Credit Account</th>
+                            <th class="text-end">Debit</th>
+                            <th class="text-end">Credit</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for adj in adj_records %}
+                        <tr>
+                            <td>
+                                <a href="{% url 'tools:adjustment_detail' adj.id %}" class="badge bg-secondary text-decoration-none">ADJ-{{ adj.id }}</a>
+                            </td>
+                            <td>{{ adj.date|date:"Y-m-d" }}</td>
+                            <td>{{ adj.description|truncatechars:50 }}</td>
+                            <td>{{ adj.vendor|default:"-" }}</td>
+                            <td>{{ adj.customer|default:"-" }}</td>
+                            <td>{{ adj.debit_account_id }}</td>
+                            <td>{{ adj.credit_account_id }}</td>
+                            <td class="text-end text-success fw-bold">{{ adj.debit|default:"0.00" }}</td>
+                            <td class="text-end text-danger fw-bold">{{ adj.credit|default:"0.00" }}</td>
+                            <td class="text-center">
+                                <a href="{% url 'tools:adjustment_detail' adj.pk %}" class="btn btn-sm btn-outline-primary">View</a>
+                            </td>
+                        </tr>
+                        {% empty %}
+                        <tr>
+                            <td colspan="10" class="text-center py-4 text-muted">No adjustments found.</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <nav class="mt-4">
+        <ul class="pagination justify-content-center">
+            {% if page_obj.has_previous %}
+                <li class="page-item"><a class="page-link" href="?page={{ page_obj.previous_page_number }}">Previous</a></li>
+            {% else %}
+                <li class="page-item disabled"><span class="page-link">Previous</span></li>
+            {% endif %}
+            {% for num in page_obj.paginator.page_range %}
+                {% if page_obj.number == num %}
+                    <li class="page-item active"><span class="page-link">{{ num }}</span></li>
+                {% else %}
+                    <li class="page-item"><a class="page-link" href="?page={{ num }}">{{ num }}</a></li>
+                {% endif %}
+            {% endfor %}
+            {% if page_obj.has_next %}
+                <li class="page-item"><a class="page-link" href="?page={{ page_obj.next_page_number }}">Next</a></li>
+            {% else %}
+                <li class="page-item disabled"><span class="page-link">Next</span></li>
+            {% endif %}
+        </ul>
+    </nav>
+    {% endif %}
+</div>
+{% endblock %}

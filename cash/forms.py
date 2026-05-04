@@ -216,15 +216,13 @@ class ManualBankEntryForm(forms.ModelForm):
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
         label="Debit Account (Dr)", 
-        required=False,
-        help_text="Main account for Money In, or Unallocated Fallback for Money Out.",
-        widget=forms.Select(attrs={'class': 'form-select text-success'})
+        required=True,
+        widget=forms.Select(attrs={'class': 'form-select text-success fw-bold'})
     )
     credit_account_id = forms.ChoiceField(
         label="Credit Account (Cr)", 
-        required=False,
-        help_text="Main account for Money Out, or Unallocated Fallback for Money In.",
-        widget=forms.Select(attrs={'class': 'form-select text-danger'})
+        required=True,
+        widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
     matched_purchase_ids = forms.CharField(
         label="Matched Purchase IDs", required=False, 
@@ -316,12 +314,31 @@ class ManualBankEntryForm(forms.ModelForm):
         cleaned_data = super().clean()
         debit = cleaned_data.get('debit') or 0.0
         credit = cleaned_data.get('credit') or 0.0
-        if debit > 0 and credit > 0:
-            raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
+        
+        if debit > 0 and credit > 0 and debit != credit:
+            raise forms.ValidationError("Debit and Credit amounts must match.")
+            
         if not debit and not credit:
-            raise forms.ValidationError("You must enter either a Debit or a Credit amount.")
-        if not cleaned_data.get('debit_account_id') and not cleaned_data.get('credit_account_id'):
-            raise forms.ValidationError("You must specify either a Debit or a Credit account.")
+            raise forms.ValidationError("You must enter the transaction amount in either Debit or Credit (or both).")
+            
+        if not cleaned_data.get('debit_account_id') or not cleaned_data.get('credit_account_id'):
+            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
+            
+        amt = debit if debit > 0 else credit
+        debit_acct = str(cleaned_data.get('debit_account_id', ''))
+        credit_acct = str(cleaned_data.get('credit_account_id', ''))
+        
+        if credit_acct.startswith('10'):
+            cleaned_data['debit'] = 0.0
+            cleaned_data['credit'] = amt
+        elif debit_acct.startswith('10'):
+            cleaned_data['debit'] = amt
+            cleaned_data['credit'] = 0.0
+        else:
+            if debit > 0 and credit > 0:
+                cleaned_data['debit'] = 0.0
+                cleaned_data['credit'] = amt
+                
         return cleaned_data
 
 
@@ -512,15 +529,13 @@ class ManualCashEntryForm(forms.ModelForm):
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
         label="Debit Account (Dr)", 
-        required=False,
-        help_text="Main account for Money In, or Unallocated Fallback for Money Out.",
-        widget=forms.Select(attrs={'class': 'form-select text-success'})
+        required=True,
+        widget=forms.Select(attrs={'class': 'form-select text-success fw-bold'})
     )
     credit_account_id = forms.ChoiceField(
         label="Credit Account (Cr)", 
-        required=False,
-        help_text="Main account for Money Out, or Unallocated Fallback for Money In.",
-        widget=forms.Select(attrs={'class': 'form-select text-danger'})
+        required=True,
+        widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
     matched_purchase_ids = forms.CharField(
         label="Matched Purchase IDs", required=False, 
@@ -603,10 +618,29 @@ class ManualCashEntryForm(forms.ModelForm):
         cleaned_data = super().clean()
         debit = cleaned_data.get('debit') or 0.0
         credit = cleaned_data.get('credit') or 0.0
-        if debit > 0 and credit > 0:
-            raise forms.ValidationError("A transaction cannot have both Debit and Credit amounts. Choose one.")
+        
+        if debit > 0 and credit > 0 and debit != credit:
+            raise forms.ValidationError("Debit and Credit amounts must match.")
+            
         if not debit and not credit:
-            raise forms.ValidationError("You must enter either a Debit or a Credit amount.")
-        if not cleaned_data.get('debit_account_id') and not cleaned_data.get('credit_account_id'):
-            raise forms.ValidationError("You must specify either a Debit or a Credit account.")
+            raise forms.ValidationError("You must enter the transaction amount in either Debit or Credit (or both).")
+            
+        if not cleaned_data.get('debit_account_id') or not cleaned_data.get('credit_account_id'):
+            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
+            
+        amt = debit if debit > 0 else credit
+        debit_acct = str(cleaned_data.get('debit_account_id', ''))
+        credit_acct = str(cleaned_data.get('credit_account_id', ''))
+        
+        if credit_acct.startswith('10'):
+            cleaned_data['debit'] = 0.0
+            cleaned_data['credit'] = amt
+        elif debit_acct.startswith('10'):
+            cleaned_data['debit'] = amt
+            cleaned_data['credit'] = 0.0
+        else:
+            if debit > 0 and credit > 0:
+                cleaned_data['debit'] = 0.0
+                cleaned_data['credit'] = amt
+                
         return cleaned_data

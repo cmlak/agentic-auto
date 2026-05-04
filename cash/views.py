@@ -1479,7 +1479,8 @@ def manual_bank_entry_view(request):
                 je_desc = je_desc[:500]
 
                 je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
-                _distribute_settlement_lines(je, bank.debit > 0, amount, dr_acct, cr_acct, matched_jv_ids, matched_p_ids, matched_s_ids, client_id, je_desc)
+                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
                 
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
@@ -1616,7 +1617,8 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             je_desc = je_desc[:500]
 
             je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
-            _distribute_settlement_lines(je, bank.debit > 0, amount, dr_acct, cr_acct, bank.matched_jv_ids, bank.matched_purchase_ids, bank.matched_sale_ids, client_id, je_desc)
+            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
             
         messages.success(self.request, "Bank transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:bank_detail', kwargs={'pk': self.object.pk}))
@@ -1805,7 +1807,8 @@ def manual_cash_entry_view(request):
                 je_desc = je_desc[:500]
 
                 je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
-                _distribute_settlement_lines(je, cash.debit > 0, amount, dr_acct, cr_acct, matched_jv_ids, matched_p_ids, matched_s_ids, client_id, je_desc)
+                JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
                 
             messages.success(request, f"Manual Cash transaction posted securely!")
             return redirect('cash:cash_list')
@@ -1944,7 +1947,8 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             je_desc = je_desc[:500]
 
             je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
-            _distribute_settlement_lines(je, cash.debit > 0, amount, dr_acct, cr_acct, cash.matched_jv_ids, cash.matched_purchase_ids, cash.matched_sale_ids, client_id, je_desc)
+            JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+            JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
             
         messages.success(self.request, "Cash transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:cash_detail', kwargs={'pk': self.object.pk}))

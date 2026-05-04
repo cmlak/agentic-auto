@@ -1,0 +1,44 @@
+{% extends "base_1_tools.html" %}
+
+{% block title %}Adjustment Details{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h3 class="mb-0">Adjustment <span class="badge bg-primary">ADJ-{{ adj_record.id }}</span></h3>
+            <a href="{% url 'tools:adjustment_list' %}" class="btn btn-outline-secondary btn-sm">Back to List</a>
+        </div>
+        <div class="card-body">
+            <div class="row mb-4">
+                <div class="col-md-6">
+                    <p><strong>Client:</strong> {{ adj_record.client.name }}</p>
+                    <p><strong>Date:</strong> {{ adj_record.date|date:"F j, Y" }}</p>
+                    <p><strong>Vendor:</strong> {{ adj_record.vendor|default:"-" }}</p>
+                    <p><strong>Customer:</strong> {{ adj_record.customer|default:"-" }}</p>
+                    <p><strong>Debit Account:</strong> {{ adj_record.debit_account_id }}</p>
+                    <p><strong>Credit Account:</strong> {{ adj_record.credit_account_id }}</p>
+                </div>
+                <div class="col-md-6">
+                    <p><strong>Debit:</strong> <span class="text-success fw-bold">${{ adj_record.debit|default:"0.00" }}</span></p>
+                    <p><strong>Credit:</strong> <span class="text-danger fw-bold">${{ adj_record.credit|default:"0.00" }}</span></p>
+                </div>
+            </div>
+            <div class="row">
+                <div class="col-12">
+                    <div class="bg-light p-3 rounded">
+                        <h6 class="text-muted">Description:</h6>
+                        <p class="mb-0">{{ adj_record.description|default:"No description provided." }}</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% if is_owner %}
+        <div class="card-footer bg-white py-3 d-flex justify-content-end gap-2">
+            <a href="{% url 'tools:adjustment_update' adj_record.id %}" class="btn btn-primary px-4">✏️ Edit</a>
+            <a href="{% url 'tools:adjustment_delete' adj_record.id %}" class="btn btn-danger px-4">🗑️ Delete</a>
+        </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

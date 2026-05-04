@@ -141,9 +141,14 @@ class Adjustment(models.Model):
     client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     date = models.DateField(blank=True, null=True)
+    vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
+    customer = models.ForeignKey('sale.Customer', on_delete=models.SET_NULL, null=True, blank=True)
     debit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_debit_account', null=True, blank=True)
     credit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_credit_account', null=True, blank=True)
     debit = models.FloatField(blank=True, null=True)
     credit = models.FloatField(blank=True, null=True)    
     description = models.TextField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)    
+
+    def __str__(self):
+        return f"{self.date.strftime('%Y-%m-%d %H:%M')} - ({self.description})"

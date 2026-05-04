@@ -76,6 +76,14 @@
                                 <a href="{% url 'cash:cash_detail' line.cash_id %}" class="badge bg-warning text-dark text-decoration-none" title="View Cash Transaction Details">
                                     Cash: {{ line.cash_detail|truncatechars:15 }}
                                 </a>
+                            {% elif line.journal_voucher_id %}
+                                <a href="{% url 'tools:journal_voucher_detail' line.journal_voucher_id %}" class="badge bg-info text-dark text-decoration-none" title="View Journal Voucher Details">
+                                    JV: {{ line.jv_detail|truncatechars:15 }}
+                                </a>
+                            {% elif line.adjustment_id %}
+                                <a href="{% url 'tools:adjustment_detail' line.adjustment_id %}" class="badge bg-danger text-decoration-none" title="View Adjustment Details">
+                                    ADJ: {{ line.adjustment_detail|truncatechars:15 }}
+                                </a>
                             {% elif line.old_id %}
                                 <span class="badge bg-secondary" title="Historical Details">
                                     Historical Details

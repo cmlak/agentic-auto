@@ -4,8 +4,9 @@ from crispy_forms.helper import FormHelper
 from django.urls import reverse_lazy
 from datetime import date
 from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
-from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog
+from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog, Adjustment
 from account.models import Account
+from sale.models import Customer
 
 # ====================================================================
 # 1. INITIAL UPLOAD FORMS
@@ -821,3 +822,73 @@ class FXForm(forms.Form):
 
 AccrualFormSet = formset_factory(AccrualForm, extra=3, can_delete=True)
 FXFormSet = formset_factory(FXForm, extra=3, can_delete=True)
+
+class AdjustmentEntryForm(forms.ModelForm):
+    client = forms.ModelChoiceField(
+        queryset=Client.objects.all(),
+        empty_label="--- Select Client ---",
+        label="Client / Company",
+        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
+    )
+    vendor = forms.ModelChoiceField(
+        queryset=Vendor.objects.none(),
+        required=False, label="Vendor",
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    customer = forms.ModelChoiceField(
+        queryset=Customer.objects.none(),
+        required=False, label="Customer",
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    debit_account_id = forms.ModelChoiceField(
+        queryset=Account.objects.none(),
+        label="Debit Account", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select text-primary fw-bold'})
+    )
+    credit_account_id = forms.ModelChoiceField(
+        queryset=Account.objects.none(),
+        label="Credit Account", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
+    )
+
+    def __init__(self, *args, **kwargs):
+        client_id = kwargs.pop('client_id', None)
+        super().__init__(*args, **kwargs)
+        
+        if client_id:
+            account_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
+            self.fields['debit_account_id'].queryset = account_qs
+            self.fields['credit_account_id'].queryset = account_qs
+            self.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
+            self.fields['customer'].queryset = Customer.objects.filter(client_id=client_id).order_by('customer_id')
+            
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('client', css_class='form-group col-md-8'), 
+                Column('date', css_class='form-group col-md-4'), 
+            ),
+            Row(
+                Column('vendor', css_class='form-group col-md-6'), 
+                Column('customer', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('debit_account_id', css_class='form-group col-md-6'), 
+                Column('credit_account_id', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('description', css_class='form-group col-md-12'),
+            ),
+            Row(
+                Column('debit', css_class='form-group col-md-6'), 
+                Column('credit', css_class='form-group col-md-6'),
+            ))
+
+    class Meta:
+        model = Adjustment
+        fields = ['client', 'date', 'vendor', 'customer', 'debit_account_id', 'credit_account_id', 'description', 'debit', 'credit']
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date'}),
+            'description': forms.Textarea(attrs={'rows': 2}),
+        }

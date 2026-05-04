@@ -27,15 +27,17 @@ import pdfplumber
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
-MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm
+MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm,\
+AdjustmentEntryForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
-from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher
+from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher, Adjustment
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
-from .filters import PurchaseFilter, JournalVoucherFilter
-from .resources import PurchaseResource
+from .filters import PurchaseFilter, JournalVoucherFilter, AdjustmentFilter
+from .resources import PurchaseResource, AdjustmentResource
 from cash.models import Bank
+from sale.models import Customer
 
 # ====================================================================
 # --- 1. AI INVOICE UPLOAD & PROCESSING ---
@@ -2693,4 +2695,209 @@ class JournalVoucherDeleteView(LoginRequiredMixin, DeleteView):
     def form_valid(self, form):
         JournalEntry.objects.filter(Q(journal_voucher=self.object) | Q(reference_number=f"JV-{self.object.id}")).delete()
         messages.success(self.request, 'Journal voucher and associated Journal Entries deleted successfully!')
+        return super().form_valid(form)
+
+# ====================================================================
+# --- 6. ADJUSTMENT CRUD & POSTING ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def AdjustmentListView(request):
+    user = request.user
+
+    if request.method == 'POST' and 'client' in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client:
+                request.session['active_client_id'] = selected_client.id
+            else:
+                request.session.pop('active_client_id', None)
+            return redirect('tools:adjustment_list')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        base_queryset = Adjustment.objects.filter(client_id=client_id)
+        if user.is_staff or user.is_superuser:
+            adj_records = base_queryset
+        else:
+            try:
+                profile = Profile.objects.get(user=user)
+                if profile.clients.filter(id=client_id).exists():
+                    adj_records = base_queryset
+                else:
+                    messages.error(request, "You do not have permission to view records for this client.")
+                    return redirect('main')
+            except Profile.DoesNotExist:
+                messages.error(request, "You do not have permission to view records for this client.")
+                return redirect('main')
+        
+        client_form = ClientSelectionForm(initial={'client': client_id})
+        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
+        customer_queryset = Customer.objects.filter(client_id=client_id).order_by('customer_id')
+    else:
+        adj_records = Adjustment.objects.none()
+        client_form = ClientSelectionForm()
+        vendor_queryset = Vendor.objects.none()
+        customer_queryset = Customer.objects.none()
+        messages.info(request, "Please select a client to view adjustments.")
+
+    adj_records = adj_records.order_by('-id')
+    adj_filter = AdjustmentFilter(request.GET, queryset=adj_records)
+    adj_filter.form.fields['vendor'].queryset = vendor_queryset
+    adj_filter.form.fields['customer'].queryset = customer_queryset
+
+    paginator = Paginator(adj_filter.qs, 20)
+    page_obj = paginator.get_page(request.GET.get('page'))
+
+    context = {'filter': adj_filter, 'adj_records': page_obj, 'page_obj': page_obj, 'client_form': client_form}
+    return render(request, 'tools/adjustment_list.html', context)
+
+@login_required(login_url="register:login")
+def manual_adjustment_entry_view(request):
+    if request.method == 'POST' and 'client' in request.POST and 'debit_account_id' not in request.POST:
+        form = ClientSelectionForm(request.POST)
+        if form.is_valid():
+            selected_client = form.cleaned_data.get('client')
+            if selected_client: request.session['active_client_id'] = selected_client.id
+            else: request.session.pop('active_client_id', None)
+            return redirect('tools:manual_adjustment_entry')
+
+    client_id = request.session.get('active_client_id')
+    
+    if client_id:
+        user = request.user
+        has_access = user.is_staff or user.is_superuser
+        if not has_access:
+            try:
+                if user.profile.clients.filter(id=client_id).exists(): has_access = True
+            except Profile.DoesNotExist: pass
+        if not has_access:
+            messages.error(request, "Permission denied to manage this client.")
+            request.session.pop('active_client_id', None)
+            return redirect('main')
+
+    if not client_id:
+        form = ClientSelectionForm()
+        messages.error(request, "Please select an active client.")
+        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
+
+    if request.method == 'POST':
+        form = AdjustmentEntryForm(request.POST, client_id=client_id)
+        if form.is_valid():
+            with transaction.atomic():
+                adj_record = form.save(commit=False)
+                adj_record.user = request.user
+                adj_record.save()
+                
+                je = JournalEntry.objects.create(
+                    client=adj_record.client, date=adj_record.date or date.today(),
+                    description=f"Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
+                    adjustment=adj_record
+                )
+                safe_desc = adj_record.description[:255] if adj_record.description else "Adjustment"
+                if adj_record.debit_account_id:
+                    JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)
+                if adj_record.credit_account_id:
+                    JournalLine.objects.create(journal_entry=je, account=adj_record.credit_account_id, description=safe_desc, credit=adj_record.credit or 0.0)
+            
+            messages.success(request, f"Successfully created adjustment and posted to GL.")
+            return redirect('tools:adjustment_list') 
+    else:
+        form = AdjustmentEntryForm(initial={'client': client_id}, client_id=client_id)
+
+    return render(request, 'tools/adjustment_form.html', {'form': form})
+
+class AdjustmentDetailView(LoginRequiredMixin, DetailView):
+    login_url = "register:login"
+    model = Adjustment
+    template_name = 'tools/adjustment_detail.html'
+    context_object_name = 'adj_record'
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        adj_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        user = self.request.user
+        adj_record = self.get_object()
+        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=adj_record.client_id).exists())
+        return context
+
+class AdjustmentUpdateView(LoginRequiredMixin, UpdateView):
+    login_url = "register:login"
+    model = Adjustment
+    form_class = AdjustmentEntryForm 
+    template_name = 'tools/adjustment_form.html'
+    
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        adj_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def get_form_kwargs(self):
+        kwargs = super().get_form_kwargs()
+        kwargs['client_id'] = self.object.client_id
+        return kwargs
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            adj_record = form.save()
+            JournalEntry.objects.filter(Q(adjustment=adj_record) | Q(reference_number=f"ADJ-{adj_record.id}")).delete()
+            
+            je = JournalEntry.objects.create(
+                client=adj_record.client, date=adj_record.date or date.today(),
+                description=f"Updated Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
+                adjustment=adj_record
+            )
+            safe_desc = adj_record.description[:255] if adj_record.description else "Adjustment"
+            if adj_record.debit_account_id:
+                JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)
+            if adj_record.credit_account_id:
+                JournalLine.objects.create(journal_entry=je, account=adj_record.credit_account_id, description=safe_desc, credit=adj_record.credit or 0.0)
+        
+        messages.success(self.request, "Adjustment and General Ledger entries updated successfully!")
+        return HttpResponseRedirect(reverse('tools:adjustment_detail', kwargs={'pk': self.object.pk}))
+
+class AdjustmentDeleteView(LoginRequiredMixin, DeleteView):
+    login_url = "register:login"
+    model = Adjustment
+    template_name = 'tools/adjustment_confirm_delete.html'
+    success_url = reverse_lazy('tools:adjustment_list')
+
+    def dispatch(self, request, *args, **kwargs):
+        user = self.request.user
+        adj_record = self.get_object()
+        is_authorized = user.is_staff or user.is_superuser
+        if not is_authorized:
+            try:
+                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
+            except Profile.DoesNotExist: pass
+        if not is_authorized:
+            messages.error(request, "Permission denied.")
+            return redirect('main')
+        return super().dispatch(request, *args, **kwargs)
+
+    def form_valid(self, form):
+        JournalEntry.objects.filter(Q(adjustment=self.object) | Q(reference_number=f"ADJ-{self.object.id}")).delete()
+        messages.success(self.request, 'Adjustment and associated Journal Entries deleted successfully!')
         return super().form_valid(form)

@@ -85,7 +85,7 @@ class GeminiABABankProcessor:
         if usage: return ((usage.prompt_token_count / 1e6) * 1.25) + ((usage.candidates_token_count / 1e6) * 10.00)
         return 0.0
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
     def process(self, pdf_path, client_id, batch_name="", custom_prompt=""):
         print(f"\n📄 Reading PDF natively: {os.path.basename(pdf_path)}...")
         try:
@@ -483,10 +483,11 @@ class GeminiReconciliationEngine:
         print(f"⚖️ INITIALIZING: GEMINI RECONCILIATION ENGINE (Base Acct: {context_account})")
         print("="*50)
         self.client = genai.Client(api_key=api_key)
-        self.MODEL_NAME = "gemini-3.1-pro-preview" 
+        # self.MODEL_NAME = "gemini-3.1-pro-preview" 
+        self.MODEL_NAME = "gemini-2.5-pro" 
         self.context_account = context_account 
         
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
     def reconcile(self, transactions_data: str, open_purchases_data: str, open_sales_data: str = "[]", prompt_memo: str = "", historical_gl_data: str = "", chart_of_accounts_data: str = ""):
         
         prompt = f"""

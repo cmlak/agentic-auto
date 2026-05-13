@@ -4,6 +4,7 @@ import pandas as pd
 import calendar
 import io
 import re
+import uuid
 from collections import defaultdict
 import time
 import openpyxl
@@ -23,6 +24,7 @@ from django.db.models import Sum, Q
 from django.db import transaction
 from django.core.paginator import Paginator
 import pdfplumber
+from pypdf import PdfReader, PdfWriter
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
@@ -45,7 +47,6 @@ from sale.models import Customer
 
 @login_required(login_url="register:login")
 def invoice_ai_upload_view(request):
-    """Step 1: Select Client, Upload PDF, Inject Dynamic Rules, Process via AI, and Store."""
     user = request.user
 
     if request.method == 'POST':
@@ -60,34 +61,45 @@ def invoice_ai_upload_view(request):
             api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
             processor = GeminiInvoiceProcessor(api_key=api_key)
             
+            local_file_path = job.get('local_file_path')
+            if not local_file_path or not os.path.exists(local_file_path):
+                return JsonResponse({"status": "error", "message": "Source PDF lost on server."})
+                
+            try:
+                reader = PdfReader(local_file_path)
+                writer = PdfWriter()
+                writer.add_page(reader.pages[page - 1])
+                
+                pdf_bytes_io = io.BytesIO()
+                writer.write(pdf_bytes_io)
+                single_page_bytes = pdf_bytes_io.getvalue()
+            except Exception as e:
+                return JsonResponse({"status": "error", "message": f"Failed to isolate PDF page {page}. Error: {str(e)}"})
+            
             print(f"\n[PAGE {page}] EXTRACTING KEY INVOICE DATA FROM AI...")
-            ledgers, page_cost, next_seq, err = processor.process_page(
-                gemini_file_name=job['gemini_file_name'],
-                pg=page,
-                client_id=job['client_id'],
-                custom_prompt=job['custom_prompt'],
-                batch_name=job['batch_name'],
-                rules_context=job['rules_context'],
-                memo_context=job['memo_context'],
-                current_invoice_seq=job['current_seq'],
-                date_prefix=job['date_prefix']
+            ledgers, page_cost, next_seq, err = processor.process_single_page(
+                pdf_bytes=single_page_bytes, 
+                pg=page, client_id=job['client_id'], custom_prompt=job['custom_prompt'],
+                batch_name=job['batch_name'], rules_context=job['rules_context'],
+                memo_context=job['memo_context'], current_invoice_seq=job['current_seq'],
+                date_prefix=job['date_prefix'], is_explicit_seq=job['is_explicit_seq']
             )
             
-            print(f"✅ [Page {page}] Extraction Complete | AI Cost: ${page_cost:.5f}")
-            if ledgers:
-                print(f"   🎉 Extracted {len(ledgers)} invoices from Page {page}.")
-                for item in ledgers:
-                    print(f"      🔹 Inv No: {item.get('invoice_no', 'N/A')} | Vendor: {str(item.get('company', 'N/A'))[:30]} | Total: ${item.get('total_usd', 0.0)} | VAT: ${item.get('vat_usd', 0.0)}")
-                job['results'].extend(ledgers)
-            else:
-                print(f"   ⚠️ No invoices extracted from Page {page}.")
-                if err:
-                    print(f"      ❌ Error: {err}")
+            # Reload the session state to prevent race conditions during concurrent page processing
+            current_job = request.session.get('invoice_job')
+            if current_job:
+                if ledgers:
+                    current_job['results'].extend(ledgers)
+                    print(f"   🎉 Extracted {len(ledgers)} invoices from Page {page}.")
 
-            job['current_seq'] = next_seq
-            job['costs']['pro_cost'] += page_cost
-            request.session['invoice_job'] = job
-            request.session.save()
+                current_job['current_seq'] = max(current_job.get('current_seq', 1), next_seq)
+                current_job['costs']['pro_cost'] += page_cost
+                request.session['invoice_job'] = current_job
+                request.session.save()
+            
+            # --- CATCH TIMEOUT AND NOTIFY FRONTEND ---
+            if err and "Timeout Error" in err:
+                return JsonResponse({"status": "timeout", "page": page, "message": f"AI timed out on Page {page}. Salvaging partial data."})
             
             return JsonResponse({"status": "success", "page": page, "ledgers_count": len(ledgers) if ledgers else 0, "error": err})
             
@@ -96,30 +108,89 @@ def invoice_ai_upload_view(request):
             if not job:
                 return JsonResponse({"status": "error", "message": "Job session not found."})
                 
-            request.session[f'invoice_seq_{job["client_id"]}'] = job['current_seq']
+            local_file_path = job.get('local_file_path')
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
+                
+            results = job.get('results', [])
+            results.sort(key=lambda x: int(x.get('page', 0) or 0))
             
+            client_id = job.get('client_id')
+            is_explicit_seq = job.get('is_explicit_seq', False)
+            date_prefix = job.get('date_prefix')
+            original_seq = job.get('original_seq', 1)
+            
+            processed_pages = set()
+            month_trackers = {}
+            current_explicit_seq = original_seq
+            
+            # --- FINAL SEQUENCE ASSIGNMENT ---
+            for item in results:
+                page = item.get('page')
+                inv_no = str(item.get('invoice_no', ''))
+
+                if inv_no == "NEEDS_SEQ" or inv_no.startswith('INV-'):
+                    if is_explicit_seq:
+                        if page not in processed_pages:
+                            processed_pages.add(page)
+                            base_seq = current_explicit_seq
+                            current_explicit_seq += 1
+                        else:
+                            base_seq = current_explicit_seq - 1
+                        base_inv_no = f"INV-{date_prefix}{base_seq:02d}"
+                    else:
+                        item_date = item.get('date')
+                        if item_date:
+                            try:
+                                parsed_date = datetime.strptime(item_date, "%Y-%m-%d")
+                                month_prefix = parsed_date.strftime("%Y%m")
+                            except ValueError: month_prefix = datetime.now().strftime("%Y%m")
+                        else:
+                            month_prefix = datetime.now().strftime("%Y%m")
+                            
+                        if month_prefix not in month_trackers:
+                            existing_invs = Purchase.objects.filter(
+                                client_id=client_id, invoice_no__startswith=f"INV-{month_prefix}"
+                            ).values_list('invoice_no', flat=True)
+                            max_seq = 0
+                            for inv in existing_invs:
+                                match = re.search(rf'INV-{month_prefix}(\d+)', inv)
+                                if match: max_seq = max(max_seq, int(match.group(1)))
+                            month_trackers[month_prefix] = max_seq + 1
+                            
+                        if page not in processed_pages:
+                            processed_pages.add(page)
+                            base_seq = month_trackers[month_prefix]
+                            month_trackers[month_prefix] += 1
+                        else:
+                            base_seq = month_trackers[month_prefix] - 1
+                            
+                        base_inv_no = f"INV-{month_prefix}{base_seq:02d}"
+
+                    parts = inv_no.split("-")
+                    if len(parts) > 2 and parts[-1].isdigit() and len(parts[-1]) < 4:
+                        item['invoice_no'] = f"{base_inv_no}-{parts[-1]}"
+                    else:
+                        item['invoice_no'] = base_inv_no
+
             print("\n[FINALIZING] LOGGING AI COSTS AND SAVING STATE...")
             total_flash = job['costs']['flash_cost']
             total_pro = job['costs']['pro_cost']
             total_cost = total_flash + total_pro
-            print(f"💰 Total AI Cost for this batch: ${total_cost:.5f}")
             
             try:
                 AICostLog.objects.create(file_name=job['file_name'], total_pages=job['total_pages'], flash_cost=total_flash, pro_cost=total_pro, total_cost=total_cost)
-            except NameError:
-                pass
+            except NameError: pass
                 
-            request.session['extracted_invoices'] = job['results']
-            request.session['ai_metadata'] = {'file_name': job['file_name'], 'batch_name': job['batch_name'], 'client_id': job['client_id'], 'client_name': Client.objects.get(id=job['client_id']).name, 'total_pages': job['total_pages'], 'costs': job['costs']}
+            request.session['extracted_invoices'] = results
+            request.session['ai_metadata'] = {
+                'file_name': job['file_name'], 'batch_name': job['batch_name'], 'client_id': job['client_id'], 
+                'client_name': Client.objects.get(id=job['client_id']).name, 'total_pages': job['total_pages'], 'costs': job['costs']
+            }
             request.session.pop('invoice_job', None)
-            
-            print("✅ Process complete. Redirecting to review screen.")
-            print("="*50 + "\n")
-            
             return JsonResponse({"status": "success", "redirect_url": reverse('tools:review_invoices')})
 
         request.session.pop('invoice_report_path', None)
-        
         form = BatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
             selected_client = form.cleaned_data['client']
@@ -127,135 +198,79 @@ def invoice_ai_upload_view(request):
             has_access = user.is_staff or user.is_superuser
             if not has_access:
                 try:
-                    if user.profile.clients.filter(id=selected_client.id).exists():
-                        has_access = True
-                except Exception:
-                    pass
+                    if user.profile.clients.filter(id=selected_client.id).exists(): has_access = True
+                except Exception: pass
             if not has_access:
-                if request.headers.get('x-requested-with') == 'XMLHttpRequest':
-                    return JsonResponse({"status": "error", "message": "Permission denied."})
+                if request.headers.get('x-requested-with') == 'XMLHttpRequest': return JsonResponse({"status": "error", "message": "Permission denied."})
                 else:
-                    messages.error(request, "You do not have permission to upload data for this client.")
+                    messages.error(request, "Permission denied.")
                     return redirect('main')
 
             uploaded_pdf = form.cleaned_data['invoice_pdf']
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
             
-            # ==========================================================
-            # SEQUENCE & DATE RESOLUTION (Deterministic Processing)
-            # ==========================================================
-            # 1. Fetch the global sequence tracker from the user's session (Defaults to 1 for new sessions)
-            current_seq = request.session.get(f'invoice_seq_{selected_client.id}', 1)
-            
-            # 2. Extract YYYYMMDD date from user's custom prompt (e.g., looks for 20260226)
-            date_match = re.search(r'\b(202\d[0-1]\d[0-3]\d)\b', custom_prompt)
-            if date_match:
-                date_prefix = date_match.group(1)
+            inv_match = re.search(r'INV-(\d{6})(\d+)', custom_prompt, re.IGNORECASE)
+            if inv_match:
+                date_prefix = inv_match.group(1) 
+                current_seq = int(inv_match.group(2)) 
+                is_explicit_seq = True
             else:
-                # Fallback to today's date if the user didn't provide a valid YYYYMMDD string
-                date_prefix = datetime.now().strftime("%Y%m%d")
+                date_prefix = datetime.now().strftime("%Y%m")
+                current_seq = 1
+                is_explicit_seq = False
 
-            try:
-                base_num = int(date_prefix) + current_seq - 1
-                display_next = f"INV-{base_num}"
-            except ValueError:
-                display_next = f"INV-{date_prefix}-{current_seq}"
-            print(f"🔢 Target Sequence Starting at: {current_seq} | Next Expected: {display_next}")
-
-            # ==========================================================
-            # --- DYNAMIC MULTI-TENANT RULE INJECTION ---
-            # ==========================================================
             rules_context = ""
             memo_context = ""
-
             client_memo = ClientPromptMemo.objects.filter(client=selected_client).first()
-            if client_memo:
-                # Make sure the new Invoice Extraction rules are appended here if not physically in the DB yet
-                memo_context = client_memo.memo_text
+            if client_memo: memo_context = client_memo.memo_text
 
             rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
             if rules.exists():
-                rules_data = []
-                for rule in rules:
-                    rules_data.append({
-                        'Account ID': rule.account.account_id,
-                        'Account Name': rule.account.name,
-                        'Description / Trigger Keywords': rule.trigger_keywords,
-                        'Reasoning / AI Guidelines': rule.ai_guideline
-                    })
-                df_rules = pd.DataFrame(rules_data)
-                rules_context = df_rules.to_csv(index=False)
-            else:
-                print(f"Warning: No Account Mapping Rules found in the database for {selected_client.name}.")
+                rules_data = [{'Account ID': r.account.account_id, 'Account Name': r.account.name, 'Description / Trigger Keywords': r.trigger_keywords, 'Reasoning / AI Guidelines': r.ai_guideline} for r in rules]
+                rules_context = pd.DataFrame(rules_data).to_csv(index=False)
 
-            # ==========================================================
-            # --- HANDLE FILE UPLOAD ---
-            # ==========================================================
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_pdf:
-                for chunk in uploaded_pdf.chunks():
-                    tmp_pdf.write(chunk)
-                tmp_pdf_path = tmp_pdf.name
+            temp_dir = os.path.join(settings.MEDIA_ROOT, 'temp_invoices')
+            os.makedirs(temp_dir, exist_ok=True)
+            unique_filename = f"batch_{uuid.uuid4().hex}.pdf"
+            local_file_path = os.path.join(temp_dir, unique_filename)
+            
+            with open(local_file_path, 'wb') as f:
+                for chunk in uploaded_pdf.chunks(): f.write(chunk)
 
             try:
-                print("\n" + "="*50)
-                print(f"🚀 STARTING INVOICE AI PROCESSING for {selected_client.name}")
-                print("="*50)
-                print("\n[INITIALIZING] UPLOADING PDF TO GEMINI...")
+                reader = PdfReader(local_file_path)
+                total_pages = len(reader.pages)
                 
-                # Strict Environment Variable Validation
-                api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
-                if not api_key:
-                    return JsonResponse({"status": "error", "message": "System Error: GEMINI_API_KEY_2 is missing or not configured."})
-
-                processor = GeminiInvoiceProcessor(api_key=api_key)
-                
-                with pdfplumber.open(tmp_pdf_path) as pdf:
-                    total_pages = len(pdf.pages)
-                    if total_pages > 20:
-                        return JsonResponse({"status": "error", "message": f"Limit exceeded. PDF has {total_pages} pages, max is 20."})
-                
-                f = processor.client.files.upload(file=tmp_pdf_path)
-                while f.state.name == "PROCESSING": 
-                    time.sleep(2)
-                    f = processor.client.files.get(name=f.name)
-                    
-                print(f"✅ Uploaded {total_pages} pages successfully. Ready for extraction.")
+                if total_pages > 20:
+                    os.remove(local_file_path)
+                    return JsonResponse({"status": "error", "message": f"Limit exceeded. PDF has {total_pages} pages, max is 20."})
                 
                 request.session['invoice_job'] = {
-                    'gemini_file_name': f.name,
-                    'file_name': uploaded_pdf.name,
-                    'total_pages': total_pages,
-                    'client_id': selected_client.id,
-                    'batch_name': batch_name,
-                    'custom_prompt': custom_prompt,
-                    'rules_context': rules_context,
-                    'memo_context': memo_context,
-                    'current_seq': current_seq,
-                    'date_prefix': date_prefix,
-                    'results': [],
-                    'costs': {'flash_cost': 0.0, 'pro_cost': 0.0}
+                    'local_file_path': local_file_path, 'file_name': uploaded_pdf.name, 'total_pages': total_pages,
+                    'client_id': selected_client.id, 'batch_name': batch_name, 'custom_prompt': custom_prompt,
+                    'rules_context': rules_context, 'memo_context': memo_context, 'is_explicit_seq': is_explicit_seq,
+                    'date_prefix': date_prefix, 'original_seq': current_seq, 'current_seq': current_seq,
+                    'results': [], 'costs': {'flash_cost': 0.0, 'pro_cost': 0.0}
                 }
                 request.session.save()
-                
                 return JsonResponse({"status": "init_success", "total_pages": total_pages})
                 
-            except ValueError as ve:
-                return JsonResponse({"status": "error", "message": str(ve)})
             except Exception as e:
-                return JsonResponse({"status": "error", "message": f"AI Initialization Error: {str(e)}"})
-            finally:
-                if os.path.exists(tmp_pdf_path):
-                    os.remove(tmp_pdf_path)
+                if os.path.exists(local_file_path): os.remove(local_file_path)
+                return JsonResponse({"status": "error", "message": f"Initialization Error: {str(e)}"})
         else:
-            return JsonResponse({"status": "error", "message": "Form validation failed. Check required fields."})
+            return JsonResponse({"status": "error", "message": "Form validation failed."})
     else:
+        job = request.session.get('invoice_job')
+        if job and 'local_file_path' in job and os.path.exists(job['local_file_path']):
+            os.remove(job['local_file_path'])
+            request.session.pop('invoice_job', None)
+            
         form = BatchUploadForm()
         if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
-                form.fields['client'].queryset = Client.objects.none()
+            try: form.fields['client'].queryset = user.profile.clients.all()
+            except Exception: form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'invoice_upload.html', {'form': form})
 
@@ -270,6 +285,9 @@ def review_invoices(request):
 
     if not extracted_data and request.method == 'GET':
         return redirect('tools:invoice_upload')
+        
+    # --- FIX: Ensure the formset displays pages sequentially ---
+    extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
         
     client_id = metadata.get('client_id')
     
@@ -1603,21 +1621,22 @@ def export_balancika_view(request):
             bank_charges = []
 
             if purchase_id:
-                purchases = list(Purchase.objects.filter(purchase_filters & Q(id=purchase_id)))
+                purchases = list(Purchase.objects.filter(purchase_filters & Q(id=purchase_id)).order_by('id'))
             elif bank_id:
-                bank_charges = list(Bank.objects.filter(bank_filters & Q(id=bank_id)))
+                bank_charges = list(Bank.objects.filter(bank_filters & Q(id=bank_id)).order_by('id'))
             else:
-                purchases = list(Purchase.objects.filter(purchase_filters))
+                purchases = list(Purchase.objects.filter(purchase_filters).order_by('id'))
                 
                 bank_fee_triggers = ['interbank fund', 'checkbook', 'commission']
                 q_objects = Q()
                 for trigger in bank_fee_triggers:
                     q_objects |= Q(purpose__icontains=trigger) | Q(trans_type__icontains=trigger) | Q(remark__icontains=trigger) | Q(raw_remark__icontains=trigger)
                 
-                bank_charges = list(Bank.objects.filter(bank_filters & q_objects))
+                bank_charges = list(Bank.objects.filter(bank_filters & q_objects).order_by('id'))
 
             combined_records = purchases + bank_charges
-            combined_records.sort(key=lambda x: (x.date if x.date else date.min, x.id))
+            # Order first by type (Purchases then Bank charges), then by ID
+            combined_records.sort(key=lambda x: (0 if isinstance(x, Purchase) else 1, x.id))
 
             if not combined_records:
                 messages.warning(request, f"No purchases or bank charges found for {client.name} with the given criteria.")

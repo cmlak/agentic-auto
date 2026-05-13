@@ -38,119 +38,12 @@ BANK_PROCESSOR_MAP = {
     'client_b_custom': ClientBCustomBankProcessor,
 }
 
-def _distribute_settlement_lines(je, is_money_in, amount, dr_acct, cr_acct, matched_jv_ids, matched_purchase_ids, matched_sale_ids, client_id, je_desc, fx_account_id='735000'):
-    """Helper to dynamically generate offset JournalLines across multiple distinct accounts."""
-    # 1. Post the main Bank/Cash tracking line
-    base_acct = dr_acct if is_money_in else cr_acct
-    fallback_acct = cr_acct if is_money_in else dr_acct
-    
-    if is_money_in:
-        JournalLine.objects.create(journal_entry=je, account=base_acct, debit=amount, description=je_desc[:255])
-    else:
-        JournalLine.objects.create(journal_entry=je, account=base_acct, credit=amount, description=je_desc[:255])
-        
-    # Track the running imbalance (Total Debits - Total Credits)
-    imbalance = amount if is_money_in else -amount
-    processed_any = False
-
-    # 2a. Iterate matched JVs and reverse their original balances to clear them completely
-    if matched_jv_ids:
-        jv_ids = [int(x.strip()) for x in str(matched_jv_ids).split(',') if x.strip().isdigit()]
-        if jv_ids:
-            from tools.models import JournalVoucher
-            jvs = JournalVoucher.objects.filter(id__in=jv_ids)
-            for jv in jvs:
-                if jv.account_id:
-                    processed_any = True
-                    jv_acct, _ = Account.objects.get_or_create(
-                        client_id=client_id, account_id=str(jv.account_id), 
-                        defaults={'name': 'JV Settled Acct', 'account_type': 'Liability'}
-                    )
-                    jv_line_desc = f"Settlement for JV-{jv.id}"
-                    
-                    # Settle the JV by applying the opposite accounting entry
-                    if jv.credit and jv.credit > 0:
-                        JournalLine.objects.create(journal_entry=je, account=jv_acct, debit=jv.credit, description=jv_line_desc)
-                        imbalance += jv.credit
-                    elif jv.debit and jv.debit > 0:
-                        JournalLine.objects.create(journal_entry=je, account=jv_acct, credit=jv.debit, description=jv_line_desc)
-                        imbalance -= jv.debit
-
-    # 2b. Iterate matched Purchases
-    if matched_purchase_ids:
-        p_ids = [int(x.strip()) for x in str(matched_purchase_ids).split(',') if x.strip().isdigit()]
-        if p_ids:
-            from tools.models import Purchase
-            purchases = Purchase.objects.filter(id__in=p_ids)
-            for p in purchases:
-                if p.credit_account_id:
-                    processed_any = True
-                    p_acct, _ = Account.objects.get_or_create(
-                        client_id=client_id, account_id=str(p.credit_account_id),
-                        defaults={'name': 'Trade Payable', 'account_type': 'Liability'}
-                    )
-                    p_line_desc = f"Settlement for Purchase {p.invoice_no}"
-                    if p.total_usd and p.total_usd > 0:
-                        JournalLine.objects.create(journal_entry=je, account=p_acct, debit=p.total_usd, description=p_line_desc)
-                        imbalance += p.total_usd
-
-    # 2c. Iterate matched Sales
-    if matched_sale_ids:
-        s_ids = [int(x.strip()) for x in str(matched_sale_ids).split(',') if x.strip().isdigit()]
-        if s_ids:
-            try:
-                from sale.models import Sale
-                sales = Sale.objects.filter(id__in=s_ids)
-                for s in sales:
-                    if s.debit_account_id:
-                        processed_any = True
-                        s_acct, _ = Account.objects.get_or_create(
-                            client_id=client_id, account_id=str(s.debit_account_id),
-                            defaults={'name': 'Accounts Receivable', 'account_type': 'Asset'}
-                        )
-                        s_line_desc = f"Settlement for Sale {s.invoice_no}"
-                        if s.total_usd and s.total_usd > 0:
-                            JournalLine.objects.create(journal_entry=je, account=s_acct, credit=s.total_usd, description=s_line_desc)
-                            imbalance -= s.total_usd
-            except ImportError:
-                pass
-            
-    if processed_any:
-        # 3. Dump any overpayment, underpayment, or FX differences into the FX Gain/Loss Account
-        if round(imbalance, 2) != 0:
-            if fx_account_id == '100000':
-                fx_acct, _ = Account.objects.get_or_create(
-                    client_id=client_id, account_id=fx_account_id, 
-                    defaults={'name': 'Cash on Hand (USD) 库存现金美元', 'account_type': 'Asset'}
-                )
-            elif fx_account_id == '725300':
-                fx_acct, _ = Account.objects.get_or_create(
-                    client_id=client_id, account_id=fx_account_id, 
-                    defaults={'name': 'Gain/loss on exchange rate difference 汇率差异损益', 'account_type': 'Expense'}
-                )
-            else:
-                fx_acct, _ = Account.objects.get_or_create(
-                    client_id=client_id, account_id=fx_account_id, 
-                    defaults={'name': 'Realized FX Gain/Loss', 'account_type': 'Expense'}
-                )
-                
-            if round(imbalance, 2) > 0:
-                JournalLine.objects.create(journal_entry=je, account=fx_acct, credit=round(imbalance, 2), description=f"Settlement Difference / FX Offset - {je_desc[:200]}")
-            elif round(imbalance, 2) < 0:
-                JournalLine.objects.create(journal_entry=je, account=fx_acct, debit=abs(round(imbalance, 2)), description=f"Settlement Difference / FX Offset - {je_desc[:200]}")
-        return
-
-    # 4. Standard entry (no JVs/Purchases/Sales matched): Dump remaining balance into the Fallback Account
-    if fallback_acct is None:
-        fallback_acct, _ = Account.objects.get_or_create(
-            client_id=client_id, account_id='999999', 
-            defaults={'name': 'Uncategorized Suspense', 'account_type': 'Liability' if is_money_in else 'Asset'}
-        )
-        
-    if round(imbalance, 2) > 0:
-        JournalLine.objects.create(journal_entry=je, account=fallback_acct, credit=round(imbalance, 2), description=je_desc[:255])
-    elif round(imbalance, 2) < 0:
-        JournalLine.objects.create(journal_entry=je, account=fallback_acct, debit=abs(round(imbalance, 2)), description=je_desc[:255])
+def _distribute_settlement_lines(je, amount, dr_acct, cr_acct, je_desc):
+    """Helper to generate standard double-entry JournalLines."""
+    if dr_acct:
+        JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=amount, description=je_desc[:255])
+    if cr_acct:
+        JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
 
 @login_required
 def bank_ai_upload_view(request):
@@ -618,7 +511,7 @@ def bank_review_view(request):
                                 bank=instance
                             )
 
-                            _distribute_settlement_lines(je, instance.debit > 0, amount, dr_acct, cr_acct, instance.matched_jv_ids, instance.matched_purchase_ids, instance.matched_sale_ids, client_id, safe_je_desc)
+                            _distribute_settlement_lines(je, amount, dr_acct, cr_acct, safe_je_desc)
                             print(f"   💾 Saved Bank Transaction [Ref: {instance.bank_ref_id}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
             except Exception as e:
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
@@ -1240,9 +1133,7 @@ def cash_review_view(request):
                             )
 
                             _distribute_settlement_lines(
-                                je, instance.debit > 0, amount, dr_acct, cr_acct, 
-                                instance.matched_jv_ids, instance.matched_purchase_ids, instance.matched_sale_ids, 
-                                client_id, safe_je_desc, fx_account_id='725300'
+                                je, amount, dr_acct, cr_acct, safe_je_desc
                             )
                             print(f"   💾 Saved Cash Transaction [Voucher: {instance.voucher_no}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
             except Exception as e:
@@ -1495,7 +1386,6 @@ def manual_bank_entry_view(request):
                     cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = bank.debit if bank.debit > 0 else bank.credit
-                is_money_in = bank.debit > 0
                 
                 je_desc = f"Manual Bank Txn: {bank.counterparty or bank.purpose}"
                 if matched_p_ids:
@@ -1509,9 +1399,7 @@ def manual_bank_entry_view(request):
                 je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
                 
                 _distribute_settlement_lines(
-                    je, is_money_in, amount, dr_acct, cr_acct, 
-                    bank.matched_jv_ids, bank.matched_purchase_ids, bank.matched_sale_ids, 
-                    client_id, je_desc
+                    je, amount, dr_acct, cr_acct, je_desc
                 )
                 
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
@@ -1643,7 +1531,6 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = bank.debit if bank.debit > 0 else bank.credit
-            is_money_in = bank.debit > 0
             
             je_desc = f"Updated Bank Txn: {bank.counterparty or bank.purpose}"
             if matched_p_ids:
@@ -1657,9 +1544,7 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
             
             _distribute_settlement_lines(
-                je, is_money_in, amount, dr_acct, cr_acct, 
-                bank.matched_jv_ids, bank.matched_purchase_ids, bank.matched_sale_ids, 
-                client_id, je_desc
+                je, amount, dr_acct, cr_acct, je_desc
             )
             
         messages.success(self.request, "Bank transaction updated securely!")
@@ -1877,7 +1762,6 @@ def manual_cash_entry_view(request):
                     cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = cash.debit if cash.debit > 0 else cash.credit
-                is_money_in = cash.debit > 0
                 
                 je_desc = f"Manual Cash Txn: {cash.description}"
                 if matched_p_ids:
@@ -1891,10 +1775,7 @@ def manual_cash_entry_view(request):
                 je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
                 
                 _distribute_settlement_lines(
-                    je, is_money_in, amount, dr_acct, cr_acct, 
-                    cash.matched_jv_ids, cash.matched_purchase_ids, cash.matched_sale_ids, 
-                    client_id, je_desc,
-                    fx_account_id='725300'
+                    je, amount, dr_acct, cr_acct, je_desc
                 )
                 
             messages.success(request, f"Manual Cash transaction posted securely!")
@@ -2078,7 +1959,6 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = cash.debit if cash.debit > 0 else cash.credit
-            is_money_in = cash.debit > 0
             
             je_desc = f"Updated Cash Txn: {cash.description}"
             if matched_p_ids:
@@ -2092,10 +1972,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
             
             _distribute_settlement_lines(
-                je, is_money_in, amount, dr_acct, cr_acct, 
-                cash.matched_jv_ids, cash.matched_purchase_ids, cash.matched_sale_ids, 
-                client_id, je_desc,
-                fx_account_id='725300'
+                je, amount, dr_acct, cr_acct, je_desc
             )
             
         messages.success(self.request, "Cash transaction updated securely!")

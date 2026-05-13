@@ -81,6 +81,8 @@
         bar.style.width = '5%';
         text.innerText = "Initializing and Uploading Document...";
         detailText.innerText = "Please wait while we prepare the AI...";
+        detailText.classList.remove('text-danger');
+        detailText.classList.add('text-muted');
 
         let formData = new FormData(this);
         
@@ -115,12 +117,26 @@
                     body: pageForm,
                     headers: { 'X-Requested-With': 'XMLHttpRequest' }
                 });
+                
                 let pageData = await pageResponse.json();
+                
                 if (pageData.status === 'error') {
                     console.error("Page processing error:", pageData.message);
+                } else if (pageData.status === 'timeout') {
+                    // --- THE TIMEOUT FAILSAFE TRIGGER ---
+                    console.warn("AI Timeout Detected. Stopping extraction loop.");
+                    text.innerText = "Timeout Detected!";
+                    detailText.innerText = `AI hung on Page ${pg}. Salvaging extracted data...`;
+                    detailText.classList.remove('text-muted');
+                    detailText.classList.add('text-danger');
+                    bar.classList.replace('bg-success', 'bg-warning');
+                    
+                    // Break the loop early, preserving whatever data was successfully extracted
+                    break;
                 }
             }
             
+            // This runs after the loop completes OR if the loop breaks due to a timeout
             text.innerText = "Finalizing AI Output...";
             detailText.innerText = "Saving extracted data...";
             

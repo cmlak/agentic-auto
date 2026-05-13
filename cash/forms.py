@@ -234,7 +234,7 @@ class ManualBankEntryForm(forms.ModelForm):
     )
     matched_jv_ids = forms.CharField(
         label="Matched JV IDs", required=False, 
-        help_text="Offsets will automatically distribute across these JVs. Any variance (e.g., FX differences on Tax Payables) will be routed to the Realized FX Gain/Loss account.",
+        help_text="Link to existing Journal Vouchers for reference. (Partial settlement adjustments should be handled in the Adjustments module).",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
     )
     
@@ -327,16 +327,9 @@ class ManualBankEntryForm(forms.ModelForm):
         matched_p = cleaned_data.get('matched_purchase_ids')
         matched_s = cleaned_data.get('matched_sale_ids')
         matched_jv = cleaned_data.get('matched_jv_ids')
-        has_matches = bool(matched_p or matched_s or matched_jv)
 
-        if not has_matches:
-            if not debit_acct or not credit_acct:
-                raise forms.ValidationError("You must specify BOTH a Debit and a Credit account when not matching with open invoices/JVs.")
-        else:
-            if debit > 0 and not debit_acct:
-                raise forms.ValidationError("You must specify the Debit Account (Money In) for the Bank/Cash account.")
-            if credit > 0 and not credit_acct:
-                raise forms.ValidationError("You must specify the Credit Account (Money Out) for the Bank/Cash account.")
+        if not debit_acct or not credit_acct:
+            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
             
         amt = debit if debit > 0 else credit
         
@@ -559,7 +552,7 @@ class ManualCashEntryForm(forms.ModelForm):
     )
     matched_jv_ids = forms.CharField(
         label="Matched JV IDs", required=False, 
-        help_text="Offsets will automatically distribute across these JVs. Any variance (e.g., FX differences on Tax Payables) will be routed to the Gain/loss on exchange rate difference account (725300).",
+        help_text="Link to existing Journal Vouchers for reference. (Partial settlement adjustments should be handled in the Adjustments module).",
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30, 31'})
     )
     
@@ -643,16 +636,9 @@ class ManualCashEntryForm(forms.ModelForm):
         matched_p = cleaned_data.get('matched_purchase_ids')
         matched_s = cleaned_data.get('matched_sale_ids')
         matched_jv = cleaned_data.get('matched_jv_ids')
-        has_matches = bool(matched_p or matched_s or matched_jv)
 
-        if not has_matches:
-            if not debit_acct or not credit_acct:
-                raise forms.ValidationError("You must specify BOTH a Debit and a Credit account when not matching with open invoices/JVs.")
-        else:
-            if debit > 0 and not debit_acct:
-                raise forms.ValidationError("You must specify the Debit Account (Money In) for the Bank/Cash account.")
-            if credit > 0 and not credit_acct:
-                raise forms.ValidationError("You must specify the Credit Account (Money Out) for the Bank/Cash account.")
+        if not debit_acct or not credit_acct:
+            raise forms.ValidationError("You must specify BOTH a Debit and a Credit account.")
             
         amt = debit if debit > 0 else credit
         

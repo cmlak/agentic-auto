@@ -12,6 +12,7 @@ from typing import List, Literal, Optional
 from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
+from datetime import datetime
 
 from .models import Vendor, Client, JournalVoucher
 from account.models import Account, AccountMappingRule
@@ -25,28 +26,23 @@ class RoutingDecision(BaseModel):
 
 class PurchaseEntry(BaseModel):
     date: Optional[str] = Field(None, description="Date of the invoice (YYYY-MM-DD).")
-    
-    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed (do not pad short numbers). If a sequence rule applies, calculate the offset (Start + Physical Page - 1). If missing and no rule applies, output 'NEEDS_SEQ'.")
-    
-    vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed. Do NOT standardize or autocorrect.")
+    invoice_no: str = Field("NEEDS_SEQ", description="Extract EXACTLY as printed. If missing, output 'NEEDS_SEQ'.")
+    vattin: str = Field("N/A", description="VAT Registration Number. CRITICAL: Extract EXACTLY as printed.")
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
     description: str = Field(..., description="Detailed description of the items in the original language.")
     description_en: str = Field(..., description="Summarize the detailed description in English ONLY. Maximum 25 words.")
-    
     account_id: Optional[str] = Field(None, description="Main Debit Account ID strictly from the Chart of Accounts.")
-    vat_account_id: Optional[str] = Field(None, description="Debit Account ID for VAT Input strictly from the Chart of Accounts. Leave null if no VAT.")
-    wht_debit_account_id: Optional[str] = Field(None, description="Debit Account ID for WHT Expense strictly from the Chart of Accounts. Leave null if no WHT.")
-    credit_account_id: Optional[str] = Field(None, description="Main Credit Account ID strictly from the Chart of Accounts (e.g., Trade Payable).")
-    wht_account_id: Optional[str] = Field(None, description="Credit Account ID for WHT Payable strictly from the Chart of Accounts. Leave null if no WHT.")
-    
+    vat_account_id: Optional[str] = Field(None, description="Debit Account ID for VAT Input. Leave null if no VAT.")
+    wht_debit_account_id: Optional[str] = Field(None, description="Debit Account ID for WHT Expense. Leave null if no WHT.")
+    credit_account_id: Optional[str] = Field(None, description="Main Credit Account ID strictly from the Chart of Accounts.")
+    wht_account_id: Optional[str] = Field(None, description="Credit Account ID for WHT Payable. Leave null if no WHT.")
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
-    
-    unreg_usd: float = Field(0.0, description="Amount for ALL non-tax invoices (no VAT is charged). If the invoice has 0 VAT, place the total amount here.")
+    unreg_usd: float = Field(0.0, description="Amount for ALL non-tax invoices (no VAT is charged).")
     exempt_usd: float = Field(0.0, description="Leave as 0.0. All non-tax amounts should go to unreg_usd instead.")
     vat_base_usd: float = Field(0.0, description="The net base amount subject to 10% VAT.")
     vat_usd: float = Field(0.0, description="The 10% VAT amount.")
     total_usd: float
-    page: int = Field(..., description="The page number. Strictly calculate offset if a starting page is provided (Start Page + Physical Page - 1), otherwise use the physical page.")
+    page: int = Field(..., description="The physical page number.")
 
     @model_validator(mode='after')
     def validate_tax_integrity(self):
@@ -61,27 +57,20 @@ class PurchaseEntry(BaseModel):
         return self
 
 class AccountingBatch(BaseModel):
-    self_verification_step: str = Field(
-        ..., 
-        description="Write a short summary verifying: 1. Aggregation logic. 2. Vendor Name location. 3. Account ID reasoning. 4. VATTIN tax status."
-    )
+    self_verification_step: str = Field(..., description="Write a short summary verifying aggregation and mapping.")
     purchase_entries: List[PurchaseEntry] = []
-
-# ====================================================================
-# --- MAIN INVOICE PROCESSOR ---
-# ====================================================================
 
 class GeminiInvoiceProcessor:
     def __init__(self, api_key):
         print("\n" + "="*50)
         print("🚀 INITIALIZING GEMINI INVOICE PROCESSOR")
         print("="*50)
+        
         self.client = genai.Client(api_key=api_key)
-        self.TRIAGE_MODEL = "gemini-3-flash-preview"
-        self.AUDIT_MODEL = "gemini-3.1-pro-preview"
+        # self.AUDIT_MODEL = "gemini-3.1-pro-preview"
+        self.AUDIT_MODEL = "gemini-2.5-pro"
         self.cost_lock = threading.Lock()
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
-        
         self.vendor_lock = threading.Lock()
         self.batch_new_vendors = {} 
 
@@ -91,13 +80,23 @@ class GeminiInvoiceProcessor:
         if usage: return ((usage.prompt_token_count / 1e6) * r["in"]) + ((usage.candidates_token_count / 1e6) * r["out"])
         return 0.0
 
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
+    def _generate_content_with_retry(self, document_part, prompt):
+        return self.client.models.generate_content(
+            model=self.AUDIT_MODEL,
+            contents=[document_part, prompt],
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                response_schema=AccountingBatch,
+                temperature=0.0 
+            )
+        )
+
     def resolve_and_assign_vendor(self, raw_name, vattin, vat_amount, client_id):
-        from .models import Vendor # Lazy import to avoid circular dependencies
+        from .models import Vendor 
         
         general_vendor, _ = Vendor.objects.get_or_create(
-            client_id=client_id,
-            vendor_id='V-00001', 
-            defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
+            client_id=client_id, vendor_id='V-00001', defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
         
         if not raw_name or str(raw_name).strip().lower() in ['unknown', 'n/a', 'none', '']:
@@ -123,7 +122,6 @@ class GeminiInvoiceProcessor:
         if best_vendor:
             return {'db_id': best_vendor.id, 'is_new': False, 'temp_vid': None}
 
-        # 3. Restrict creating new vendors: only if they are a registered tax payer
         has_tax_info = (vattin and vattin != 'N/A' and str(vattin).strip() != '')
         has_vat_value = (vat_amount is not None and float(vat_amount) > 0)
         if not (has_tax_info and has_vat_value):
@@ -138,101 +136,67 @@ class GeminiInvoiceProcessor:
             for vid in all_vids:
                 if vid:
                     match = re.search(r'V-?(\d+)', str(vid))
-                    if match:
-                        max_num = max(max_num, int(match.group(1)))
-            next_num = max_num + 1
+                    if match: max_num = max(max_num, int(match.group(1)))
             
-            current_seq = next_num + len(self.batch_new_vendors)
+            current_seq = max_num + 1 + len(self.batch_new_vendors)
             new_vid = f"V-{current_seq:05d}"
-            
             vendor_data = {'db_id': None, 'is_new': True, 'temp_vid': new_vid, 'temp_id': f"TEMP_{new_vid}"}
             self.batch_new_vendors[target_norm] = vendor_data
             return vendor_data
 
-    def process_page(self, gemini_file_name, pg, client_id, custom_prompt="", batch_name="", rules_context="", memo_context="", current_invoice_seq=1, date_prefix="20260226"):
-        # from account.models import Account # Lazy import
+    def process_single_page(self, pdf_bytes, pg, client_id, custom_prompt="", batch_name="", rules_context="", memo_context="", current_invoice_seq=1, date_prefix="20260226", is_explicit_seq=False):
         
-        try:
-            f = self.client.files.get(name=gemini_file_name)
-        except Exception as e:
-            return [], 0.0, current_invoice_seq, f"Could not retrieve file: {e}"
-
         ledgers = []
         page_cost = 0.0
-        
         coa_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
         coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
         
         try:
+            document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
             prompt = f"""
-            TASK: Extract accounting data strictly from Page {pg}.
-            
-            <CRITICAL_VATTIN_INSTRUCTION>
-            Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect or apply regex patterns. 
-            </CRITICAL_VATTIN_INSTRUCTION>
-            
-            <CHART_OF_ACCOUNTS>
-            {coa_context}
-            </CHART_OF_ACCOUNTS>
-            
+            TASK: Extract accounting data strictly from the attached invoice page.
+            This is Page {pg} of the batch.
+            <CRITICAL_VATTIN_INSTRUCTION>Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect.</CRITICAL_VATTIN_INSTRUCTION>
+            <CHART_OF_ACCOUNTS>\n{coa_context}\n</CHART_OF_ACCOUNTS>
             <ACCOUNTING_HIERARCHY_RULES>
             1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
             2. [INDUSTRY LEVEL] RULES: {rules_context}
             3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
             </ACCOUNTING_HIERARCHY_RULES>
-
             <OUTPUT_INSTRUCTIONS>
-            1. AGGREGATION & SPLITTING: Normally, output ONE PurchaseEntry per page by combining items. 
-               **CRITICAL EXCEPTION:** If the invoice contains BOTH Equipment/Machinery Rental AND a Driver/Operator fee, you MUST split them into exactly TWO PurchaseEntry items.
-            2. DATE: Format strictly as YYYY-MM-DD.
+            1. AGGREGATION & SPLITTING: Output ONE PurchaseEntry per page. EXCEPTION: Split Equipment Rental and Driver Fee into TWO entries.
+            2. DATE: YYYY-MM-DD.
             3. VENDOR NAME: Extract the company/shop name.
             4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
-            5. TAX AMOUNTS: Map to unreg_usd, vat_base_usd, or vat_usd appropriately. If NO VAT is charged (non-tax invoice), the entire amount MUST be recorded in unreg_usd (DO NOT use exempt_usd).
-            6. BALANCED ASSIGNMENT (ACCOUNT IDS): Assign ALL appropriate account IDs strictly from the <CHART_OF_ACCOUNTS>. 
-               - The Main Credit Account is typically Trade Payable.
-               - FIRST, apply any explicit mappings from [INDUSTRY LEVEL] RULES or [COMPANY LEVEL] MEMOS.
-               - IF NO RULE APPLIES, you MUST dynamically analyze the transaction description and select the single most accurate Account IDs from the <CHART_OF_ACCOUNTS>.
-            7. SEQUENCES & INVOICE NUMBERS: 
-               - INSTRUCTIONS: You MUST strictly follow any [INDUSTRY LEVEL] RULES or [BATCH LEVEL] instructions to assign sequence numbers. 
-                 * MATH OFFSET: If a rule specifies a starting value (e.g., Page 9 or INV-20260101), you MUST calculate the correct value for THIS specific page by adding (Physical Page {pg} - 1) to the starting value. 
-                 * Example: If starting Page is 9 and Physical Page is 3, you MUST output 11. If starting Invoice is INV-20260101 and Physical Page is 3, you MUST output INV-20260103. DO NOT output the baseline starting value on every page!
-               - EXTRACTION (LENGTH & FORMATTING): Per [COMPANY LEVEL] MEMOS, extract the printed invoice number exactly as it appears. Do not attempt to pad it or format short numbers (e.g., "001" or "1234") yourself.
-               - MISSING NUMBERS: If there is absolutely no invoice number printed on the page and no sequence rule applies, you MUST output the exact string "NEEDS_SEQ".
+            5. TAX AMOUNTS: If NO VAT is charged, put the entire amount in unreg_usd.
+            6. BALANCED ASSIGNMENT: Assign Account IDs strictly from the <CHART_OF_ACCOUNTS>.
+            7. SEQUENCES & INVOICE NUMBERS: Extract EXACTLY as printed. If missing, output "NEEDS_SEQ".
             </OUTPUT_INSTRUCTIONS>
-            
-            DOUBLE-CHECK PROTOCOL: Fill out 'self_verification_step' first.
             """
-            
-            a_resp = self.client.models.generate_content(
-                model=self.AUDIT_MODEL,
-                contents=[f, prompt],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    response_schema=AccountingBatch,
-                    temperature=0.0 
-                )
-            )
+
+            a_resp = self._generate_content_with_retry(document_part, prompt)
             
             page_cost = self.calculate_cost(a_resp.usage_metadata, self.AUDIT_MODEL)
             with self.cost_lock: self.cost_stats["pro_cost"] += page_cost
-            
             audit = a_resp.parsed
             
             if audit.purchase_entries:
-                # ==========================================================
-                # PHASE 5: DETERMINISTIC PYTHON POST-PROCESSING
-                # ==========================================================
                 first_entry_inv = str(audit.purchase_entries[0].invoice_no).strip()
+                first_entry_date = audit.purchase_entries[0].date
                 
-                
-                if (first_entry_inv == "NEEDS_SEQ" or 
-                    first_entry_inv.upper() == "UNKNOWN" or 
-                    len(first_entry_inv) < 7):
-                    try:
-                        base_num = int(date_prefix) + current_invoice_seq - 1
-                        base_inv_no = f"INV-{base_num}"
-                    except ValueError:
-                        base_inv_no = f"INV-{date_prefix}-{current_invoice_seq}"
+                if (first_entry_inv == "NEEDS_SEQ" or first_entry_inv.upper() == "UNKNOWN" or len(first_entry_inv) < 7):
+                    if is_explicit_seq:
+                        base_inv_no = f"INV-{date_prefix}{current_invoice_seq:02d}"
+                    else:
+                        if first_entry_date:
+                            try:
+                                parsed_date = datetime.strptime(first_entry_date, "%Y-%m-%d")
+                                month_prefix = parsed_date.strftime("%Y%m")
+                            except ValueError: month_prefix = datetime.now().strftime("%Y%m")
+                        else:
+                            month_prefix = datetime.now().strftime("%Y%m")
+                        base_inv_no = f"INV-{month_prefix}{current_invoice_seq:02d}"
+                        
                     current_invoice_seq += 1 
                 else:
                     base_inv_no = first_entry_inv
@@ -241,26 +205,16 @@ class GeminiInvoiceProcessor:
 
                 for idx, entry in enumerate(audit.purchase_entries, 1):
                     entry_dict = entry.model_dump()
-                    
-                    if is_split_invoice:
-                        entry_dict['invoice_no'] = f"{base_inv_no}-{idx}"
-                    else:
-                        entry_dict['invoice_no'] = base_inv_no
-                    
-                    if 'vendor_name' in entry_dict:
-                        entry_dict['company'] = entry_dict.pop('vendor_name')
+                    entry_dict['invoice_no'] = f"{base_inv_no}-{idx}" if is_split_invoice else base_inv_no
+                    if 'vendor_name' in entry_dict: entry_dict['company'] = entry_dict.pop('vendor_name')
                     
                     reasoning = entry_dict.pop('account_reasoning', '')
                     entry_dict['instruction'] = f"AI Reason: {reasoning}" if reasoning else ""
                     
                     vendor_data = self.resolve_and_assign_vendor(
-                        entry_dict.get('company', ''), 
-                        entry_dict.get('vattin', ''), 
-                        entry_dict.get('vat_usd', 0.0), 
-                        client_id
+                        entry_dict.get('company', ''), entry_dict.get('vattin', ''), entry_dict.get('vat_usd', 0.0), client_id
                     )
-                    if not vendor_data:
-                        vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
+                    if not vendor_data: vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
                     
                     entry_dict['vendor_db_id'] = vendor_data.get('db_id')
                     entry_dict['is_new_vendor'] = vendor_data.get('is_new', False)
@@ -268,8 +222,7 @@ class GeminiInvoiceProcessor:
                     entry_dict['temp_id'] = vendor_data.get('temp_id')
                     entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
                     entry_dict['batch'] = batch_name
-                    entry_dict['page'] = entry_dict.get('page') or pg
-                    
+                    entry_dict['page'] = pg
                     ledgers.append(entry_dict)
 
         except Exception as e:
@@ -339,7 +292,7 @@ class GLMigrationProcessor:
         except Exception as e:
             raise ValueError(f"CRITICAL: Failed to load Chart of Accounts from Database: {str(e)}")
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+    @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
     def _parse_cluster(self, cluster_text):
         """Sends a chunk of raw GL lines to Gemini for cleaning and account mapping."""
         

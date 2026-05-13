@@ -5,6 +5,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.shortcuts import redirect
 from register.views import IndexView
+from portal.views import client_dashboard
 
 
 urlpatterns = [
@@ -14,7 +15,9 @@ urlpatterns = [
     path('cash/', include('cash.urls')),
     path('account/', include('account.urls')),
     path('sale/', include('sale.urls')),
-    path('', IndexView, name='main'),
+    # path('', IndexView, name='main'),
+    # The root domain (localhost:8000 / your base URL) goes to the lobby
+    path('', client_dashboard, name='portal_dashboard'),
 ]
 
 if settings.DEBUG:

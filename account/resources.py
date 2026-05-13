@@ -2,19 +2,13 @@ from import_export import resources
 from import_export.fields import Field
 from import_export.widgets import ForeignKeyWidget
 from .models import Account
-from tools.models import Client
 
 class AccountResource(resources.ModelResource):
-    client = Field(
-        column_name='client_id',
-        attribute='client',
-        widget=ForeignKeyWidget(Client, 'id')
-    )
 
     class Meta:
         model = Account
-        fields = ('client', 'account_id', 'name', 'account_type')
-        import_id_fields = ('client', 'account_id')
+        fields = ('account_id', 'name', 'account_type')
+        import_id_fields = ('account_id',)
         skip_unchanged = True
         report_skipped = True
 

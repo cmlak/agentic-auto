@@ -86,7 +86,7 @@ class GeminiABABankProcessor:
         return 0.0
 
     @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
-    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""):
+    def process(self, pdf_path, batch_name="", custom_prompt=""):
         print(f"\n📄 Reading PDF natively: {os.path.basename(pdf_path)}...")
         try:
             reader = PdfReader(pdf_path)
@@ -151,7 +151,7 @@ class GeminiABABankProcessor:
             self.cost_stats["pro_cost"] += cost
                 
             # --- VENDOR & CUSTOMER RESOLUTION INITIALIZATION ---
-            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+            all_vids = Vendor.objects.all().values_list('vendor_id', flat=True)
             max_num = 1
             for vid in all_vids:
                 if vid:
@@ -166,7 +166,7 @@ class GeminiABABankProcessor:
                 try: Customer = apps.get_model('sales', 'Customer')
                 except LookupError: Customer = None
                 
-            all_cids = Customer.objects.filter(client_id=client_id).values_list('customer_id', flat=True) if Customer else []
+            all_cids = Customer.objects.all().values_list('customer_id', flat=True) if Customer else []
             max_cnum = 1
             for cid in all_cids:
                 if cid:
@@ -226,11 +226,11 @@ class GeminiABABankProcessor:
                     target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
                     
                     if len(target_norm) >= 3:
-                        exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+                        exact_match = Vendor.objects.filter(normalized_name=target_norm).first()
                         best_vendor = None
                         if not exact_match:
                             best_coverage = 0.0
-                            for v in Vendor.objects.filter(client_id=client_id):
+                            for v in Vendor.objects.all():
                                 if not v.normalized_name or not target_norm: 
                                     continue
                                 ratio = difflib.SequenceMatcher(None, target_norm, v.normalized_name).ratio()
@@ -282,7 +282,7 @@ class GeminiABABankProcessor:
                 if Customer and amt > 0 and is_money_in and raw_customer and str(raw_customer).strip() != "" and str(raw_customer).lower() != "none":
                     
                     if str(raw_customer).lower() == 'capital injection':
-                        c_exact = Customer.objects.filter(client_id=client_id, name__iexact='Capital Injection').first()
+                        c_exact = Customer.objects.filter(name__iexact='Capital Injection').first()
                         if c_exact:
                             t['customer_choice'] = c_exact.id
                             if not t.get('remark'): t['remark'] = f"Customer: Capital Injection"
@@ -295,11 +295,11 @@ class GeminiABABankProcessor:
                     target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
                     
                     if len(target_norm) >= 3:
-                        exact_match = Customer.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+                        exact_match = Customer.objects.filter(normalized_name=target_norm).first()
                         best_customer = None
                         if not exact_match:
                             best_coverage = 0.0
-                            for c in Customer.objects.filter(client_id=client_id):
+                            for c in Customer.objects.all():
                                 if not c.normalized_name or not target_norm: 
                                     continue
                                 ratio = difflib.SequenceMatcher(None, target_norm, c.normalized_name).ratio()
@@ -352,11 +352,11 @@ class GeminiABABankProcessor:
 
 class GeminiCanadiaBankProcessor:
     def __init__(self, api_key): pass
-    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
+    def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
 
 class ClientBCustomBankProcessor:
     def __init__(self, api_key): pass
-    def process(self, pdf_path, client_id, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
+    def process(self, pdf_path, batch_name="", custom_prompt=""): return [], 0, {"flash_cost": 0.0, "pro_cost": 0.0}
 
 # ====================================================================
 # --- 2. CASH BOOK EXTRACTION PROCESSOR ---
@@ -371,7 +371,7 @@ class CashStandardExcelProcessor:
         print("="*50)
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
 
-    def process(self, file_path, client_id, batch_name="", custom_prompt=""):
+    def process(self, file_path, batch_name="", custom_prompt=""):
         print(f"📄 Reading Tabular File natively: {os.path.basename(file_path)}...")
         try:
             if file_path.endswith('.csv'):

@@ -1,18 +1,13 @@
 from import_export import resources, fields
 from import_export.widgets import ForeignKeyWidget
 from .models import Bank, Cash
-from tools.models import Client, Vendor, Purchase
+from tools.models import Vendor, Purchase
 try:
     from sale.models import Customer, Sale
 except ImportError:
     Customer, Sale = None, None
 
 class BankResource(resources.ModelResource):
-    client = fields.Field(
-        column_name='Client',
-        attribute='client',
-        widget=ForeignKeyWidget(Client, field='name')
-    )
     vendor = fields.Field(
         column_name='Vendor',
         attribute='vendor',
@@ -36,14 +31,8 @@ class BankResource(resources.ModelResource):
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
 
-    def __init__(self, client_id=None, **kwargs):
-        super().__init__(**kwargs)
-        self.client_id = client_id
-
     def get_queryset(self):
         qs = super().get_queryset()
-        if self.client_id:
-            qs = qs.filter(client_id=self.client_id)
         return qs.prefetch_related('journal_entries__lines__account')
 
     def dehydrate_debit_account(self, bank):
@@ -65,18 +54,13 @@ class BankResource(resources.ModelResource):
     class Meta:
         model = Bank
         fields = (
-            'id', 'client', 'batch', 'sys_id', 'date', 'bank_ref_id',
+            'id', 'batch', 'sys_id', 'date', 'bank_ref_id',
             'trans_type', 'counterparty', 'vendor', 'customer', 'purpose', 'remark', 'raw_remark',
             'debit', 'credit', 'balance', 'debit_account', 'credit_account', 'matched_purchase', 'matched_sale', 'instruction', 'created_at',
         )
         export_order = fields
 
 class CashResource(resources.ModelResource):
-    client = fields.Field(
-        column_name='Client',
-        attribute='client',
-        widget=ForeignKeyWidget(Client, field='name')
-    )
     vendor = fields.Field(
         column_name='Vendor',
         attribute='vendor',
@@ -100,14 +84,8 @@ class CashResource(resources.ModelResource):
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
 
-    def __init__(self, client_id=None, **kwargs):
-        super().__init__(**kwargs)
-        self.client_id = client_id
-
     def get_queryset(self):
         qs = super().get_queryset()
-        if self.client_id:
-            qs = qs.filter(client_id=self.client_id)
         return qs.prefetch_related('journal_entries__lines__account')
 
     def dehydrate_debit_account(self, cash):
@@ -129,7 +107,7 @@ class CashResource(resources.ModelResource):
     class Meta:
         model = Cash
         fields = (
-            'id', 'client', 'batch', 'date', 'voucher_no', 'description',
+            'id', 'batch', 'date', 'voucher_no', 'description',
             'vendor', 'customer', 'invoice_no', 'debit', 'credit', 'balance',
             'debit_account', 'credit_account', 'matched_purchase', 'matched_sale', 'instruction', 'note',
         )

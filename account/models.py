@@ -1,6 +1,7 @@
 from django.db import models
 from django.core.exceptions import ValidationError
 from django.db.models import Q
+from simple_history.models import HistoricalRecords
 
 # ====================================================================
 # --- 1. CHART OF ACCOUNTS ---
@@ -14,13 +15,17 @@ class Account(models.Model):
         ('Expense', 'Expense'),
     ]
 
-    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE, related_name='accounts')
-    account_id = models.CharField(max_length=20) 
+    # DELETED: client = models.ForeignKey(...)
+    
+    # ADDED: unique=True because this table is now isolated per-client
+    account_id = models.CharField(max_length=20, unique=True) 
     name = models.CharField(max_length=255)      
     account_type = models.CharField(max_length=20, choices=ACCOUNT_TYPES)
     
+    history = HistoricalRecords()
+    
     class Meta:
-        unique_together = ('client', 'account_id')
+        # DELETED: unique_together = ('client', 'account_id')
         ordering = ['account_id']
 
     def __str__(self):
@@ -30,14 +35,11 @@ class Account(models.Model):
 # --- 2. JOURNAL ENTRY (The Header with Explicit FKs) ---
 # ====================================================================
 class JournalEntry(models.Model):
-    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE)
+    # DELETED: client = models.ForeignKey(...)
     date = models.DateField()
     description = models.CharField(max_length=1000)
     reference_number = models.CharField(max_length=100, blank=True, null=True, help_text="Store Invoice No or Voucher No for safe-keeping")
     
-    # --- THE SPARSE MATRIX (Explicit Foreign Keys) ---
-    # We use SET_NULL so if a source document is deleted, the GL entry remains intact 
-    # (though in strict accounting, you might use PROTECT to forbid deletion of posted documents).
     purchase = models.ForeignKey('tools.Purchase', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
     bank = models.ForeignKey('cash.Bank', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
     cash = models.ForeignKey('cash.Cash', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
@@ -46,11 +48,11 @@ class JournalEntry(models.Model):
     adjustment = models.ForeignKey('tools.Adjustment', on_delete=models.CASCADE, null=True, blank=True, related_name='journal_entries')
 
     created_at = models.DateTimeField(auto_now_add=True)
+    
+    history = HistoricalRecords()
 
     class Meta:
         ordering = ['-date', '-created_at']
-        # DATABASE-LEVEL PROTECTION:
-        # Enforces that only ONE source document can be attached, or ALL must be null (for manual entries).
         constraints = [
             models.CheckConstraint(
                 check=(
@@ -67,12 +69,7 @@ class JournalEntry(models.Model):
         ]
 
     def clean(self):
-        """
-        APPLICATION-LEVEL PROTECTION:
-        Validates the model before saving via forms or standard ORM `save()` calls.
-        """
         sources = [self.purchase, self.bank, self.cash, self.journal_voucher, self.old, getattr(self, 'adjustment', None)]
-        # Count how many sources are actually populated
         populated_sources = sum(1 for source in sources if source is not None)
         
         if populated_sources > 1:
@@ -82,7 +79,6 @@ class JournalEntry(models.Model):
             )
             
     def save(self, *args, **kwargs):
-        # Force the clean() method to run every time save() is called programmatically
         self.clean()
         super().save(*args, **kwargs)
 
@@ -91,7 +87,6 @@ class JournalEntry(models.Model):
 
     @property
     def source_type(self):
-        """Helper property to easily identify what kind of entry this is in templates."""
         if self.purchase_id: return "Purchase"
         if self.bank_id: return "Bank"
         if self.cash_id: return "Cash Book"
@@ -126,19 +121,17 @@ class JournalLine(models.Model):
 
 class AccountMappingRule(models.Model):
     """Stores the AI trigger keywords and reasoning guidelines for each account."""
-    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE, related_name='mapping_rules')
     account = models.ForeignKey('Account', on_delete=models.CASCADE)
     
     trigger_keywords = models.CharField(max_length=500, help_text="e.g., 'Vital drinking water, Rice for worker'")
     ai_guideline = models.TextField(help_text="Reasoning for the AI.")
     
     updated_at = models.DateTimeField(auto_now=True)
-    
-    class Meta:
-        unique_together = ('client', 'account')
 
+    history = HistoricalRecords()
+    
     def __str__(self):
-        return f"Rule for {self.account.account_id} ({self.client.name})"
+        return f"Rule for {self.account.account_id}"
 
 class ClientPromptMemo(models.Model):
     CATEGORY_CHOICES = [
@@ -148,9 +141,9 @@ class ClientPromptMemo(models.Model):
         ('PURCHASE', 'Purchase & Expense Rules'),
         ('VENDOR_CUSTOMER', 'Vendor & Customer Rules'),
     ]
-    client = models.ForeignKey('tools.Client', on_delete=models.CASCADE)
     category = models.CharField(max_length=50, choices=CATEGORY_CHOICES, default='GENERAL')
     memo_text = models.TextField()
+    history = HistoricalRecords()
 
     def __str__(self):
-        return f"Memo for {self.client.name} ({self.category})"
+        return f"Memo ({self.category})"

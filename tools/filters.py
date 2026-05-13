@@ -7,7 +7,7 @@ from sale.models import Customer
 
 class PurchaseFilter(django_filters.FilterSet):
     vendor = django_filters.ModelChoiceFilter(
-        queryset=Vendor.objects.all().order_by('vendor_id'), # We will dynamically limit this in the view
+        queryset=Vendor.objects.all().order_by('vendor_id'),
         label='Vendor',
         empty_label='All Vendors',
         widget=forms.Select(attrs={'class': 'form-select'})

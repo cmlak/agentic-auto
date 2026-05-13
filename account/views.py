@@ -6,9 +6,6 @@ from django.contrib import messages
 from django.db.models import Sum
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse
-from tools.models import Client
-from tools.forms import ClientSelectionForm
-from register.models import Profile
 from django.core.paginator import Paginator
 from .models import Account, AccountMappingRule, JournalEntry, JournalLine
 from .filters import ReportFilter, BalanceSheetFilter
@@ -34,26 +31,17 @@ def classify_account(acct_type, acct_name):
 @login_required
 def upload_mapping_rules_view(request):
     """Superuser view to batch upload AI Mapping Rules via CSV."""
-    user = request.user
-    if user.is_staff or user.is_superuser:
-        clients = Client.objects.all()
-    else:
-        try:
-            clients = user.profile.clients.all()
-        except Profile.DoesNotExist:
-            clients = Client.objects.none()
 
     if request.method == "POST":
         print("\n" + "="*50)
         print("📥 STARTING CSV RULE UPLOAD")
         print("="*50)
 
-        client_id = request.POST.get('client_id')
         csv_file = request.FILES.get('csv_file')
 
-        if not client_id or not csv_file:
-            print("❌ ABORT: Missing Client ID or CSV File.")
-            messages.error(request, "Please select a client and upload a file.")
+        if not csv_file:
+            print("❌ ABORT: Missing CSV File.")
+            messages.error(request, "Please upload a file.")
             return redirect('account:upload_mapping_rules')
 
         if not csv_file.name.endswith('.csv'):
@@ -61,18 +49,8 @@ def upload_mapping_rules_view(request):
             messages.error(request, 'Error: Please upload a valid .csv file.')
             return redirect('account:upload_mapping_rules')
 
-        if not (user.is_staff or user.is_superuser):
-            try:
-                if not user.profile.clients.filter(id=client_id).exists():
-                    messages.error(request, "You do not have permission to upload mapping rules for this client.")
-                    return redirect('account:upload_mapping_rules')
-            except Profile.DoesNotExist:
-                messages.error(request, "You do not have permission to upload mapping rules for this client.")
-                return redirect('account:upload_mapping_rules')
 
         try:
-            client = Client.objects.get(id=client_id)
-            print(f"🏢 Client Selected: {client.name} (ID: {client.id})")
             print(f"📄 Processing File: {csv_file.name}")
             
             # Decode the uploaded file into a readable string
@@ -105,14 +83,12 @@ def upload_mapping_rules_view(request):
 
                 # 1. Ensure the Chart of Account exists for this client
                 account, acct_created = Account.objects.get_or_create(
-                    client=client,
                     account_id=account_id,
                     defaults={'name': account_name, 'account_type': 'Expense'} # Defaulting to expense
                 )
 
                 # 2. Update or Create the AI Mapping Rule
                 rule, rule_created = AccountMappingRule.objects.update_or_create(
-                    client=client,
                     account=account,
                     defaults={
                         'trigger_keywords': keywords,
@@ -130,7 +106,7 @@ def upload_mapping_rules_view(request):
             print("-" * 30)
             print(f"✅ UPLOAD COMPLETE: {rules_created} Created, {rules_updated} Updated.")
             print("=" * 50 + "\n")
-            messages.success(request, f"Success! Created {rules_created} new rules and updated {rules_updated} existing rules for {client.name}.")
+            messages.success(request, f"Success! Created {rules_created} new rules and updated {rules_updated} existing rules.")
             
         except Exception as e:
             print(f"❌ CRITICAL ERROR during upload: {str(e)}")
@@ -138,44 +114,14 @@ def upload_mapping_rules_view(request):
 
         return redirect('account:upload_mapping_rules')
 
-    return render(request, 'account/upload_rules.html', {'clients': clients})
+    return render(request, 'account/upload_rules.html')
 
 @login_required
 def trial_balance_view(request):
     """Generates the Trial Balance."""
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('account:trial_balance')
-
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to view this client's accounts.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     # Apply filter
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
 
     # Aggregate Debits and Credits by Account
@@ -187,7 +133,7 @@ def trial_balance_view(request):
     )
 
     # Preload ALL accounts to ensure zero-balance accounts are rendered
-    all_accounts = Account.objects.filter(client_id=client_id)
+    all_accounts = Account.objects.all()
     tb_dict = {}
     for acct in all_accounts:
         tb_dict[acct.account_id] = {
@@ -242,7 +188,6 @@ def trial_balance_view(request):
         'total_dr': total_dr,
         'total_cr': total_cr,
         'is_balanced': round(total_dr, 2) == round(total_cr, 2),
-        'client_form': ClientSelectionForm(initial={'client': client_id}),
         'filter': report_filter,
     }
     return render(request, 'account/trial_balance.html', context)
@@ -251,38 +196,8 @@ def trial_balance_view(request):
 @login_required
 def profit_and_loss_view(request):
     """Generates the Income Statement (P&L)."""
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('account:profit_and_loss')
 
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to view this client's accounts.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
 
     accounts_data = report_filter.qs.annotate(
@@ -305,7 +220,7 @@ def profit_and_loss_view(request):
     total_expense_all = 0
     
     # Preload ALL accounts to ensure zero-balance accounts are rendered
-    all_accounts = Account.objects.filter(client_id=client_id)
+    all_accounts = Account.objects.all()
     for acct in all_accounts:
         cls = classify_account(acct.account_type, acct.name)
         if cls == 'revenue':
@@ -376,7 +291,6 @@ def profit_and_loss_view(request):
         'total_revenue': total_revenue_all,
         'total_expense': total_expense_all,
         'net_income': net_income_all,
-        'client_form': ClientSelectionForm(initial={'client': client_id}),
         'filter': report_filter,
         'months_headers': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     }
@@ -386,43 +300,13 @@ def profit_and_loss_view(request):
 @login_required
 def balance_sheet_view(request):
     """Generates the Balance Sheet."""
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('account:balance_sheet')
-
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to view this client's accounts.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
 
     target_year = datetime.date.today().year
     end_date_str = request.GET.get('end_date')
     
     # 1. BASE QUERYSET: Fetch ALL lines. We MUST NOT use a standard FilterSet here
     # to avoid dropping offsetting entries (e.g., filtering out specific accounts).
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     
     if end_date_str:
         try:
@@ -452,7 +336,7 @@ def balance_sheet_view(request):
     retained_earnings = [0] * 12
     
     # Preload ALL accounts to ensure zero-balance accounts are rendered
-    all_accounts = Account.objects.filter(client_id=client_id)
+    all_accounts = Account.objects.all()
     for acct in all_accounts:
         cls = classify_account(acct.account_type, acct.name)
         if cls == 'asset': assets[acct.account_id] = {'name': acct.name, 'months': [0]*12}
@@ -524,7 +408,6 @@ def balance_sheet_view(request):
         'total_equity': total_equity,
         'total_liabilities_and_equity': total_liabilities_and_equity,
         'is_balanced': is_balanced,
-        'client_form': ClientSelectionForm(initial={'client': client_id}),
         'filter': bs_filter, # Passed strictly for UI rendering
         'months_headers': ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
     }
@@ -533,41 +416,11 @@ def balance_sheet_view(request):
 @login_required
 def general_ledger_view(request):
     """List of all accounts with their aggregated all-time balances."""
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('account:general_ledger_list')
-
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to view this client's accounts.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
     
     # 1. Get all accounts for the client
-    db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
+    db_accounts = Account.objects.all().order_by('account_id')
     
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
 
     # Group identically to Trial Balance using the string account_id to merge DB duplicates
@@ -613,7 +466,6 @@ def general_ledger_view(request):
 
     context = {
         'accounts': account_list, 
-        'client_form': ClientSelectionForm(initial={'client': client_id}),
         'filter': report_filter,
     }
     return render(request, 'account/gl_list.html', context)
@@ -621,47 +473,15 @@ def general_ledger_view(request):
 @login_required
 def account_ledger_detail_view(request, account_id):
     """Detailed transaction list for a specific account."""
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            # Redirect to the main GL list when switching clients to avoid 404s on account_id
-            return redirect('account:general_ledger_list')
-
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to view this client's accounts.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
         
     try:
-        account = Account.objects.get(id=account_id, client_id=client_id)
+        account = Account.objects.get(id=account_id)
     except (Account.DoesNotExist, ValueError):
-        account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
+        account = get_object_or_404(Account, account_id=account_id)
     
     # Fetch ALL lines across any potential duplicate Account records using the unified string ID
     base_qs = JournalLine.objects.filter(
-        account__account_id=account.account_id, 
-        journal_entry__client_id=client_id
+        account__account_id=account.account_id
     ).select_related('journal_entry').prefetch_related(
         'journal_entry__purchase',
         'journal_entry__bank',
@@ -734,7 +554,6 @@ def account_ledger_detail_view(request, account_id):
         'account': account, 
         'ledger_data': page_obj, 
         'page_obj': page_obj,
-        'client_form': ClientSelectionForm(initial={'client': client_id}),
         'filter': report_filter,
     }
     return render(request, 'account/gl_detail.html', context)
@@ -751,15 +570,7 @@ def import_accounts_view(request):
     if request.method == "POST":
         form = AccountImportForm(request.POST, request.FILES)
         
-        # Dynamically limit client selection to user's managed clients
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
-                form.fields['client'].queryset = Client.objects.none()
-
         if form.is_valid():
-            client = form.cleaned_data['client']
             import_file = form.cleaned_data['import_file']
             
             # 1. Load the file into a Tablib Dataset
@@ -798,13 +609,12 @@ def import_accounts_view(request):
             # 3. LOGIC BLOCK: PREVENT DUPLICATION
             # Get existing IDs for this specific client to perform a delta check
             existing_ids = set(
-                Account.objects.filter(client=client)
-                .values_list('account_id', flat=True)
+                Account.objects.values_list('account_id', flat=True)
             )
 
             # Create a filtered dataset containing only truly NEW accounts
             new_accounts_dataset = Dataset()
-            new_accounts_dataset.headers = ['account_id', 'name', 'account_type', 'client_id']
+            new_accounts_dataset.headers = ['account_id', 'name', 'account_type']
 
             # Find indices for the source dataset
             idx_id = dataset.headers.index('account_id')
@@ -819,8 +629,7 @@ def import_accounts_view(request):
                     new_accounts_dataset.append([
                         acc_id,
                         row[idx_name],
-                        row[idx_type],
-                        client.id
+                        row[idx_type]
                     ])
 
             # 4. Import the filtered data
@@ -831,7 +640,7 @@ def import_accounts_view(request):
                 
                 messages.success(
                     request, 
-                    f"Success: {len(new_accounts_dataset)} new accounts created for {client.name}. "
+                    f"Success: {len(new_accounts_dataset)} new accounts created. "
                     f"Duplicates found in file were ignored."
                 )
             else:
@@ -842,24 +651,15 @@ def import_accounts_view(request):
     else:
         # GET Request: Initialize empty form
         form = AccountImportForm()
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
-                form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'account/import_accounts.html', {'form': form})
     
 @login_required
 def export_trial_balance(request):
     """Exports the Trial Balance report to XLSX."""
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('account:trial_balance')
 
     # Replicate data fetching from trial_balance_view
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
     accounts_data = report_filter.qs.values(
         'account__account_id', 'account__name', 'account__account_type'
@@ -868,7 +668,7 @@ def export_trial_balance(request):
         total_credit=Sum('credit')
     )
 
-    all_accounts = Account.objects.filter(client_id=client_id)
+    all_accounts = Account.objects.all()
     tb_dict = {
         acct.account_id: {
             'id': acct.account_id, 'name': acct.name, 'type': acct.account_type,
@@ -909,19 +709,15 @@ def export_trial_balance(request):
     resource = TrialBalanceResource()
     dataset = resource.export(trial_balance_data)
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="Trial_Balance_{client_id}_{datetime.date.today()}.xlsx"'
+    response['Content-Disposition'] = f'attachment; filename="Trial_Balance_{datetime.date.today()}.xlsx"'
     return response
 
 @login_required
 def export_profit_and_loss(request):
     """Exports the Profit & Loss report to XLSX."""
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('account:profit_and_loss')
 
     # Replicate data fetching from profit_and_loss_view
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
     accounts_data = report_filter.qs.values(
         'account__account_id', 'account__name', 'account__account_type'
@@ -975,19 +771,15 @@ def export_profit_and_loss(request):
     resource = ProfitAndLossResource()
     dataset = resource.export(export_data)
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="Profit_and_Loss_{client_id}_{datetime.date.today()}.xlsx"'
+    response['Content-Disposition'] = f'attachment; filename="Profit_and_Loss_{datetime.date.today()}.xlsx"'
     return response
 
 @login_required
 def export_balance_sheet(request):
     """Exports the Balance Sheet report to XLSX."""
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('account:balance_sheet')
 
     end_date_str = request.GET.get('end_date')
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    base_qs = JournalLine.objects.all()
     if end_date_str:
         base_qs = base_qs.filter(journal_entry__date__lte=end_date_str)
 
@@ -1058,20 +850,16 @@ def export_balance_sheet(request):
     resource = BalanceSheetResource()
     dataset = resource.export(export_data)
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="Balance_Sheet_{client_id}_{datetime.date.today()}.xlsx"'
+    response['Content-Disposition'] = f'attachment; filename="Balance_Sheet_{datetime.date.today()}.xlsx"'
     return response
 
 @login_required
 def export_general_ledger_summary(request):
     """Exports the General Ledger summary to XLSX."""
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('account:general_ledger_list')
 
     # Replicate data fetching from general_ledger_view
-    db_accounts = Account.objects.filter(client_id=client_id).order_by('account_id')
-    base_qs = JournalLine.objects.filter(journal_entry__client_id=client_id)
+    db_accounts = Account.objects.all().order_by('account_id')
+    base_qs = JournalLine.objects.all()
     report_filter = ReportFilter(request.GET, queryset=base_qs)
     sums = report_filter.qs.values('account__account_id').annotate(
         total_dr=Sum('debit'),
@@ -1108,26 +896,21 @@ def export_general_ledger_summary(request):
     resource = GeneralLedgerSummaryResource()
     dataset = resource.export(account_list)
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="GL_Summary_{client_id}_{datetime.date.today()}.xlsx"'
+    response['Content-Disposition'] = f'attachment; filename="GL_Summary_{datetime.date.today()}.xlsx"'
     return response
 
 @login_required
 def export_account_ledger_detail(request, account_id):
     """Exports the detailed transaction list for a specific account to XLSX."""
-    client_id = request.session.get('active_client_id')
-    if not client_id:
-        messages.error(request, "Please select an active client.")
-        return redirect('account:general_ledger_list')
 
     try:
-        account = Account.objects.get(id=account_id, client_id=client_id)
+        account = Account.objects.get(id=account_id)
     except (Account.DoesNotExist, ValueError):
-        account = get_object_or_404(Account, account_id=account_id, client_id=client_id)
+        account = get_object_or_404(Account, account_id=account_id)
     
     # Replicate data fetching from account_ledger_detail_view
     base_qs = JournalLine.objects.filter(
-        account__account_id=account.account_id, 
-        journal_entry__client_id=client_id
+        account__account_id=account.account_id
     ).select_related('journal_entry').prefetch_related(
         'journal_entry__purchase',
         'journal_entry__bank',
@@ -1184,5 +967,5 @@ def export_account_ledger_detail(request, account_id):
     resource = AccountLedgerDetailResource()
     dataset = resource.export(ledger_data)
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    response['Content-Disposition'] = f'attachment; filename="GL_Detail_{account.account_id}_{client_id}_{datetime.date.today()}.xlsx"'
+    response['Content-Disposition'] = f'attachment; filename="GL_Detail_{account.account_id}_{datetime.date.today()}.xlsx"'
     return response

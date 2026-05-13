@@ -4,7 +4,7 @@ from crispy_forms.helper import FormHelper
 from django.urls import reverse_lazy
 from datetime import date
 from crispy_forms.layout import Layout, Row, Column, Field, Submit, HTML
-from .models import Purchase, Vendor, Client, Old, JournalVoucher, AICostLog, Adjustment
+from .models import Purchase, Vendor, Old, JournalVoucher, AICostLog, Adjustment
 from account.models import Account
 from sale.models import Customer
 
@@ -13,12 +13,6 @@ from sale.models import Customer
 # ====================================================================
 
 class BatchUploadForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(), 
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     invoice_pdf = forms.FileField(
         label="Upload Invoice Batch (PDF)",
         widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.pdf'})
@@ -33,29 +27,6 @@ class BatchUploadForm(forms.Form):
         widget=forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'e.g., Extract sequences starting from 20260305...'}),
         required=False
     )
-
-class ClientSelectionForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(), 
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        required=False,
-        widget=forms.Select(attrs={
-            'class': 'form-select fw-bold border-primary',
-            'autocomplete': 'off'
-        })
-    )
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.helper = FormHelper()
-        self.helper.form_tag = False
-        self.helper.layout = Layout(
-            Row(
-                Column('client', css_class='form-group col-md-12'),
-            ),
-            Submit('submit', 'Select Client', css_class='btn btn-primary w-100 mt-3')
-        )
 
 # ====================================================================
 # 2. HITL (HUMAN-IN-THE-LOOP) REVIEW FORM (WITH ACCRUALS)
@@ -287,12 +258,6 @@ PurchaseFormSet = formset_factory(PurchaseReviewForm, extra=0, can_delete=True)
 
 
 class ManualPurchaseEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=True)
     
     # DEBITS
@@ -338,7 +303,6 @@ class ManualPurchaseEntryForm(forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-3'),
                 Column('date', css_class='form-group col-md-3'),
                 Column('invoice_no', css_class='form-group col-md-3'),
                 Column('vattin', css_class='form-group col-md-3'),
@@ -381,7 +345,7 @@ class ManualPurchaseEntryForm(forms.ModelForm):
     class Meta:
         model = Purchase
         fields = [
-            'client', 'date', 'invoice_no', 'company', 'vendor', 'vattin', 
+            'date', 'invoice_no', 'company', 'vendor', 'vattin', 
             'account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id',
             'description', 'description_en', 'payment_status',
             'unreg_usd', 'exempt_usd', 'vat_base_usd', 'vat_usd', 'total_usd'
@@ -399,12 +363,6 @@ class ManualPurchaseEntryForm(forms.ModelForm):
         }
 
 class GLMigrationUploadForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(), 
-        empty_label="--- Select Client ---",
-        label="Target Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     gl_file = forms.FileField(
         label="Upload General Ledger Extract (CSV/Excel)",
         help_text="Must contain columns: Date, Vendor / Customer / Employee, Description, No., Debit, Credit"
@@ -462,12 +420,6 @@ from django.forms import formset_factory
 GLHistoricalFormSet = formset_factory(GLHistoricalReviewForm, extra=0, can_delete=True)
 
 class OldEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     account_id = forms.ChoiceField(
         label="GL Account", required=True, 
         widget=forms.Select(attrs={'class': 'form-select text-primary fw-bold'})
@@ -482,7 +434,6 @@ class OldEntryForm(forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-4'),
                 Column('date', css_class='form-group col-md-4'),
                 Column('account_id', css_class='form-group col-md-4'),
             ),
@@ -498,7 +449,7 @@ class OldEntryForm(forms.ModelForm):
 
     class Meta:
         model = Old
-        fields = ['client', 'date', 'account_id', 'description', 'instruction', 'debit', 'credit']
+        fields = ['date', 'account_id', 'description', 'instruction', 'debit', 'credit']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 2}),
@@ -506,12 +457,6 @@ class OldEntryForm(forms.ModelForm):
         }
 
 class JournalVoucherEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     account_id = forms.ChoiceField(
         label="GL Account", required=True, 
         widget=forms.Select(attrs={'class': 'form-select text-primary fw-bold'})
@@ -532,7 +477,6 @@ class JournalVoucherEntryForm(forms.ModelForm):
                 </div>
             """),
             Row(
-                Column('client', css_class='form-group col-md-8'),
                 Column('date', css_class='form-group col-md-4'),
             ),
             Row(
@@ -550,7 +494,7 @@ class JournalVoucherEntryForm(forms.ModelForm):
 
     class Meta:
         model = JournalVoucher
-        fields = ['client', 'date', 'account_id', 'vendor', 'payment_status', 'description', 'instruction', 'debit', 'credit']
+        fields = ['date', 'account_id', 'vendor', 'payment_status', 'description', 'instruction', 'debit', 'credit']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 2}),
@@ -559,11 +503,6 @@ class JournalVoucherEntryForm(forms.ModelForm):
         }
 
 class BalancikaExportForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold'})
-    )
     start_date = forms.DateField(
         required=False,
         widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
@@ -632,14 +571,6 @@ class EngagementLetterUploadForm(forms.Form):
         })
 
 class MonthlyClosingForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        widget=forms.Select(attrs={
-            'class': 'form-select fw-bold border-primary',
-            'autocomplete': 'off'
-        })
-    )
     date = forms.DateField(
         widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
         label="Voucher Date"
@@ -665,7 +596,6 @@ class MonthlyClosingForm(forms.Form):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-3'),
                 Column('date', css_class='form-group col-md-3'),
                 Column('salary_payable', css_class='form-group col-md-3'),
                 Column('staff_meals', css_class='form-group col-md-3'),
@@ -709,7 +639,6 @@ class AccrualForm(forms.Form):
         return cleaned_data
 
     def __init__(self, *args, **kwargs):
-        client_id = kwargs.pop('client_id', None)
         account_choices = kwargs.pop('account_choices', [('', '--- Select Account ---')])
         vendor_choices = kwargs.pop('vendor_choices', [('', '--- No Vendor ---')])
         
@@ -797,7 +726,6 @@ class FXForm(forms.Form):
         return cleaned_data
 
     def __init__(self, *args, **kwargs):
-        client_id = kwargs.pop('client_id', None)
         account_choices = kwargs.pop('account_choices', [('', '--- Select Account ---')])
         
         # Remove vendor_choices from kwargs so it doesn't throw a KeyError, 
@@ -830,12 +758,6 @@ AccrualFormSet = formset_factory(AccrualForm, extra=3, can_delete=True)
 FXFormSet = formset_factory(FXForm, extra=3, can_delete=True)
 
 class AdjustmentEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-primary'})
-    )
     vendor = forms.ModelChoiceField(
         queryset=Vendor.objects.none(),
         required=False, label="Vendor",
@@ -858,21 +780,18 @@ class AdjustmentEntryForm(forms.ModelForm):
     )
 
     def __init__(self, *args, **kwargs):
-        client_id = kwargs.pop('client_id', None)
         super().__init__(*args, **kwargs)
         
-        if client_id:
-            account_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
-            self.fields['debit_account_id'].queryset = account_qs
-            self.fields['credit_account_id'].queryset = account_qs
-            self.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-            self.fields['customer'].queryset = Customer.objects.filter(client_id=client_id).order_by('customer_id')
+        account_qs = Account.objects.all().order_by('account_id')
+        self.fields['debit_account_id'].queryset = account_qs
+        self.fields['credit_account_id'].queryset = account_qs
+        self.fields['vendor'].queryset = Vendor.objects.all().order_by('vendor_id')
+        self.fields['customer'].queryset = Customer.objects.all().order_by('customer_id')
             
         self.helper = FormHelper()
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-8'), 
                 Column('date', css_class='form-group col-md-4'), 
             ),
             Row(
@@ -893,7 +812,7 @@ class AdjustmentEntryForm(forms.ModelForm):
 
     class Meta:
         model = Adjustment
-        fields = ['client', 'date', 'vendor', 'customer', 'debit_account_id', 'credit_account_id', 'description', 'debit', 'credit']
+        fields = ['date', 'vendor', 'customer', 'debit_account_id', 'credit_account_id', 'description', 'debit', 'credit']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 2}),

@@ -28,12 +28,12 @@ from pypdf import PdfReader, PdfWriter
 
 # Import your forms, processors, and local models
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
-GLHistoricalFormSet, ClientSelectionForm, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
+GLHistoricalFormSet, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
 MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm,\
 AdjustmentEntryForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
-from .models import Purchase, AICostLog, Vendor, Client, Old, JournalVoucher, Adjustment
+from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
 from .filters import PurchaseFilter, JournalVoucherFilter, AdjustmentFilter
@@ -79,7 +79,7 @@ def invoice_ai_upload_view(request):
             print(f"\n[PAGE {page}] EXTRACTING KEY INVOICE DATA FROM AI...")
             ledgers, page_cost, next_seq, err = processor.process_single_page(
                 pdf_bytes=single_page_bytes, 
-                pg=page, client_id=job['client_id'], custom_prompt=job['custom_prompt'],
+                pg=page, custom_prompt=job['custom_prompt'],
                 batch_name=job['batch_name'], rules_context=job['rules_context'],
                 memo_context=job['memo_context'], current_invoice_seq=job['current_seq'],
                 date_prefix=job['date_prefix'], is_explicit_seq=job['is_explicit_seq']
@@ -115,7 +115,6 @@ def invoice_ai_upload_view(request):
             results = job.get('results', [])
             results.sort(key=lambda x: int(x.get('page', 0) or 0))
             
-            client_id = job.get('client_id')
             is_explicit_seq = job.get('is_explicit_seq', False)
             date_prefix = job.get('date_prefix')
             original_seq = job.get('original_seq', 1)
@@ -150,7 +149,7 @@ def invoice_ai_upload_view(request):
                             
                         if month_prefix not in month_trackers:
                             existing_invs = Purchase.objects.filter(
-                                client_id=client_id, invoice_no__startswith=f"INV-{month_prefix}"
+                                invoice_no__startswith=f"INV-{month_prefix}"
                             ).values_list('invoice_no', flat=True)
                             max_seq = 0
                             for inv in existing_invs:
@@ -184,8 +183,8 @@ def invoice_ai_upload_view(request):
                 
             request.session['extracted_invoices'] = results
             request.session['ai_metadata'] = {
-                'file_name': job['file_name'], 'batch_name': job['batch_name'], 'client_id': job['client_id'], 
-                'client_name': Client.objects.get(id=job['client_id']).name, 'total_pages': job['total_pages'], 'costs': job['costs']
+                'file_name': job['file_name'], 'batch_name': job['batch_name'],
+                'total_pages': job['total_pages'], 'costs': job['costs']
             }
             request.session.pop('invoice_job', None)
             return JsonResponse({"status": "success", "redirect_url": reverse('tools:review_invoices')})
@@ -193,19 +192,6 @@ def invoice_ai_upload_view(request):
         request.session.pop('invoice_report_path', None)
         form = BatchUploadForm(request.POST, request.FILES)
         if form.is_valid():
-            selected_client = form.cleaned_data['client']
-            
-            has_access = user.is_staff or user.is_superuser
-            if not has_access:
-                try:
-                    if user.profile.clients.filter(id=selected_client.id).exists(): has_access = True
-                except Exception: pass
-            if not has_access:
-                if request.headers.get('x-requested-with') == 'XMLHttpRequest': return JsonResponse({"status": "error", "message": "Permission denied."})
-                else:
-                    messages.error(request, "Permission denied.")
-                    return redirect('main')
-
             uploaded_pdf = form.cleaned_data['invoice_pdf']
             batch_name = form.cleaned_data['batch_name']
             custom_prompt = form.cleaned_data.get('ai_prompt', '')
@@ -222,10 +208,10 @@ def invoice_ai_upload_view(request):
 
             rules_context = ""
             memo_context = ""
-            client_memo = ClientPromptMemo.objects.filter(client=selected_client).first()
+            client_memo = ClientPromptMemo.objects.first()
             if client_memo: memo_context = client_memo.memo_text
 
-            rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
+            rules = AccountMappingRule.objects.all().select_related('account')
             if rules.exists():
                 rules_data = [{'Account ID': r.account.account_id, 'Account Name': r.account.name, 'Description / Trigger Keywords': r.trigger_keywords, 'Reasoning / AI Guidelines': r.ai_guideline} for r in rules]
                 rules_context = pd.DataFrame(rules_data).to_csv(index=False)
@@ -248,7 +234,7 @@ def invoice_ai_upload_view(request):
                 
                 request.session['invoice_job'] = {
                     'local_file_path': local_file_path, 'file_name': uploaded_pdf.name, 'total_pages': total_pages,
-                    'client_id': selected_client.id, 'batch_name': batch_name, 'custom_prompt': custom_prompt,
+                    'batch_name': batch_name, 'custom_prompt': custom_prompt,
                     'rules_context': rules_context, 'memo_context': memo_context, 'is_explicit_seq': is_explicit_seq,
                     'date_prefix': date_prefix, 'original_seq': current_seq, 'current_seq': current_seq,
                     'results': [], 'costs': {'flash_cost': 0.0, 'pro_cost': 0.0}
@@ -268,9 +254,6 @@ def invoice_ai_upload_view(request):
             request.session.pop('invoice_job', None)
             
         form = BatchUploadForm()
-        if not (user.is_staff or user.is_superuser):
-            try: form.fields['client'].queryset = user.profile.clients.all()
-            except Exception: form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'invoice_upload.html', {'form': form})
 
@@ -289,26 +272,10 @@ def review_invoices(request):
     # --- FIX: Ensure the formset displays pages sequentially ---
     extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
         
-    client_id = metadata.get('client_id')
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access and client_id:
-        try:
-            if user.profile.clients.filter(id=client_id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        messages.error(request, "You do not have permission to review this client's data.")
-        return redirect('main')
-    
     # --- VENDOR CHOICES ---
-    # Isolate vendors exclusively to this client
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     
-    # Re-sequence new vendors so they group correctly and have unique temp_ids
-    all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+    all_vids = Vendor.objects.all().values_list('vendor_id', flat=True)
     max_num = 1
     for vid in all_vids:
         if vid:
@@ -371,7 +338,6 @@ def review_invoices(request):
                     for form in formset:
                         if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                             purchase_instance = form.save(commit=False) 
-                            purchase_instance.client_id = client_id # Map to client
                             purchase_instance.user = request.user
                             purchase_instance.batch = metadata.get('batch_name')
                             
@@ -396,12 +362,12 @@ def review_invoices(request):
                             if str(vc).startswith('TEMP_'):
                                 new_vid = vc.replace('TEMP_', '')
                                 new_vendor, _ = Vendor.objects.get_or_create(
-                                    client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name}
+                                    vendor_id=new_vid, defaults={'name': raw_name}
                                 )
                                 purchase_instance.vendor = new_vendor
                             elif vc:
                                 try:
-                                    purchase_instance.vendor = Vendor.objects.get(id=int(vc), client_id=client_id)
+                                    purchase_instance.vendor = Vendor.objects.get(id=int(vc))
                                 except (ValueError, Vendor.DoesNotExist):
                                     pass
                                     
@@ -415,7 +381,6 @@ def review_invoices(request):
                             
                             # Create Journal Entry Header (Explicit FK back to 'purchase')
                             je = JournalEntry.objects.create(
-                                client_id=client_id,
                                 date=purchase_instance.date or date.today(),
                                 description=f"Purchase from {raw_name}",
                                 reference_number=purchase_instance.invoice_no,
@@ -436,7 +401,7 @@ def review_invoices(request):
                             if total_amount > 0:
                                 cr_account_id = str(form_credit_acct) if form_credit_acct else '200000'
                                 ap_account, _ = Account.objects.get_or_create(
-                                    client_id=client_id, account_id=cr_account_id, 
+                                    account_id=cr_account_id, 
                                     defaults={'name': 'Trade Payable - USD', 'account_type': 'Liability'}
                                 )
                                 JournalLine.objects.create(
@@ -447,7 +412,7 @@ def review_invoices(request):
                             # DEBIT: VAT Input (Recoverable Tax Asset)
                             if vat_amount > 0:
                                 vat_account, _ = Account.objects.get_or_create(
-                                    client_id=client_id, account_id='115010', 
+                                    account_id='115010', 
                                     defaults={'name': 'VAT input 进项增值税', 'account_type': 'Asset'}
                                 )
                                 JournalLine.objects.create(
@@ -460,7 +425,7 @@ def review_invoices(request):
                             if main_net > 0:
                                 ai_account_id = str(form_debit_acct) if form_debit_acct else '725080'
                                 exp_account, _ = Account.objects.get_or_create(
-                                    client_id=client_id, account_id=ai_account_id, 
+                                    account_id=ai_account_id, 
                                     defaults={'name': 'Operating Expense', 'account_type': 'Expense'}
                                 )
                                 JournalLine.objects.create(
@@ -493,7 +458,7 @@ def review_invoices(request):
             request.session.pop('extracted_invoices', None)
             request.session.pop('ai_metadata', None)
             
-            messages.success(request, f"Successfully saved {len(saved_instances)} invoices and posted Journal Entries for {metadata.get('client_name')}!")
+            messages.success(request, f"Successfully saved {len(saved_instances)} invoices and posted Journal Entries!")
             return redirect('tools:invoice_download') 
         else:
             print("❌ FORMSET VALIDATION FAILED:")
@@ -555,39 +520,7 @@ def ai_cost_dashboard(request):
 @login_required(login_url="register:login")
 def manual_invoice_entry_view(request):
     """View to manually enter a single invoice and post it to the GL."""
-    if request.method == 'POST' and 'client' in request.POST and 'vendor_choice' not in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:manual_invoice_entry')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to manage this client.")
-            request.session.pop('active_client_id', None)
-            return redirect('main')
-
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
-    # Fetch dynamic choices
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
 
     seen_accounts = set()
@@ -629,7 +562,6 @@ def manual_invoice_entry_view(request):
                 # --- POST TO GENERAL LEDGER ---
                 # ==========================================================
                 je = JournalEntry.objects.create(
-                    client=purchase.client,
                     date=purchase.date or date.today(),
                     description=f"Manual Purchase: {purchase.company}",
                     reference_number=purchase.invoice_no,
@@ -649,27 +581,27 @@ def manual_invoice_entry_view(request):
                 main_net = round((total_amount - vat_amount - wht_amount), 2)
                 
                 if purchase.account_id and main_net > 0:
-                    acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
+                    acct, _ = Account.objects.get_or_create(account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
                     JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
 
                 # 2. VAT Debit
                 if vat_amount > 0 and purchase.vat_account_id:
-                    vat_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
+                    vat_acct, _ = Account.objects.get_or_create(account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
                     JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
 
                 # 3. WHT Expense Debit
                 if wht_amount > 0 and purchase.wht_debit_account_id:
-                    wht_exp_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
+                    wht_exp_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
                     JournalLine.objects.create(journal_entry=je, account=wht_exp_acct, description="WHT Expense Absorbed", debit=wht_amount)
 
                 # 4. Main Credit (Payable)
                 if total_amount > 0 and purchase.credit_account_id:
-                    cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
+                    cr_acct, _ = Account.objects.get_or_create(account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
                     JournalLine.objects.create(journal_entry=je, account=cr_acct, description=f"Payable - {purchase.company}", credit=total_amount)
 
                 # 5. WHT Payable Credit
                 if wht_amount > 0 and purchase.wht_account_id:
-                    wht_pay_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
+                    wht_pay_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
                     JournalLine.objects.create(journal_entry=je, account=wht_pay_acct, description="WHT Payable to GDT", credit=wht_amount)
 
             # --- End of Atomic Block ---
@@ -678,41 +610,19 @@ def manual_invoice_entry_view(request):
             return redirect('tools:manual_invoice_entry') 
 
     else:
-        form = ManualPurchaseEntryForm(initial={'client': client_id}, vendor_choices=vendor_choices, account_choices=account_choices)
+        form = ManualPurchaseEntryForm(vendor_choices=vendor_choices, account_choices=account_choices)
 
     return render(request, 'manual_invoice_entry.html', {'form': form})
 
 @login_required
-def export_purchase_invoices(request, client_id):
-    """Exports Purchase instances to an Excel file using URL parameter for client routing."""
-    
-    # Optional but recommended: Verify the client exists and user has access
-    client = get_object_or_404(Client, id=client_id)
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access:
-        try:
-            if user.profile.clients.filter(id=client.id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        messages.error(request, "You do not have permission to export this client's data.")
-        return redirect('main')
-
-    # Base Queryset: Ensure sequential order based on entry processing instead of randomly descending
-    queryset = Purchase.objects.filter(client_id=client.id).select_related('client', 'vendor').prefetch_related('journal_entries__lines__account').order_by('id')
-
-    # Pass the client_id directly into the Resource
-    resource = PurchaseResource(client_id=client.id)
+def export_purchase_invoices(request):
+    """Exports Purchase instances to an Excel file."""
+    queryset = Purchase.objects.select_related('vendor').prefetch_related('journal_entries__lines__account').order_by('id')
+    resource = PurchaseResource()
     dataset = resource.export(queryset=queryset)
 
     today_str = datetime.date.today().strftime("%Y%m%d")
-    # Clean the client name for the filename (removes spaces/special chars)
-    safe_client_name = "".join([c for c in client.name if c.isalpha() or c.isdigit()]).rstrip()
-    
-    filename = f"purchase_invoices_{safe_client_name}_{today_str}.xlsx"
+    filename = f"purchase_invoices_{today_str}.xlsx"
     
     media_dir = os.path.join(settings.BASE_DIR, 'media')
     os.makedirs(media_dir, exist_ok=True)
@@ -724,7 +634,7 @@ def export_purchase_invoices(request, client_id):
     request.session['export_report_path'] = report_path
     request.session['export_filename'] = filename
     
-    messages.success(request, f"Successfully exported purchase invoices for {client.name}!")
+    messages.success(request, f"Successfully exported purchase invoices!")
     return redirect('tools:purchase_export_success')
 
 def purchase_export_success_view(request):
@@ -756,20 +666,6 @@ def gl_migration_upload_view(request):
         
         form = GLMigrationUploadForm(request.POST, request.FILES)
         if form.is_valid():
-            selected_client = form.cleaned_data['client']
-            
-            user = request.user
-            has_access = user.is_staff or user.is_superuser
-            if not has_access:
-                try:
-                    if user.profile.clients.filter(id=selected_client.id).exists():
-                        has_access = True
-                except Exception:
-                    pass
-            if not has_access:
-                messages.error(request, "You do not have permission to migrate data for this client.")
-                return redirect('main')
-                
             uploaded_file = form.cleaned_data['gl_file']
             batch_name = form.cleaned_data['batch_name']
             
@@ -781,9 +677,8 @@ def gl_migration_upload_view(request):
 
             try:
                 api_key = os.getenv("GEMINI_API_KEY_2") 
-                processor = GLMigrationProcessor(api_key=api_key, client_id=selected_client.id)
+                processor = GLMigrationProcessor(api_key=api_key)
                 
-                print(f"🚀 Parsing Historical Data for: {selected_client.name}...")
                 parsed_data, costs = processor.process_migration_file(tmp_file_path)
                 
                 # --- NEW: PREVENT GHOST SAVES (Hard Stop if AI returned nothing) ---
@@ -804,8 +699,6 @@ def gl_migration_upload_view(request):
                 # Save the parsed data arrays to session queue
                 request.session['gl_migration_data'] = {'lines': parsed_data}
                 request.session['gl_migration_meta'] = {
-                    'client_id': selected_client.id,
-                    'client_name': selected_client.name,
                     'batch_name': batch_name
                 }
                 request.session['gl_migration_log'] = [] 
@@ -839,25 +732,9 @@ def gl_review_view(request):
         messages.error(request, "No migration queue found. Please upload a file.")
         return redirect('tools:gl_migration_upload')
 
-    client_id = meta.get('client_id')
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access and client_id:
-        try:
-            if user.profile.clients.filter(id=client_id).exists():
-                has_access = True
-        except Exception:
-            pass
-    if not has_access:
-        messages.error(request, "You do not have permission to review this client's data.")
-        return redirect('main')
-        
-    selected_client = Client.objects.get(id=client_id)
-    
     seen_accounts = set()
     db_accounts = []
-    for acc_id, name in Account.objects.filter(client_id=client_id).values_list('account_id', 'name'):
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
         if acc_id not in seen_accounts:
             seen_accounts.add(acc_id)
             db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
@@ -911,7 +788,6 @@ def gl_review_view(request):
                         for item in completed_data:
                             # 1. PROCESS AND SAVE TO 'Old' MODEL
                             old_record = Old.objects.create(
-                                client=selected_client,
                                 user=request.user,
                                 date=item['date'] or date.today(),
                                 account_id=item['account_id'],
@@ -926,7 +802,6 @@ def gl_review_view(request):
                             # 2. CREATE LINKED JOURNAL ENTRY
                             ref = f"HIST-{gl_no}" if gl_no and gl_no != 'UNGROUPED' else f"OLD-{old_record.id}"
                             je = JournalEntry.objects.create(
-                                client=selected_client,
                                 date=item['date'] or date.today(),
                                 reference_number=ref,
                                 description=f"Historical GL Migration: {item.get('description', '')}"[:255],
@@ -936,7 +811,6 @@ def gl_review_view(request):
                             # 3. CREATE JOURNAL LINE
                             account, _ = Account.objects.get_or_create(
                                 account_id=str(item['account_id']),
-                                client=selected_client,
                                 defaults={'name': 'System Gen Acct', 'account_type': 'Asset'}
                             )
                             
@@ -1012,48 +886,8 @@ def gl_download_view(request):
 
 @login_required(login_url="register:login")
 def PurchaseListView(request):
-    user = request.user
-
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:purchase_list')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        # Base filtering by client
-        base_queryset = Purchase.objects.filter(client_id=client_id)
-
-        # Permission Filtering Logic
-        if user.is_staff or user.is_superuser:
-            purchases = base_queryset
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=client_id).exists():
-                    purchases = base_queryset
-                else:
-                    messages.error(request, "You do not have permission to view purchases for this client.")
-                    return redirect('main')
-            except Profile.DoesNotExist:
-                messages.error(request, "You do not have permission to view purchases for this client.")
-                return redirect('main')
-        
-        client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-    else:
-        purchases = Purchase.objects.none()
-        client_form = ClientSelectionForm()
-        vendor_queryset = Vendor.objects.none()
-        messages.info(request, "Please select a client to view purchases.")
-
-    purchases = purchases.order_by('-id')
+    purchases = Purchase.objects.all().order_by('-id')
+    vendor_queryset = Vendor.objects.all().order_by('vendor_id')
 
     # Initialize Filter
     purchase_filter = PurchaseFilter(request.GET, queryset=purchases)
@@ -1068,7 +902,6 @@ def PurchaseListView(request):
         'filter': purchase_filter,
         'purchases': page_obj,  # 'page_obj' is fully iterable, keeping the template loop happy
         'page_obj': page_obj,
-        'client_form': client_form,
     }
     return render(request, 'purchase_list.html', context)
 
@@ -1079,44 +912,9 @@ class PurchaseDetailView(LoginRequiredMixin, DetailView):
     template_name = 'purchase_detail.html'
     context_object_name = 'purchase'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        purchase = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                # Check if user manages the client
-                if profile.clients.filter(id=purchase.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        
-        if not is_authorized:
-            messages.error(request, "You do not have permission to view this purchase.")
-            return redirect('main')
-
-        return super().dispatch(request, *args, **kwargs)
-
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        purchase = self.get_object()
-        
-        # Determine ownership for the template (e.g., showing Edit/Delete buttons)
-        is_owner = False
-        if user.is_staff or user.is_superuser:
-            is_owner = True
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=purchase.client_id).exists():
-                    is_owner = True
-            except Profile.DoesNotExist:
-                pass
-
-        context['is_owner'] = is_owner
+        context['is_owner'] = True
         return context
 
 
@@ -1126,33 +924,13 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
     form_class = ManualPurchaseEntryForm 
     template_name = 'purchase_update.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        purchase = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=purchase.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        
-        if not is_authorized:
-            messages.error(request, "You do not have permission to update this purchase.")
-            return redirect('main')
-
-        return super().dispatch(request, *args, **kwargs)
-
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        client_id = self.object.client_id
         
-        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
         
-        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         
         return kwargs
@@ -1187,11 +965,8 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
             # 1. Safely wipe old entries. (Requires JournalLine to have on_delete=models.CASCADE in models.py)
             JournalEntry.objects.filter(purchase=purchase).delete()
             
-            client_id = purchase.client_id
-            
             # 2. Rebuild the entries
             je = JournalEntry.objects.create(
-                client=purchase.client,
                 date=purchase.date or date.today(),
                 description=f"Updated Manual Purchase: {purchase.company}",
                 reference_number=purchase.invoice_no,
@@ -1209,23 +984,23 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
             main_net = (total_amount - vat_amount - wht_amount)
             
             if purchase.account_id and main_net > 0:
-                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
+                acct, _ = Account.objects.get_or_create(account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
                 JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
 
             if vat_amount > 0 and purchase.vat_account_id:
-                vat_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
+                vat_acct, _ = Account.objects.get_or_create(account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
                 JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
 
             if wht_amount > 0 and purchase.wht_debit_account_id:
-                wht_exp_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
+                wht_exp_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
                 JournalLine.objects.create(journal_entry=je, account=wht_exp_acct, description="WHT Expense Absorbed", debit=wht_amount)
 
             if total_amount > 0 and purchase.credit_account_id:
-                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
+                cr_acct, _ = Account.objects.get_or_create(account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
                 JournalLine.objects.create(journal_entry=je, account=cr_acct, description=f"Payable - {purchase.company}", credit=total_amount)
 
             if wht_amount > 0 and purchase.wht_account_id:
-                wht_pay_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
+                wht_pay_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
                 JournalLine.objects.create(journal_entry=je, account=wht_pay_acct, description="WHT Payable to GDT", credit=wht_amount)
 
         # End of atomic block. If successful, proceed to success message and redirect.
@@ -1241,25 +1016,6 @@ class PurchaseDeleteView(LoginRequiredMixin, DeleteView):
     template_name = 'purchase_confirm_delete.html'
     success_url = reverse_lazy('tools:purchase_list')
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        purchase = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=purchase.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        
-        if not is_authorized:
-            messages.error(request, "You do not have permission to delete this purchase.")
-            return redirect('main')
-
-        return super().dispatch(request, *args, **kwargs)
-
     def form_valid(self, form):
         # Clean up associated General Ledger Entries before deleting the purchase
         JournalEntry.objects.filter(purchase=self.object).delete()
@@ -1268,40 +1024,14 @@ class PurchaseDeleteView(LoginRequiredMixin, DeleteView):
 
 @login_required(login_url="register:login")
 def export_purchase_csv(request):
-    user = request.user
-    client_id = request.session.get('active_client_id')
-
-    # Failsafe if accessed without an active client
-    if not client_id:
-        messages.error(request, "No active client selected.")
-        return redirect('main')
-
-    # Base filtering by client
-    base_queryset = Purchase.objects.filter(client_id=client_id)
-
-    # Permission Filtering Logic (Identical to PurchaseListView)
-    if user.is_staff or user.is_superuser:
-        purchases = base_queryset
-    else:
-        try:
-            profile = Profile.objects.get(user=user)
-            if profile.clients.filter(id=client_id).exists():
-                purchases = base_queryset
-            else:
-                messages.error(request, "You do not have permission to export data for this client.")
-                return redirect('main')
-        except Profile.DoesNotExist:
-            messages.error(request, "You do not have permission to export data for this client.")
-            return redirect('main')
-
-    purchases = purchases.select_related('client', 'vendor').prefetch_related('journal_entries__lines__account').order_by('id')
+    purchases = Purchase.objects.select_related('vendor').prefetch_related('journal_entries__lines__account').order_by('id')
 
     # Apply the same filter parameters passed via the GET request
     purchase_filter = PurchaseFilter(request.GET, queryset=purchases)
     filtered_purchases = purchase_filter.qs
 
     # Generate the CSV using django-import-export
-    resource = PurchaseResource(client_id=client_id)
+    resource = PurchaseResource()
     dataset = resource.export(queryset=filtered_purchases)
     
     # Create and return the HTTP response with a UTF-8 BOM so Excel reads Chinese characters properly
@@ -1316,44 +1046,7 @@ def export_purchase_csv(request):
 
 @login_required(login_url="register:login")
 def OldListView(request):
-    user = request.user
-
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:old_list')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        base_queryset = Old.objects.filter(client_id=client_id)
-
-        if user.is_staff or user.is_superuser:
-            old_records = base_queryset
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=client_id).exists():
-                    old_records = base_queryset
-                else:
-                    messages.error(request, "You do not have permission to view records for this client.")
-                    return redirect('main')
-            except Profile.DoesNotExist:
-                messages.error(request, "You do not have permission to view records for this client.")
-                return redirect('main')
-        
-        client_form = ClientSelectionForm(initial={'client': client_id})
-    else:
-        old_records = Old.objects.none()
-        client_form = ClientSelectionForm()
-        messages.info(request, "Please select a client to view historical records.")
-
-    old_records = old_records.order_by('-id')
+    old_records = Old.objects.all().order_by('-id')
 
     paginator = Paginator(old_records, 20)
     page_number = request.GET.get('page')
@@ -1362,44 +1055,12 @@ def OldListView(request):
     context = {
         'old_records': page_obj,
         'page_obj': page_obj,
-        'client_form': client_form,
     }
     return render(request, 'tools/old_list.html', context)
 
 
 @login_required(login_url="register:login")
 def manual_old_entry_view(request):
-    if request.method == 'POST' and 'client' in request.POST and 'account_id' not in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:manual_old_entry')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to manage this client.")
-            request.session.pop('active_client_id', None)
-            return redirect('main')
-
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
     seen_accounts = set()
     db_accounts = []
     for acc_id, name in Account.objects.values_list('account_id', 'name'):
@@ -1419,7 +1080,6 @@ def manual_old_entry_view(request):
 
                 # Post to General Ledger, linking via reference_number
                 je = JournalEntry.objects.create(
-                    client=old_record.client,
                     date=old_record.date or date.today(),
                     description=f"Historical Entry: {old_record.description}"[:255],
                     reference_number=f"OLD-{old_record.id}",
@@ -1427,7 +1087,6 @@ def manual_old_entry_view(request):
                 )
                 
                 acct, _ = Account.objects.get_or_create(
-                    client_id=client_id, 
                     account_id=str(old_record.account_id), 
                     defaults={'name': 'Historical Default', 'account_type': 'Asset'}
                 )
@@ -1450,7 +1109,7 @@ def manual_old_entry_view(request):
             messages.success(request, f"Successfully created manual historical record and posted to GL.")
             return redirect('tools:old_list') 
     else:
-        form = OldEntryForm(initial={'client': client_id}, account_choices=account_choices)
+        form = OldEntryForm(account_choices=account_choices)
 
     return render(request, 'tools/old_form.html', {'form': form})
 
@@ -1461,27 +1120,9 @@ class OldDetailView(LoginRequiredMixin, DetailView):
     template_name = 'tools/old_detail.html'
     context_object_name = 'old_record'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        old_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=old_record.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        old_record = self.get_object()
-        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=old_record.client_id).exists())
+        context['is_owner'] = True
         return context
 
 
@@ -1491,25 +1132,9 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
     form_class = OldEntryForm 
     template_name = 'tools/old_form.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        old_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=old_record.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        if not is_authorized:
-            messages.error(request, "You do not have permission to update this record.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=self.object.client_id).order_by('account_id')]
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         return kwargs
 
@@ -1519,12 +1144,12 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
             JournalEntry.objects.filter(Q(old=old_record) | Q(reference_number=f"OLD-{old_record.id}")).delete()
             
             je = JournalEntry.objects.create(
-                client=old_record.client, date=old_record.date or date.today(),
+                date=old_record.date or date.today(),
                 description=f"Updated Historical Entry: {old_record.description}"[:255], 
                 reference_number=f"OLD-{old_record.id}",
                 old=old_record
             )
-            acct, _ = Account.objects.get_or_create(client_id=old_record.client_id, account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
+            acct, _ = Account.objects.get_or_create(account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
             safe_desc = old_record.description[:255] if old_record.description else "Historical Entry"
             debit_val = old_record.debit or 0.0
             credit_val = old_record.credit or 0.0
@@ -1544,22 +1169,6 @@ class OldDeleteView(LoginRequiredMixin, DeleteView):
     model = Old
     template_name = 'tools/old_confirm_delete.html'
     success_url = reverse_lazy('tools:old_list')
-
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        old_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=old_record.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist:
-                pass
-        if not is_authorized:
-            messages.error(request, "You do not have permission to delete this record.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
         JournalEntry.objects.filter(Q(old=self.object) | Q(reference_number=f"OLD-{self.object.id}")).delete()
@@ -1588,27 +1197,14 @@ def export_balancika_view(request):
     if request.method == 'POST':
         form = BalancikaExportForm(request.POST)
         if form.is_valid():
-            client = form.cleaned_data['client']
             start_date = form.cleaned_data.get('start_date')
             end_date = form.cleaned_data.get('end_date')
             purchase_id = form.cleaned_data.get('purchase_id')
             bank_id = form.cleaned_data.get('bank_id')
             entry_counter = form.cleaned_data['entry_no_start']
             
-            user = request.user
-            has_access = user.is_staff or user.is_superuser
-            if not has_access:
-                try:
-                    if user.profile.clients.filter(id=client.id).exists():
-                        has_access = True
-                except Profile.DoesNotExist:
-                    pass
-            if not has_access:
-                messages.error(request, "You do not have permission to export data for this client.")
-                return redirect('main')
-
-            purchase_filters = Q(client=client)
-            bank_filters = Q(client=client, credit__gt=0)
+            purchase_filters = Q()
+            bank_filters = Q(credit__gt=0)
 
             if start_date:
                 purchase_filters &= Q(date__gte=start_date)
@@ -1639,7 +1235,7 @@ def export_balancika_view(request):
             combined_records.sort(key=lambda x: (0 if isinstance(x, Purchase) else 1, x.id))
 
             if not combined_records:
-                messages.warning(request, f"No purchases or bank charges found for {client.name} with the given criteria.")
+                messages.warning(request, f"No purchases or bank charges found with the given criteria.")
                 return render(request, 'tools/balancika_export.html', {'form': form})
 
             # Calculate base month start and end dates
@@ -1841,7 +1437,7 @@ def export_balancika_view(request):
             elif end_date:
                 date_range_str = f"_to_{end_date.strftime('%Y%m%d')}"
             
-            filename = f"Balancika_Export_{client.name.replace(' ', '_')}{date_range_str}.xlsx"
+            filename = f"Balancika_Export{date_range_str}.xlsx"
             response = HttpResponse(
                 output.read(), 
                 content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -1850,12 +1446,6 @@ def export_balancika_view(request):
             return response
     else:
         form = BalancikaExportForm()
-        user = request.user
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Profile.DoesNotExist:
-                form.fields['client'].queryset = Client.objects.none()
 
     return render(request, 'tools/balancika_export.html', {'form': form})
 
@@ -2177,62 +1767,15 @@ def upload_engagement_letters_view(request):
 @login_required
 def monthly_closing_view(request):
     # ---------------------------------------------------------
-    # 1. CLIENT SELECTION ROUTE 
-    # ---------------------------------------------------------
-    if request.method == 'POST' and 'client' in request.POST and 'date' not in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:monthly_closing')
-
-    client_id = request.session.get('active_client_id')
-    user = request.user
-    
-    # ---------------------------------------------------------
-    # 2. STATE SYNC FIX
-    # ---------------------------------------------------------
-    if request.method == 'POST' and 'client' in request.POST:
-        submitted_client_id = request.POST.get('client')
-        if submitted_client_id:
-            client_id = submitted_client_id
-            request.session['active_client_id'] = client_id
-
-    # ---------------------------------------------------------
-    # 3. SECURITY & PERMISSIONS
-    # ---------------------------------------------------------
-    if client_id:
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Exception:
-                pass
-        if not has_access:
-            messages.error(request, "Permission denied to manage this client.")
-            request.session.pop('active_client_id', None)
-            return redirect('main')
-
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client to perform monthly closing.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
-    # ---------------------------------------------------------
     # 4. STATIC TUPLE GENERATION 
     # ---------------------------------------------------------
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
-    db_vendors = [(str(v.id), f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(str(v.id), f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     vendor_choices = [('', '--- No Vendor ---')] + db_vendors
 
     form_kwargs_dict = {
-        'client_id': client_id, 
         'account_choices': account_choices, 
         'vendor_choices': vendor_choices
     }
@@ -2249,7 +1792,6 @@ def monthly_closing_view(request):
         print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
 
         if form.is_valid() and accrual_formset.is_valid() and fx_formset.is_valid():
-            client = form.cleaned_data['client']
             date = form.cleaned_data['date']
             
             api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
@@ -2259,8 +1801,8 @@ def monthly_closing_view(request):
                     'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
                 })
             
-            vendor_tax, _ = Vendor.objects.get_or_create(client=client, name='General Department of Taxation', defaults={'vendor_id': 'V-TAX'})
-            vendor_staff, _ = Vendor.objects.get_or_create(client=client, name='Staff', defaults={'vendor_id': 'V-STAFF'})
+            vendor_tax, _ = Vendor.objects.get_or_create(name='General Department of Taxation', defaults={'vendor_id': 'V-TAX'})
+            vendor_staff, _ = Vendor.objects.get_or_create(name='Staff', defaults={'vendor_id': 'V-STAFF'})
 
             transaction_lines = [] 
             period_label = date.strftime("%b'%y")
@@ -2350,7 +1892,7 @@ def monthly_closing_view(request):
                     vendor_instance = None
                     if vendor_id_str:
                         try:
-                            vendor_instance = Vendor.objects.get(id=int(vendor_id_str), client=client)
+                            vendor_instance = Vendor.objects.get(id=int(vendor_id_str))
                         except (ValueError, Vendor.DoesNotExist):
                             pass
                     
@@ -2425,16 +1967,16 @@ def monthly_closing_view(request):
                     with transaction.atomic():
                         for line in transaction_lines:
                             jv = JournalVoucher.objects.create(
-                                client=client, user=request.user, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
+                                user=request.user, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
                                 description=line['desc'], debit=line['debit'], credit=line['credit'], 
                                 payment_status=line.get('payment_status') or 'Open'
                             )
                             je = JournalEntry.objects.create(
-                                client=client, date=date, description=f"Monthly Closing Automation - {period_label}"[:255], 
+                                date=date, description=f"Monthly Closing Automation - {period_label}"[:255], 
                                 reference_number=f"JV-{jv.id}", journal_voucher=jv
                             )
                             account, _ = Account.objects.get_or_create(
-                                client=client, account_id=str(line['account_id']), defaults={'name': 'System Gen Acct', 'account_type': 'Expense'}
+                                account_id=str(line['account_id']), defaults={'name': 'System Gen Acct', 'account_type': 'Expense'}
                             )
                             JournalLine.objects.create(
                                 journal_entry=je, account=account, debit=line['debit'], credit=line['credit'], description=line['desc'][:255]
@@ -2467,12 +2009,7 @@ def monthly_closing_view(request):
         # ---------------------------------------------------------
         # 6. GET REQUEST RENDERING
         # ---------------------------------------------------------
-        form = MonthlyClosingForm(initial={'client': client_id})
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Exception:
-                form.fields['client'].queryset = Client.objects.none()
+        form = MonthlyClosingForm()
                 
         accrual_formset = AccrualFormSet(prefix='accrual', form_kwargs=form_kwargs_dict)
         fx_formset = FXFormSet(prefix='fx', form_kwargs=form_kwargs_dict)
@@ -2481,13 +2018,9 @@ def monthly_closing_view(request):
         'form': form, 'accrual_formset': accrual_formset, 'fx_formset': fx_formset
     })
 
-def load_client_vendors(request):
-    """HTMX endpoint to return vendor <option> tags based on selected client."""
-    client_id = request.GET.get('client')
-    if client_id:
-        vendors = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-    else:
-        vendors = Vendor.objects.none()
+def load_vendors(request):
+    """HTMX endpoint to return vendor <option> tags for the current schema."""
+    vendors = Vendor.objects.all().order_by('vendor_id')
         
     return render(request, 'tools/partials/vendor_options.html', {'vendors': vendors})
 
@@ -2542,38 +2075,11 @@ def JournalVoucherListView(request):
     paginator = Paginator(jv_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
-    context = {'filter': jv_filter, 'jv_records': page_obj, 'page_obj': page_obj, 'client_form': client_form}
+    context = {'filter': jv_filter, 'jv_records': page_obj, 'page_obj': page_obj}
     return render(request, 'tools/journal_voucher_list.html', context)
 
 @login_required(login_url="register:login")
 def manual_journal_voucher_entry_view(request):
-    if request.method == 'POST' and 'client' in request.POST and 'account_id' not in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client: request.session['active_client_id'] = selected_client.id
-            else: request.session.pop('active_client_id', None)
-            return redirect('tools:manual_journal_voucher_entry')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists(): has_access = True
-            except Profile.DoesNotExist: pass
-        if not has_access:
-            messages.error(request, "Permission denied to manage this client.")
-            request.session.pop('active_client_id', None)
-            return redirect('main')
-
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
     seen_accounts = set()
     db_accounts = []
     for acc_id, name in Account.objects.values_list('account_id', 'name'):
@@ -2590,7 +2096,7 @@ def manual_journal_voucher_entry_view(request):
                 jv_record = form.save(commit=False)
                 jv_record.user = request.user
                 
-                acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+                acct, _ = Account.objects.get_or_create(account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
                 
                 if acct.account_type and acct.account_type.lower() in ['asset', 'liability']:
                     jv_record.payment_status = 'Open'
@@ -2600,7 +2106,7 @@ def manual_journal_voucher_entry_view(request):
                 jv_record.save()
                 
                 je = JournalEntry.objects.create(
-                    client=jv_record.client, date=jv_record.date or date.today(),
+                    date=jv_record.date or date.today(),
                     description=f"Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
                     journal_voucher=jv_record
                 )
@@ -2616,8 +2122,8 @@ def manual_journal_voucher_entry_view(request):
             messages.success(request, f"Successfully created journal voucher and posted to GL.")
             return redirect('tools:journal_voucher_list') 
     else:
-        form = JournalVoucherEntryForm(initial={'client': client_id}, account_choices=account_choices)
-        form.fields['vendor'].queryset = Vendor.objects.filter(client_id=client_id)
+        form = JournalVoucherEntryForm(account_choices=account_choices)
+        form.fields['vendor'].queryset = Vendor.objects.all()
 
     return render(request, 'tools/journal_voucher_form.html', {'form': form})
 
@@ -2627,24 +2133,9 @@ class JournalVoucherDetailView(LoginRequiredMixin, DetailView):
     template_name = 'tools/journal_voucher_detail.html'
     context_object_name = 'jv_record'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        jv_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        jv_record = self.get_object()
-        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=jv_record.client_id).exists())
+        context['is_owner'] = True
         return context
 
 class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
@@ -2653,36 +2144,23 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
     form_class = JournalVoucherEntryForm 
     template_name = 'tools/journal_voucher_form.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        jv_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=self.object.client_id).order_by('account_id')]
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         return kwargs
 
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
         if 'form' in context:
-            context['form'].fields['vendor'].queryset = Vendor.objects.filter(client_id=self.object.client_id)
+            context['form'].fields['vendor'].queryset = Vendor.objects.all()
         return context
 
     def form_valid(self, form):
         with transaction.atomic():
             jv_record = form.save(commit=False)
             
-            acct, _ = Account.objects.get_or_create(client_id=jv_record.client_id, account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
+            acct, _ = Account.objects.get_or_create(account_id=str(jv_record.account_id), defaults={'name': 'JV Default', 'account_type': 'Asset'})
             
             if acct.account_type and acct.account_type.lower() in ['asset', 'liability']:
                 jv_record.payment_status = 'Open'
@@ -2694,7 +2172,7 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
             JournalEntry.objects.filter(Q(journal_voucher=jv_record) | Q(reference_number=f"JV-{jv_record.id}")).delete()
             
             je = JournalEntry.objects.create(
-                client=jv_record.client, date=jv_record.date or date.today(),
+                date=jv_record.date or date.today(),
                 description=f"Updated Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
                 journal_voucher=jv_record
             )
@@ -2715,19 +2193,6 @@ class JournalVoucherDeleteView(LoginRequiredMixin, DeleteView):
     template_name = 'tools/journal_voucher_confirm_delete.html'
     success_url = reverse_lazy('tools:journal_voucher_list')
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        jv_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=jv_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def form_valid(self, form):
         JournalEntry.objects.filter(Q(journal_voucher=self.object) | Q(reference_number=f"JV-{self.object.id}")).delete()
         messages.success(self.request, 'Journal voucher and associated Journal Entries deleted successfully!')
@@ -2739,47 +2204,10 @@ class JournalVoucherDeleteView(LoginRequiredMixin, DeleteView):
 
 @login_required(login_url="register:login")
 def AdjustmentListView(request):
-    user = request.user
-
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('tools:adjustment_list')
-
-    client_id = request.session.get('active_client_id')
+    adj_records = Adjustment.objects.all().order_by('-id')
+    vendor_queryset = Vendor.objects.all().order_by('vendor_id')
+    customer_queryset = Customer.objects.all().order_by('customer_id')
     
-    if client_id:
-        base_queryset = Adjustment.objects.filter(client_id=client_id)
-        if user.is_staff or user.is_superuser:
-            adj_records = base_queryset
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=client_id).exists():
-                    adj_records = base_queryset
-                else:
-                    messages.error(request, "You do not have permission to view records for this client.")
-                    return redirect('main')
-            except Profile.DoesNotExist:
-                messages.error(request, "You do not have permission to view records for this client.")
-                return redirect('main')
-        
-        client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-        customer_queryset = Customer.objects.filter(client_id=client_id).order_by('customer_id')
-    else:
-        adj_records = Adjustment.objects.none()
-        client_form = ClientSelectionForm()
-        vendor_queryset = Vendor.objects.none()
-        customer_queryset = Customer.objects.none()
-        messages.info(request, "Please select a client to view adjustments.")
-
-    adj_records = adj_records.order_by('-id')
     adj_filter = AdjustmentFilter(request.GET, queryset=adj_records)
     adj_filter.form.fields['vendor'].queryset = vendor_queryset
     adj_filter.form.fields['customer'].queryset = customer_queryset
@@ -2787,40 +2215,13 @@ def AdjustmentListView(request):
     paginator = Paginator(adj_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
-    context = {'filter': adj_filter, 'adj_records': page_obj, 'page_obj': page_obj, 'client_form': client_form}
+    context = {'filter': adj_filter, 'adj_records': page_obj, 'page_obj': page_obj}
     return render(request, 'tools/adjustment_list.html', context)
 
 @login_required(login_url="register:login")
 def manual_adjustment_entry_view(request):
-    if request.method == 'POST' and 'client' in request.POST and 'debit_account_id' not in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client: request.session['active_client_id'] = selected_client.id
-            else: request.session.pop('active_client_id', None)
-            return redirect('tools:manual_adjustment_entry')
-
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists(): has_access = True
-            except Profile.DoesNotExist: pass
-        if not has_access:
-            messages.error(request, "Permission denied to manage this client.")
-            request.session.pop('active_client_id', None)
-            return redirect('main')
-
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
     if request.method == 'POST':
-        form = AdjustmentEntryForm(request.POST, client_id=client_id)
+        form = AdjustmentEntryForm(request.POST)
         if form.is_valid():
             with transaction.atomic():
                 adj_record = form.save(commit=False)
@@ -2828,7 +2229,7 @@ def manual_adjustment_entry_view(request):
                 adj_record.save()
                 
                 je = JournalEntry.objects.create(
-                    client=adj_record.client, date=adj_record.date or date.today(),
+                    date=adj_record.date or date.today(),
                     description=f"Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
                     adjustment=adj_record
                 )
@@ -2841,7 +2242,7 @@ def manual_adjustment_entry_view(request):
             messages.success(request, f"Successfully created adjustment and posted to GL.")
             return redirect('tools:adjustment_list') 
     else:
-        form = AdjustmentEntryForm(initial={'client': client_id}, client_id=client_id)
+        form = AdjustmentEntryForm()
 
     return render(request, 'tools/adjustment_form.html', {'form': form})
 
@@ -2851,24 +2252,9 @@ class AdjustmentDetailView(LoginRequiredMixin, DetailView):
     template_name = 'tools/adjustment_detail.html'
     context_object_name = 'adj_record'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        adj_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        adj_record = self.get_object()
-        context['is_owner'] = user.is_staff or user.is_superuser or (hasattr(user, 'profile') and user.profile.clients.filter(id=adj_record.client_id).exists())
+        context['is_owner'] = True
         return context
 
 class AdjustmentUpdateView(LoginRequiredMixin, UpdateView):
@@ -2877,31 +2263,13 @@ class AdjustmentUpdateView(LoginRequiredMixin, UpdateView):
     form_class = AdjustmentEntryForm 
     template_name = 'tools/adjustment_form.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        adj_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
-
-    def get_form_kwargs(self):
-        kwargs = super().get_form_kwargs()
-        kwargs['client_id'] = self.object.client_id
-        return kwargs
-
     def form_valid(self, form):
         with transaction.atomic():
             adj_record = form.save()
             JournalEntry.objects.filter(Q(adjustment=adj_record) | Q(reference_number=f"ADJ-{adj_record.id}")).delete()
             
             je = JournalEntry.objects.create(
-                client=adj_record.client, date=adj_record.date or date.today(),
+                date=adj_record.date or date.today(),
                 description=f"Updated Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
                 adjustment=adj_record
             )
@@ -2919,19 +2287,6 @@ class AdjustmentDeleteView(LoginRequiredMixin, DeleteView):
     model = Adjustment
     template_name = 'tools/adjustment_confirm_delete.html'
     success_url = reverse_lazy('tools:adjustment_list')
-
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        adj_record = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=adj_record.client_id).exists(): is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized:
-            messages.error(request, "Permission denied.")
-            return redirect('main')
-        return super().dispatch(request, *args, **kwargs)
 
     def form_valid(self, form):
         JournalEntry.objects.filter(Q(adjustment=self.object) | Q(reference_number=f"ADJ-{self.object.id}")).delete()

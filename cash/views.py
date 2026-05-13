@@ -27,8 +27,7 @@ from .models import Bank, Cash
 from sale.models import Sale
 from .resources import BankResource, CashResource
 from .filters import BankFilter, CashFilter
-from tools.models import AICostLog, Client, Vendor, Purchase
-from tools.forms import ClientSelectionForm
+from tools.models import AICostLog, Vendor, Purchase
 from account.models import Account, JournalEntry, JournalLine, ClientPromptMemo, AccountMappingRule
 from register.models import Profile
 
@@ -53,28 +52,8 @@ def bank_ai_upload_view(request):
         request.session.pop('bank_report_path', None)
         
         form = BankBatchUploadForm(request.POST, request.FILES)
-        
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Exception as e:
-                print(f"⚠️ Profile Error for user {user} (POST): {e}")
-                form.fields['client'].queryset = Client.objects.none()
 
         if form.is_valid():
-            selected_client = form.cleaned_data['client']
-            
-            # --- AUTHORIZATION CHECK ---
-            has_access = user.is_staff or user.is_superuser
-            if not has_access:
-                try:
-                    if user.profile.clients.filter(id=selected_client.id).exists():
-                        has_access = True
-                except Profile.DoesNotExist:
-                    pass
-            if not has_access:
-                messages.error(request, "You do not have permission to upload data for this client.")
-                return redirect('cash:bank_upload')
                 
             uploaded_pdf = form.cleaned_data['bank_pdf']
             batch_name = form.cleaned_data['batch_name']
@@ -102,7 +81,6 @@ def bank_ai_upload_view(request):
                 bank_extraction_memo += f"\n\n[SUPPLEMENTARY ROUTING DATA]\n{supplementary_data_md}"
             
             bank_memos = ClientPromptMemo.objects.filter(
-                client=selected_client, 
                 category__in=['BANK_EXTRACTION', 'GENERAL']
             )
             if bank_memos.exists():
@@ -139,7 +117,7 @@ def bank_ai_upload_view(request):
 
             try:
                 print("\n" + "="*50, flush=True)
-                print(f"🚀 STARTING BANK AI PROCESSING for {selected_client.name}", flush=True)
+                print(f"🚀 STARTING BANK AI PROCESSING", flush=True)
                 print("="*50, flush=True)
 
                 api_key = os.getenv("GEMINI_API_KEY_2") 
@@ -151,7 +129,6 @@ def bank_ai_upload_view(request):
                 print("\n[1/4] EXTRACTING TRANSACTIONS AND VENDORS FROM PDF...", flush=True)
                 extracted_data, total_pages, costs = processor.process(
                     pdf_path=tmp_pdf_path, 
-                    client_id=selected_client.id,
                     batch_name=batch_name,
                     custom_prompt=bank_extraction_memo
                 )
@@ -164,7 +141,6 @@ def bank_ai_upload_view(request):
                 
                 # 2A. Open Purchases
                 open_purchases = list(Purchase.objects.filter(
-                    client=selected_client,
                     payment_status__in=['Open', 'Prepayment']
                 ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status', 'page'))
                 print(f"✅ Found {len(open_purchases)} open purchase invoices.", flush=True)
@@ -173,12 +149,12 @@ def bank_ai_upload_view(request):
                 open_sales = []
                 if Sale:
                     open_sales = list(Sale.objects.filter(
-                        client=selected_client, payment_status__in=['Open', 'Prepayment']
+                        payment_status__in=['Open', 'Prepayment']
                     ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'))
                 print(f"✅ Found {len(open_sales)} open sales invoices.", flush=True)
 
                 # 2C. Chart of Accounts (COA) - THE CRITICAL FIX
-                client_accounts = Account.objects.filter(client=selected_client).values_list('account_id', 'name')
+                client_accounts = Account.objects.all().values_list('account_id', 'name')
                 coa_list_str = "\n".join([f"{acct[0]} - {acct[1]}" for acct in client_accounts])
                 print(f"✅ Loaded {len(client_accounts)} GL accounts for AI mapping.", flush=True)
                 
@@ -198,7 +174,6 @@ def bank_ai_upload_view(request):
                     # --- BUILD TIER 2 PROMPT FOR RECONCILIATION ENGINE ---
                     tier_2_recon_rules = ""
                     recon_memos = ClientPromptMemo.objects.filter(
-                        client=selected_client,
                         category__in=['RECONCILIATION', 'GENERAL']
                     )
                     if recon_memos.exists():
@@ -207,7 +182,7 @@ def bank_ai_upload_view(request):
                             tier_2_recon_rules += f"- {memo.memo_text}\n"
                         tier_2_recon_rules += "\n"
 
-                    mapping_rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
+                    mapping_rules = AccountMappingRule.objects.all().select_related('account')
                     if mapping_rules.exists():
                         tier_2_recon_rules += "MANDATORY KEYWORD MAPPINGS:\n"
                         for rule in mapping_rules:
@@ -282,8 +257,6 @@ def bank_ai_upload_view(request):
                 request.session['bank_metadata'] = {
                     'file_name': uploaded_pdf.name,
                     'batch_name': batch_name, 
-                    'client_id': selected_client.id,     
-                    'client_name': selected_client.name,
                     'config_used': dict(form.fields['processor_config'].choices).get(selected_config),
                     'total_pages': total_pages,
                     'costs': {'flash_cost': total_flash, 'pro_cost': total_pro}
@@ -300,12 +273,6 @@ def bank_ai_upload_view(request):
             messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = BankBatchUploadForm()
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Exception as e:
-                print(f"⚠️ Profile Error for user {user} (GET): {e}")
-                form.fields['client'].queryset = Client.objects.none()
                 
     return render(request, 'bank_upload.html', {'form': form})
 
@@ -318,28 +285,15 @@ def bank_review_view(request):
     if not extracted_data and request.method == 'GET':
         return redirect('cash:bank_upload')
 
-    client_id = metadata.get('client_id')
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access and client_id:
-        try:
-            if user.profile.clients.filter(id=client_id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        return HttpResponseForbidden("You do not have permission to review this client's data.")
-
     # Ensure default accounts exist so the frontend dropdown choices won't be blank
-    Account.objects.get_or_create(client_id=client_id, account_id='100010', defaults={'name': 'Cash in Bank', 'account_type': 'Asset'})
-    Account.objects.get_or_create(client_id=client_id, account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
-    Account.objects.get_or_create(client_id=client_id, account_id='400000', defaults={'name': 'Accounts Receivable', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='100010', defaults={'name': 'Cash in Bank', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='400000', defaults={'name': 'Accounts Receivable', 'account_type': 'Asset'})
 
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     
     temp_vendors = []
     for item in extracted_data:
@@ -352,7 +306,7 @@ def bank_review_view(request):
     try: from sale.models import Customer
     except ImportError: Customer = None
 
-    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
     temp_customers = []
     for item in extracted_data:
         if item.get('is_new_customer'):
@@ -368,7 +322,7 @@ def bank_review_view(request):
         if matched_p_ids:
             try:
                 first_p_id = int(str(matched_p_ids).split(',')[0])
-                purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
+                purchase = Purchase.objects.filter(id=first_p_id).first()
                 if purchase and purchase.vendor_id and not item.get('vendor_choice'):
                     item['vendor_choice'] = purchase.vendor_id
                     modified_session = True
@@ -378,7 +332,7 @@ def bank_review_view(request):
         if matched_s_ids:
             try:
                 first_s_id = int(str(matched_s_ids).split(',')[0])
-                sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
+                sale = Sale.objects.filter(id=first_s_id).first()
                 if sale and sale.customer_id and not item.get('customer_choice'):
                     item['customer_choice'] = sale.customer_id
                     modified_session = True
@@ -398,7 +352,6 @@ def bank_review_view(request):
                     for form in formset:
                         if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                             instance = form.save(commit=False)
-                            instance.client_id = client_id 
                             instance.batch = metadata.get('batch_name')
                             instance.user = request.user
                             
@@ -413,7 +366,7 @@ def bank_review_view(request):
                                         raw_name = re.sub(r'\s*\([^)]+\)$', '', raw_name).strip()
                                         break
                                 new_vendor, _ = Vendor.objects.get_or_create(
-                                    client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name.title()}
+                                    vendor_id=new_vid, defaults={'name': raw_name.title()}
                                 )
                                 instance.vendor = new_vendor
                             elif vc:
@@ -434,7 +387,7 @@ def bank_review_view(request):
                                             raw_cname = re.sub(r'\s*\([^)]+\)$', '', raw_cname).strip()
                                             break
                                     if Customer:
-                                        new_customer, _ = Customer.objects.get_or_create(client_id=client_id, customer_id=new_cid, defaults={'name': raw_cname.title()})
+                                        new_customer, _ = Customer.objects.get_or_create(customer_id=new_cid, defaults={'name': raw_cname.title()})
                                         instance.customer = new_customer
                                 else:
                                     try: instance.customer_id = int(cc)
@@ -454,13 +407,13 @@ def bank_review_view(request):
                                 if matched_ids:
                                     # Link the first purchase to the bank record for reference
                                     try:
-                                        first_purchase = Purchase.objects.get(id=matched_ids[0], client_id=client_id)
+                                        first_purchase = Purchase.objects.get(id=matched_ids[0])
                                         instance.matched_purchase = first_purchase
                                     except Purchase.DoesNotExist:
                                         pass
                                 
                                 # Mark ALL matched purchases as 'Paid'
-                                purchases_to_pay = Purchase.objects.filter(id__in=matched_ids, client_id=client_id)
+                                purchases_to_pay = Purchase.objects.filter(id__in=matched_ids)
                                 purchases_to_pay.update(payment_status='Paid')
                                 
                             # --- STATUS TRIGGER FOR SALES ---
@@ -471,9 +424,9 @@ def bank_review_view(request):
                                 if matched_s_ids:
                                     try:
                                         from sale.models import Sale
-                                        first_sale = Sale.objects.get(id=matched_s_ids[0], client_id=client_id)
+                                        first_sale = Sale.objects.get(id=matched_s_ids[0])
                                         instance.matched_sale = first_sale
-                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids, client_id=client_id)
+                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids)
                                         sales_to_pay.update(payment_status='Paid')
                                     except (ImportError, Exception): pass
  
@@ -488,8 +441,8 @@ def bank_review_view(request):
                             dr_acct_id = str(instance.debit_account_id or default_dr)
                             cr_acct_id = str(instance.credit_account_id or default_cr)
                             
-                            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-                            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                            dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                            cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                             amount = instance.debit if instance.debit > 0 else instance.credit
                             
@@ -504,7 +457,6 @@ def bank_review_view(request):
                             safe_je_desc = je_desc[:500] if je_desc else "Bank Transaction"
 
                             je = JournalEntry.objects.create(
-                                client_id=client_id,
                                 date=instance.date or date.today(),
                                 description=safe_je_desc,
                                 reference_number=instance.bank_ref_id,
@@ -556,29 +508,16 @@ def download_bank_report(request):
     return redirect('cash:bank_upload')
 
 @login_required
-def export_bank_transactions(request, client_id):
-    """Exports Bank instances to an Excel file using URL parameter for client routing."""
-    client = get_object_or_404(Client, id=client_id)
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access:
-        try:
-            if user.profile.clients.filter(id=client.id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        return HttpResponseForbidden("You do not have permission to export this client's data.")
+def export_bank_transactions(request):
+    """Exports Bank instances to an Excel file."""
 
-    queryset = Bank.objects.filter(client_id=client.id).order_by('id')
+    queryset = Bank.objects.all().order_by('id')
 
-    resource = BankResource(client_id=client.id)
+    resource = BankResource()
     dataset = resource.export(queryset=queryset)
 
     today_str = date.today().strftime("%Y%m%d")
-    safe_client_name = "".join([c for c in client.name if c.isalpha() or c.isdigit()]).rstrip()
-    filename = f"bank_transactions_{safe_client_name}_{today_str}.xlsx"
+    filename = f"bank_transactions_{today_str}.xlsx"
     
     media_dir = os.path.join(settings.BASE_DIR, 'media')
     os.makedirs(media_dir, exist_ok=True)
@@ -590,7 +529,7 @@ def export_bank_transactions(request, client_id):
     request.session['export_bank_report_path'] = report_path
     request.session['export_bank_filename'] = filename
     
-    messages.success(request, f"Successfully exported bank transactions for {client.name}!")
+    messages.success(request, f"Successfully exported bank transactions!")
     return redirect('cash:bank_export_success')
 
 def bank_export_success_view(request):
@@ -631,33 +570,8 @@ def cash_upload_view(request):
         print(f"📥 FILES keys: {list(request.FILES.keys())}", flush=True)
         
         form = CashBatchUploadForm(request.POST, request.FILES)
-        
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Exception as e:
-                print(f"⚠️ Profile Error for user {user} (POST): {e}")
-                print(f"⚠️ Profile Error for user {user} (POST): {e}", flush=True)
-                form.fields['client'].queryset = Client.objects.none()
 
         if form.is_valid():
-            print(f"✅ Form validation PASSED. Selected client ID: {form.cleaned_data['client'].id}", flush=True)
-            selected_client = form.cleaned_data['client']
-            
-            has_access = user.is_staff or user.is_superuser
-            if not has_access:
-                try:
-                    if user.profile.clients.filter(id=selected_client.id).exists():
-                        has_access = True
-                except Profile.DoesNotExist:
-                    pass
-                except Exception as e:
-                    print(f"⚠️ Profile check error: {e}", flush=True)
-                    
-            if not has_access:
-                print(f"⛔ ACCESS DENIED: User {user} does not have access to client {selected_client.name}", flush=True)
-                messages.error(request, "You do not have permission to upload data for this client.")
-                return redirect('cash:cash_upload')
                 
             uploaded_file = form.cleaned_data['cash_file']
             batch_name = form.cleaned_data['batch_name']
@@ -690,7 +604,7 @@ def cash_upload_view(request):
                 print(f"✅ Temporary file saved at: {tmp_file_path}")
 
                 print("\n" + "="*50)
-                print(f"🚀 STARTING CASH BOOK PROCESSING for {selected_client.name}")
+                print(f"🚀 STARTING CASH BOOK PROCESSING")
                 print("="*50)
                 
                 api_key = os.getenv("GEMINI_API_KEY_2") 
@@ -700,7 +614,6 @@ def cash_upload_view(request):
                 print("\n[1/4] EXTRACTING CASH TRANSACTIONS FROM EXCEL...")
                 extracted_data, total_pages, costs = processor.process(
                     file_path=tmp_file_path, 
-                    client_id=selected_client.id,
                     batch_name=batch_name
                 )
                 print(f"✅ Extracted {len(extracted_data)} cash transactions.")
@@ -712,25 +625,24 @@ def cash_upload_view(request):
                         item['sys_id'] = f"CASH-{i+1}"
                         
                 open_purchases = list(Purchase.objects.filter(
-                    client=selected_client,
                     payment_status__in=['Open', 'Prepayment']
                 ).values(
                     'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status', 'page'
                 ))
-                print(f"✅ Found {len(open_purchases)} open purchase invoices for {selected_client.name}.")
+                print(f"✅ Found {len(open_purchases)} open purchase invoices.")
                 
                 open_sales = []
                 try:
                     from sale.models import Sale
                     open_sales = list(Sale.objects.filter(
-                        client=selected_client, payment_status__in=['Open', 'Prepayment']
+                        payment_status__in=['Open', 'Prepayment']
                     ).values(
                         'id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'
                     ))
                 except ImportError: pass
                 
                 # Fetch COA
-                client_accounts = Account.objects.filter(client=selected_client).values_list('account_id', 'name')
+                client_accounts = Account.objects.all().values_list('account_id', 'name')
                 coa_list_str = "\n".join([f"{acct[0]} - {acct[1]}" for acct in client_accounts])
                 
                 # 3. AI RECONCILIATION WITH 3-TIER PROMPT
@@ -746,7 +658,6 @@ def cash_upload_view(request):
                     # --- CONSTRUCT TIER 2 FROM DATABASE MODELS ---
                     tier_2_rules = ""
                     recon_memos = ClientPromptMemo.objects.filter(
-                        client=selected_client,
                         category__in=['RECONCILIATION', 'GENERAL']
                     )
                     if recon_memos.exists():
@@ -755,7 +666,7 @@ def cash_upload_view(request):
                             tier_2_rules += f"- {memo.memo_text}\n"
                         tier_2_rules += "\n"
 
-                    mapping_rules = AccountMappingRule.objects.filter(client=selected_client).select_related('account')
+                    mapping_rules = AccountMappingRule.objects.all().select_related('account')
                     if mapping_rules.exists():
                         tier_2_rules += "MANDATORY KEYWORD MAPPINGS:\n"
                         for rule in mapping_rules:
@@ -833,8 +744,6 @@ def cash_upload_view(request):
                 request.session['cash_metadata'] = {
                     'file_name': uploaded_file.name,
                     'batch_name': batch_name, 
-                    'client_id': selected_client.id,
-                    'client_name': selected_client.name,
                     'total_pages': total_pages,
                     'costs': {'flash_cost': total_flash, 'pro_cost': total_pro}
                 }
@@ -854,15 +763,6 @@ def cash_upload_view(request):
             messages.error(request, "Validation failed. Please check the form for errors.")
     else:
         form = CashBatchUploadForm()
-        
-        # Dynamically limit the dropdown to ONLY the clients the user manages
-        if not (user.is_staff or user.is_superuser):
-            try:
-                form.fields['client'].queryset = user.profile.clients.all()
-            except Exception as e:
-                print(f"⚠️ Profile Error for user {user} (GET): {e}")
-                print(f"⚠️ Profile Error for user {user} (GET): {e}", flush=True)
-                form.fields['client'].queryset = Client.objects.none()
     return render(request, 'cash_upload.html', {'form': form})
 
 
@@ -875,25 +775,12 @@ def cash_review_view(request):
     if not extracted_data and request.method == 'GET':
         return redirect('cash:cash_upload')
 
-    client_id = metadata.get('client_id')
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access and client_id:
-        try:
-            if user.profile.clients.filter(id=client_id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        return HttpResponseForbidden("You do not have permission to review this client's data.")
-
     # Ensure default accounts exist so the frontend dropdown choices won't be blank
-    Account.objects.get_or_create(client_id=client_id, account_id='100000', defaults={'name': 'Cash on Hand', 'account_type': 'Asset'})
-    Account.objects.get_or_create(client_id=client_id, account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
-    Account.objects.get_or_create(client_id=client_id, account_id='400000', defaults={'name': 'Accounts Receivable', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='100000', defaults={'name': 'Cash on Hand', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='120000', defaults={'name': 'Prepayment', 'account_type': 'Asset'})
+    Account.objects.get_or_create(account_id='400000', defaults={'name': 'Accounts Receivable', 'account_type': 'Asset'})
 
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     
     temp_vendors = []
     for item in extracted_data:
@@ -903,7 +790,7 @@ def cash_review_view(request):
     temp_vendors = list(dict.fromkeys(temp_vendors))
     dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
     
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     # --- PRE-FILL VOUCHER NO & INVOICE NO FOR PREVIEW ---
@@ -915,7 +802,7 @@ def cash_review_view(request):
         if matched_p_ids:
             try:
                 first_p_id = int(str(matched_p_ids).split(',')[0])
-                purchase = Purchase.objects.filter(id=first_p_id, client_id=client_id).first()
+                purchase = Purchase.objects.filter(id=first_p_id).first()
                 if purchase:
                     if not item.get('invoice_no') and purchase.invoice_no:
                         item['invoice_no'] = purchase.invoice_no
@@ -931,7 +818,7 @@ def cash_review_view(request):
                 try:
                     from sale.models import Sale
                     first_s_id = int(str(matched_s_ids).split(',')[0])
-                    sale = Sale.objects.filter(id=first_s_id, client_id=client_id).first()
+                    sale = Sale.objects.filter(id=first_s_id).first()
                     if sale:
                         if not item.get('invoice_no') and sale.invoice_no:
                             item['invoice_no'] = sale.invoice_no
@@ -959,7 +846,6 @@ def cash_review_view(request):
             ym_prefix = tx_date.strftime("CPV-%Y-%m-")
             if ym_prefix not in seq_tracker_preview:
                 existing_vouchers = Cash.objects.filter(
-                    client_id=client_id, 
                     voucher_no__startswith=ym_prefix
                 ).values_list('voucher_no', flat=True)
                 max_v = 0
@@ -988,7 +874,7 @@ def cash_review_view(request):
     try: from sale.models import Customer
     except ImportError: Customer = None
 
-    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
     temp_customers = []
     for item in extracted_data:
         if item.get('is_new_customer'):
@@ -1008,7 +894,6 @@ def cash_review_view(request):
                     for form in formset:
                         if form.cleaned_data and not form.cleaned_data.get('DELETE'):
                             instance = form.save(commit=False)
-                            instance.client_id = client_id
                             instance.user = request.user
                             
                             # --- NEW ANTI-DOUBLE ENTRY CHECK ---
@@ -1022,7 +907,6 @@ def cash_review_view(request):
                                 ym_prefix = tx_date.strftime("CPV-%Y-%m-")
                                 if ym_prefix not in seq_tracker:
                                     existing_vouchers = Cash.objects.filter(
-                                        client_id=client_id, 
                                         voucher_no__startswith=ym_prefix
                                     ).values_list('voucher_no', flat=True)
                                     max_v = 0
@@ -1040,10 +924,10 @@ def cash_review_view(request):
                             raw_name = form.cleaned_data.get('company', 'Unknown Vendor')
                             if str(vc).startswith('TEMP_'):
                                 new_vid = vc.replace('TEMP_', '')
-                                new_vendor, _ = Vendor.objects.get_or_create(client_id=client_id, vendor_id=new_vid, defaults={'name': raw_name.title()})
+                                new_vendor, _ = Vendor.objects.get_or_create(vendor_id=new_vid, defaults={'name': raw_name.title()})
                                 instance.vendor = new_vendor
                             elif vc:
-                                try: instance.vendor = Vendor.objects.get(id=int(vc), client_id=client_id)
+                                try: instance.vendor = Vendor.objects.get(id=int(vc))
                                 except (ValueError, Vendor.DoesNotExist): pass
 
                             # 1.5 Resolve Customer
@@ -1057,7 +941,7 @@ def cash_review_view(request):
                                             raw_cname = choice_label.replace('✨ NEW: ', '')
                                             break
                                     if Customer:
-                                        new_customer, _ = Customer.objects.get_or_create(client_id=client_id, customer_id=new_cid, defaults={'name': raw_cname.title()})
+                                        new_customer, _ = Customer.objects.get_or_create(customer_id=new_cid, defaults={'name': raw_cname.title()})
                                         instance.customer = new_customer
                                 else:
                                     try: instance.customer_id = int(cc)
@@ -1072,7 +956,7 @@ def cash_review_view(request):
 
                                 if matched_ids:
                                     try:
-                                        first_purchase = Purchase.objects.get(id=matched_ids[0], client_id=client_id)
+                                        first_purchase = Purchase.objects.get(id=matched_ids[0])
                                         instance.matched_purchase = first_purchase
                                         if not instance.invoice_no:
                                             instance.invoice_no = first_purchase.invoice_no
@@ -1080,7 +964,7 @@ def cash_review_view(request):
                                         pass
                                 
                                     # Mark ALL matched purchases as 'Paid'
-                                    purchases_to_pay = Purchase.objects.filter(id__in=matched_ids, client_id=client_id)
+                                    purchases_to_pay = Purchase.objects.filter(id__in=matched_ids)
                                     purchases_to_pay.update(payment_status='Paid')
                                 
                             matched_s_ids_str = form.cleaned_data.get('matched_sale_ids')
@@ -1090,11 +974,11 @@ def cash_review_view(request):
                                 if matched_s_ids:
                                     try:
                                         from sale.models import Sale
-                                        first_sale = Sale.objects.get(id=matched_s_ids[0], client_id=client_id)
+                                        first_sale = Sale.objects.get(id=matched_s_ids[0])
                                         instance.matched_sale = first_sale
                                         if not instance.invoice_no:
                                             instance.invoice_no = first_sale.invoice_no
-                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids, client_id=client_id)
+                                        sales_to_pay = Sale.objects.filter(id__in=matched_s_ids)
                                         sales_to_pay.update(payment_status='Paid')
                                     except (ImportError, Exception): pass
  
@@ -1109,8 +993,8 @@ def cash_review_view(request):
                             dr_acct_id = str(instance.debit_account_id or default_dr)
                             cr_acct_id = str(instance.credit_account_id or default_cr)
                             
-                            dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
-                            cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                            dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                            cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                             amount = instance.debit if instance.debit > 0 else instance.credit
                             
@@ -1125,7 +1009,6 @@ def cash_review_view(request):
                             safe_je_desc = je_desc[:500] if je_desc else "Cash Transaction"
 
                             je = JournalEntry.objects.create(
-                                client_id=client_id,
                                 date=instance.date or date.today(),
                                 description=safe_je_desc,
                                 reference_number=instance.voucher_no,
@@ -1201,29 +1084,16 @@ def download_preliminary_cash_report(request):
     return redirect('cash:cash_upload')
 
 @login_required
-def export_cash_transactions(request, client_id):
-    """Exports Cash instances to an Excel file using URL parameter for client routing."""
-    client = get_object_or_404(Client, id=client_id)
-    
-    user = request.user
-    has_access = user.is_staff or user.is_superuser
-    if not has_access:
-        try:
-            if user.profile.clients.filter(id=client.id).exists():
-                has_access = True
-        except Profile.DoesNotExist:
-            pass
-    if not has_access:
-        return HttpResponseForbidden("You do not have permission to export this client's data.")
+def export_cash_transactions(request):
+    """Exports Cash instances to an Excel file."""
 
-    queryset = Cash.objects.filter(client_id=client.id).order_by('id')
+    queryset = Cash.objects.all().order_by('id')
 
-    resource = CashResource(client_id=client.id)
+    resource = CashResource()
     dataset = resource.export(queryset=queryset)
 
     today_str = date.today().strftime("%Y%m%d")
-    safe_client_name = "".join([c for c in client.name if c.isalpha() or c.isdigit()]).rstrip()
-    filename = f"cash_transactions_{safe_client_name}_{today_str}.xlsx"
+    filename = f"cash_transactions_{today_str}.xlsx"
     
     media_dir = os.path.join(settings.BASE_DIR, 'media')
     os.makedirs(media_dir, exist_ok=True)
@@ -1235,7 +1105,7 @@ def export_cash_transactions(request, client_id):
     request.session['export_cash_report_path'] = report_path
     request.session['export_cash_filename'] = filename
     
-    messages.success(request, f"Successfully exported cash transactions for {client.name}!")
+    messages.success(request, f"Successfully exported cash transactions!")
     return redirect('cash:cash_export_success')
 
 def cash_export_success_view(request):
@@ -1262,86 +1132,31 @@ def download_exported_cash(request):
 
 @login_required(login_url="register:login")
 def BankListView(request):
-    user = request.user
-
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('cash:bank_list')
-
-    client_id = request.session.get('active_client_id')
-
-    if client_id:
-        base_queryset = Bank.objects.filter(client_id=client_id)
-        if user.is_staff or user.is_superuser:
-            banks = base_queryset
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=client_id).exists():
-                    banks = base_queryset
-                else:
-                    banks = Bank.objects.none()
-                    messages.error(request, "You do not have permission to view bank transactions for this client.")
-            except Profile.DoesNotExist:
-                banks = Bank.objects.none()
-        client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-    else:
-        banks = Bank.objects.none()
-        client_form = ClientSelectionForm()
-        vendor_queryset = Vendor.objects.none()
-        messages.info(request, "Please select a client to view bank transactions.")
-
-    banks = banks.order_by('-id')
+    banks = Bank.objects.all().order_by('-id')
+    vendor_queryset = Vendor.objects.all().order_by('vendor_id')
+    
     bank_filter = BankFilter(request.GET, queryset=banks)
     bank_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(bank_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
     return render(request, 'cash/bank_list.html', {
-        'filter': bank_filter, 'banks': page_obj, 'page_obj': page_obj, 'client_form': client_form
+        'filter': bank_filter, 'banks': page_obj, 'page_obj': page_obj
     })
 
 @login_required(login_url="register:login")
 def manual_bank_entry_view(request):
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to manage this client.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
 
     try:
         from sale.models import Customer
     except ImportError:
         Customer = None
-    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
     customer_choices = [('', '--- Select Existing Customer ---')] + db_customers
 
     if request.method == 'POST':
@@ -1349,7 +1164,6 @@ def manual_bank_entry_view(request):
         if form.is_valid():
             with transaction.atomic():
                 bank = form.save(commit=False)
-                bank.client_id = client_id
                 bank.user = request.user
                 bank.batch = "MANUAL_ENTRY"
                 vc = form.cleaned_data.get('vendor_choice')
@@ -1381,9 +1195,9 @@ def manual_bank_entry_view(request):
                 dr_acct = None
                 cr_acct = None
                 if dr_acct_id and dr_acct_id.lower() != 'none':
-                    dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                    dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
                 if cr_acct_id and cr_acct_id.lower() != 'none':
-                    cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                    cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = bank.debit if bank.debit > 0 else bank.credit
                 
@@ -1396,7 +1210,7 @@ def manual_bank_entry_view(request):
                     je_desc += f", matched with JV IDs {matched_jv_ids}."
                 je_desc = je_desc[:500]
 
-                je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
+                je = JournalEntry.objects.create(date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
                 
                 _distribute_settlement_lines(
                     je, amount, dr_acct, cr_acct, je_desc
@@ -1416,28 +1230,9 @@ class BankDetailView(LoginRequiredMixin, DetailView):
     template_name = 'cash/bank_detail.html'
     context_object_name = 'bank'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-        
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        obj = self.get_object()
-        is_owner = user.is_staff or user.is_superuser
-        try:
-            if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                is_owner = True
-        except: pass
-        context['is_owner'] = is_owner
+        context['is_owner'] = True
         return context
 
 class BankUpdateView(LoginRequiredMixin, UpdateView):
@@ -1445,31 +1240,18 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
     form_class = ManualBankEntryForm 
     template_name = 'cash/bank_update.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        client_id = self.request.session.get('active_client_id')
-        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
-        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
         
         try:
             from sale.models import Customer
         except ImportError:
             Customer = None
-        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
         kwargs['customer_choices'] = [('', '--- Select Existing Customer ---')] + db_customers
         return kwargs
 
@@ -1518,7 +1300,6 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 
             bank.save()
             JournalEntry.objects.filter(bank=bank).delete()
-            client_id = self.request.session.get('active_client_id')
             
             dr_acct_id = str(bank.debit_account_id) if bank.debit_account_id else None
             cr_acct_id = str(bank.credit_account_id) if bank.credit_account_id else None
@@ -1526,9 +1307,9 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
             dr_acct = None
             cr_acct = None
             if dr_acct_id and dr_acct_id.lower() != 'none':
-                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
             if cr_acct_id and cr_acct_id.lower() != 'none':
-                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = bank.debit if bank.debit > 0 else bank.credit
             
@@ -1541,7 +1322,7 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 je_desc += f", matched with JV IDs {matched_jv_ids}."
             je_desc = je_desc[:500]
 
-            je = JournalEntry.objects.create(client_id=client_id, date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
+            je = JournalEntry.objects.create(date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
             
             _distribute_settlement_lines(
                 je, amount, dr_acct, cr_acct, je_desc
@@ -1555,18 +1336,6 @@ class BankDeleteView(LoginRequiredMixin, DeleteView):
     template_name = 'cash/bank_confirm_delete.html'
     success_url = reverse_lazy('cash:bank_list')
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-
     def form_valid(self, form):
         JournalEntry.objects.filter(bank=self.object).delete()
         messages.success(self.request, 'Bank transaction deleted.')
@@ -1574,20 +1343,8 @@ class BankDeleteView(LoginRequiredMixin, DeleteView):
 
 @login_required(login_url="register:login")
 def export_bank_csv(request):
-    client_id = request.session.get('active_client_id')
-    if not client_id: return HttpResponse("No active client selected.", status=400)
-    
-    base_queryset = Bank.objects.filter(client_id=client_id)
-    user = request.user
-    if not (user.is_staff or user.is_superuser):
-        try:
-            if not Profile.objects.get(user=user).clients.filter(id=client_id).exists():
-                base_queryset = Bank.objects.none()
-        except Profile.DoesNotExist:
-            base_queryset = Bank.objects.none()
-
-    bank_filter = BankFilter(request.GET, queryset=base_queryset.order_by('-date'))
-    resource = BankResource(client_id=client_id)
+    bank_filter = BankFilter(request.GET, queryset=Bank.objects.all().order_by('-date'))
+    resource = BankResource()
     dataset = resource.export(queryset=bank_filter.qs)
     
     response = HttpResponse(content_type='text/csv; charset=utf-8-sig')
@@ -1603,85 +1360,30 @@ def export_bank_csv(request):
 
 @login_required(login_url="register:login")
 def CashListView(request):
-    user = request.user
-
-    if request.method == 'POST' and 'client' in request.POST:
-        form = ClientSelectionForm(request.POST)
-        if form.is_valid():
-            selected_client = form.cleaned_data.get('client')
-            if selected_client:
-                request.session['active_client_id'] = selected_client.id
-            else:
-                request.session.pop('active_client_id', None)
-            return redirect('cash:cash_list')
-
-    client_id = request.session.get('active_client_id')
-
-    if client_id:
-        base_queryset = Cash.objects.filter(client_id=client_id)
-        if user.is_staff or user.is_superuser:
-            cash_qs = base_queryset
-        else:
-            try:
-                profile = Profile.objects.get(user=user)
-                if profile.clients.filter(id=client_id).exists():
-                    cash_qs = base_queryset
-                else:
-                    cash_qs = Cash.objects.none()
-                    messages.error(request, "You do not have permission to view cash transactions for this client.")
-            except Profile.DoesNotExist:
-                cash_qs = Cash.objects.none()
-        client_form = ClientSelectionForm(initial={'client': client_id})
-        vendor_queryset = Vendor.objects.filter(client_id=client_id).order_by('vendor_id')
-    else:
-        cash_qs = Cash.objects.none()
-        client_form = ClientSelectionForm()
-        vendor_queryset = Vendor.objects.none()
-        messages.info(request, "Please select a client to view cash transactions.")
-
-    cash_qs = cash_qs.order_by('-id')
+    cash_qs = Cash.objects.all().order_by('-id')
+    vendor_queryset = Vendor.objects.all().order_by('vendor_id')
+    
     cash_filter = CashFilter(request.GET, queryset=cash_qs)
     cash_filter.form.fields['vendor'].queryset = vendor_queryset
     paginator = Paginator(cash_filter.qs, 20)
     page_obj = paginator.get_page(request.GET.get('page'))
 
     return render(request, 'cash/cash_list.html', {
-        'filter': cash_filter, 'cash_objs': page_obj, 'page_obj': page_obj, 'client_form': client_form
+        'filter': cash_filter, 'cash_objs': page_obj, 'page_obj': page_obj
     })
 
 @login_required(login_url="register:login")
 def manual_cash_entry_view(request):
-    client_id = request.session.get('active_client_id')
-    
-    if client_id:
-        user = request.user
-        has_access = user.is_staff or user.is_superuser
-        if not has_access:
-            try:
-                if user.profile.clients.filter(id=client_id).exists():
-                    has_access = True
-            except Profile.DoesNotExist:
-                pass
-        if not has_access:
-            messages.error(request, "You do not have permission to manage this client.")
-            request.session.pop('active_client_id', None)
-            client_id = None
-            
-    if not client_id:
-        form = ClientSelectionForm()
-        messages.error(request, "Please select an active client.")
-        return render(request, 'main.html', {'form': form, 'title': 'Select Client'})
-
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
     vendor_choices = [('', '--- Select Existing Vendor ---')] + db_vendors
-    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+    db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
     account_choices = [('', '--- Select Account ---')] + db_accounts
 
     try:
         from sale.models import Customer
     except ImportError:
         Customer = None
-    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+    db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
     customer_choices = [('', '--- Select Existing Customer ---')] + db_customers
 
     if request.method == 'POST':
@@ -1693,7 +1395,7 @@ def manual_cash_entry_view(request):
                 p_ids = [int(x.strip()) for x in str(matched_p_ids).split(',') if x.strip().isdigit()]
                 if p_ids:
                     from tools.models import Purchase
-                    invalid_p = Purchase.objects.filter(id__in=p_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    invalid_p = Purchase.objects.filter(id__in=p_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                     if invalid_p.exists():
                         form.add_error('matched_purchase_ids', f"Purchase IDs {', '.join(str(p.id) for p in invalid_p)} are already paid or not Open.")
 
@@ -1703,7 +1405,7 @@ def manual_cash_entry_view(request):
                 if s_ids:
                     try:
                         from sale.models import Sale
-                        invalid_s = Sale.objects.filter(id__in=s_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                        invalid_s = Sale.objects.filter(id__in=s_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                         if invalid_s.exists():
                             form.add_error('matched_sale_ids', f"Sale IDs {', '.join(str(s.id) for s in invalid_s)} are already paid or not Open.")
                     except ImportError:
@@ -1714,7 +1416,7 @@ def manual_cash_entry_view(request):
                 jv_ids = [int(x.strip()) for x in str(matched_jv_ids).split(',') if x.strip().isdigit()]
                 if jv_ids:
                     from tools.models import JournalVoucher
-                    invalid_jv = JournalVoucher.objects.filter(id__in=jv_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    invalid_jv = JournalVoucher.objects.filter(id__in=jv_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                     if invalid_jv.exists():
                         form.add_error('matched_jv_ids', f"JV IDs {', '.join(str(jv.id) for jv in invalid_jv)} are already paid or not Open.")
 
@@ -1723,7 +1425,6 @@ def manual_cash_entry_view(request):
 
             with transaction.atomic():
                 cash = form.save(commit=False)
-                cash.client_id = client_id
                 cash.user = request.user
                 cash.batch = "MANUAL_ENTRY"
                 vc = form.cleaned_data.get('vendor_choice')
@@ -1757,9 +1458,9 @@ def manual_cash_entry_view(request):
                 dr_acct = None
                 cr_acct = None
                 if dr_acct_id and dr_acct_id.lower() != 'none':
-                    dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                    dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
                 if cr_acct_id and cr_acct_id.lower() != 'none':
-                    cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                    cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = cash.debit if cash.debit > 0 else cash.credit
                 
@@ -1772,7 +1473,7 @@ def manual_cash_entry_view(request):
                     je_desc += f", matched with JV IDs {matched_jv_ids}."
                 je_desc = je_desc[:500]
 
-                je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
+                je = JournalEntry.objects.create(date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
                 
                 _distribute_settlement_lines(
                     je, amount, dr_acct, cr_acct, je_desc
@@ -1792,28 +1493,9 @@ class CashDetailView(LoginRequiredMixin, DetailView):
     template_name = 'cash/cash_detail.html'
     context_object_name = 'cash'
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-        
     def get_context_data(self, **kwargs):
         context = super().get_context_data(**kwargs)
-        user = self.request.user
-        obj = self.get_object()
-        is_owner = user.is_staff or user.is_superuser
-        try:
-            if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                is_owner = True
-        except: pass
-        context['is_owner'] = is_owner
+        context['is_owner'] = True
         return context
 
 class CashUpdateView(LoginRequiredMixin, UpdateView):
@@ -1821,32 +1503,19 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
     form_class = ManualCashEntryForm 
     template_name = 'cash/cash_update.html'
     
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-
     def get_form_kwargs(self):
         kwargs = super().get_form_kwargs()
-        client_id = self.request.session.get('active_client_id')
-        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.filter(client_id=client_id).order_by('vendor_id')]
+        db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
         kwargs['vendor_choices'] = [('', '--- Select Existing Vendor ---')] + db_vendors
         
         try:
             from sale.models import Customer
         except ImportError:
             Customer = None
-        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.filter(client_id=client_id).order_by('customer_id')] if Customer else []
+        db_customers = [(c.id, f"{c.customer_id} - {c.name}") for c in Customer.objects.all().order_by('customer_id')] if Customer else []
         kwargs['customer_choices'] = [('', '--- Select Existing Customer ---')] + db_customers
         
-        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.filter(client_id=client_id).order_by('account_id')]
+        db_accounts = [(a.account_id, f"{a.account_id} - {a.name}") for a in Account.objects.all().order_by('account_id')]
         kwargs['account_choices'] = [('', '--- Select Account ---')] + db_accounts
         return kwargs
         
@@ -1859,8 +1528,6 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
         return initial
 
     def form_valid(self, form):
-        client_id = self.request.session.get('active_client_id')
-        
         old_p_ids = []
         if self.object.pk and self.object.matched_purchase_ids:
             old_p_ids = [int(x.strip()) for x in str(self.object.matched_purchase_ids).split(',') if x.strip().isdigit()]
@@ -1879,7 +1546,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             check_p_ids = [pid for pid in p_ids if pid not in old_p_ids]
             if check_p_ids:
                 from tools.models import Purchase
-                invalid_p = Purchase.objects.filter(id__in=check_p_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                invalid_p = Purchase.objects.filter(id__in=check_p_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                 if invalid_p.exists():
                     form.add_error('matched_purchase_ids', f"Purchase IDs {', '.join(str(p.id) for p in invalid_p)} are already paid or not Open.")
 
@@ -1890,7 +1557,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             if check_s_ids:
                 try:
                     from sale.models import Sale
-                    invalid_s = Sale.objects.filter(id__in=check_s_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                    invalid_s = Sale.objects.filter(id__in=check_s_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                     if invalid_s.exists():
                         form.add_error('matched_sale_ids', f"Sale IDs {', '.join(str(s.id) for s in invalid_s)} are already paid or not Open.")
                 except ImportError:
@@ -1902,7 +1569,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             check_jv_ids = [jvid for jvid in jv_ids if jvid not in old_jv_ids]
             if check_jv_ids:
                 from tools.models import JournalVoucher
-                invalid_jv = JournalVoucher.objects.filter(id__in=check_jv_ids, client_id=client_id).exclude(payment_status__in=['Open', 'Prepayment'])
+                invalid_jv = JournalVoucher.objects.filter(id__in=check_jv_ids).exclude(payment_status__in=['Open', 'Prepayment'])
                 if invalid_jv.exists():
                     form.add_error('matched_jv_ids', f"JV IDs {', '.join(str(jv.id) for jv in invalid_jv)} are already paid or not Open.")
 
@@ -1946,7 +1613,6 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             cash.save()
             
             JournalEntry.objects.filter(cash=cash).delete()
-            client_id = self.request.session.get('active_client_id')
             
             dr_acct_id = str(cash.debit_account_id) if cash.debit_account_id else None
             cr_acct_id = str(cash.credit_account_id) if cash.credit_account_id else None
@@ -1954,9 +1620,9 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
             dr_acct = None
             cr_acct = None
             if dr_acct_id and dr_acct_id.lower() != 'none':
-                dr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
+                dr_acct, _ = Account.objects.get_or_create(account_id=dr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Asset'})
             if cr_acct_id and cr_acct_id.lower() != 'none':
-                cr_acct, _ = Account.objects.get_or_create(client_id=client_id, account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
+                cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = cash.debit if cash.debit > 0 else cash.credit
             
@@ -1969,7 +1635,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 je_desc += f", matched with JV IDs {matched_jv_ids}."
             je_desc = je_desc[:500]
 
-            je = JournalEntry.objects.create(client_id=client_id, date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
+            je = JournalEntry.objects.create(date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
             
             _distribute_settlement_lines(
                 je, amount, dr_acct, cr_acct, je_desc
@@ -1983,18 +1649,6 @@ class CashDeleteView(LoginRequiredMixin, DeleteView):
     template_name = 'cash/cash_confirm_delete.html'
     success_url = reverse_lazy('cash:cash_list')
 
-    def dispatch(self, request, *args, **kwargs):
-        user = self.request.user
-        obj = self.get_object()
-        is_authorized = user.is_staff or user.is_superuser
-        if not is_authorized:
-            try:
-                if Profile.objects.get(user=user).clients.filter(id=obj.client_id).exists():
-                    is_authorized = True
-            except Profile.DoesNotExist: pass
-        if not is_authorized: return HttpResponseForbidden("You do not have permission.")
-        return super().dispatch(request, *args, **kwargs)
-
     def form_valid(self, form):
         JournalEntry.objects.filter(cash=self.object).delete()
         messages.success(self.request, 'Cash transaction deleted.')
@@ -2002,20 +1656,8 @@ class CashDeleteView(LoginRequiredMixin, DeleteView):
 
 @login_required(login_url="register:login")
 def export_cash_csv(request):
-    client_id = request.session.get('active_client_id')
-    if not client_id: return HttpResponse("No active client selected.", status=400)
-    
-    base_queryset = Cash.objects.filter(client_id=client_id)
-    user = request.user
-    if not (user.is_staff or user.is_superuser):
-        try:
-            if not Profile.objects.get(user=user).clients.filter(id=client_id).exists():
-                base_queryset = Cash.objects.none()
-        except Profile.DoesNotExist:
-            base_queryset = Cash.objects.none()
-
-    cash_filter = CashFilter(request.GET, queryset=base_queryset.order_by('date'))
-    resource = CashResource(client_id=client_id)
+    cash_filter = CashFilter(request.GET, queryset=Cash.objects.all().order_by('date'))
+    resource = CashResource()
     dataset = resource.export(queryset=cash_filter.qs)
     
     response = HttpResponse(content_type='text/csv; charset=utf-8-sig')

@@ -14,7 +14,7 @@ from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 from datetime import datetime
 
-from .models import Vendor, Client, JournalVoucher
+from .models import Vendor, JournalVoucher
 from account.models import Account, AccountMappingRule
 
 # ====================================================================
@@ -92,12 +92,14 @@ class GeminiInvoiceProcessor:
             )
         )
 
-    def resolve_and_assign_vendor(self, raw_name, vattin, vat_amount, client_id):
+    def resolve_and_assign_vendor(self, raw_name, vattin, vat_amount):
         from .models import Vendor 
         
-        general_vendor, _ = Vendor.objects.get_or_create(
-            client_id=client_id, vendor_id='V-00001', defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
-        )
+        general_vendor = Vendor.objects.filter(vendor_id='V-00001').first()
+        if not general_vendor:
+            general_vendor = Vendor.objects.create(
+                vendor_id='V-00001', name='General Vendor', normalized_name='general vendor'
+            )
         
         if not raw_name or str(raw_name).strip().lower() in ['unknown', 'n/a', 'none', '']:
             return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
@@ -105,12 +107,12 @@ class GeminiInvoiceProcessor:
         name_str = str(raw_name).lower().replace('&', ' and ')
         target_norm = re.sub(r'[\W_]+', ' ', name_str).strip()
 
-        exact_match = Vendor.objects.filter(client_id=client_id, normalized_name=target_norm).first()
+        exact_match = Vendor.objects.filter(normalized_name=target_norm).first()
         if exact_match:
             return {'db_id': exact_match.id, 'is_new': False, 'temp_vid': None}
 
         best_vendor, best_coverage = None, 0.0
-        for v in Vendor.objects.filter(client_id=client_id):
+        for v in Vendor.objects.all():
             if not v.normalized_name or not target_norm: continue
             ratio = difflib.SequenceMatcher(None, target_norm, v.normalized_name).ratio()
             containment_score = 0.85 if (f" {target_norm} " in f" {v.normalized_name} " or f" {v.normalized_name} " in f" {target_norm} ") else 0.0
@@ -131,7 +133,7 @@ class GeminiInvoiceProcessor:
             if target_norm in self.batch_new_vendors:
                 return self.batch_new_vendors[target_norm]
 
-            all_vids = Vendor.objects.filter(client_id=client_id).values_list('vendor_id', flat=True)
+            all_vids = Vendor.objects.all().values_list('vendor_id', flat=True)
             max_num = 1
             for vid in all_vids:
                 if vid:
@@ -144,11 +146,11 @@ class GeminiInvoiceProcessor:
             self.batch_new_vendors[target_norm] = vendor_data
             return vendor_data
 
-    def process_single_page(self, pdf_bytes, pg, client_id, custom_prompt="", batch_name="", rules_context="", memo_context="", current_invoice_seq=1, date_prefix="20260226", is_explicit_seq=False):
+    def process_single_page(self, pdf_bytes, pg, custom_prompt="", batch_name="", rules_context="", memo_context="", current_invoice_seq=1, date_prefix="20260226", is_explicit_seq=False):
         
         ledgers = []
         page_cost = 0.0
-        coa_qs = Account.objects.filter(client_id=client_id).order_by('account_id')
+        coa_qs = Account.objects.all().order_by('account_id')
         coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
         
         try:
@@ -212,7 +214,7 @@ class GeminiInvoiceProcessor:
                     entry_dict['instruction'] = f"AI Reason: {reasoning}" if reasoning else ""
                     
                     vendor_data = self.resolve_and_assign_vendor(
-                        entry_dict.get('company', ''), entry_dict.get('vattin', ''), entry_dict.get('vat_usd', 0.0), client_id
+                        entry_dict.get('company', ''), entry_dict.get('vattin', ''), entry_dict.get('vat_usd', 0.0)
                     )
                     if not vendor_data: vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
                     
@@ -251,7 +253,7 @@ class HistoricalBatch(BaseModel):
 # --- THE MIGRATION ENGINE (DB-BACKED 3-TIER ARCHITECTURE) ---
 # ====================================================================
 class GLMigrationProcessor:
-    def __init__(self, api_key, client_id):
+    def __init__(self, api_key):
         print("\n" + "="*50)
         print("🔄 INITIALIZING: HISTORICAL GL STAGING ENGINE")
         print("="*50)
@@ -260,7 +262,7 @@ class GLMigrationProcessor:
         self.cost_stats = {"flash_cost": 0.0, "pro_cost": 0.0}
         
         # 1. LOAD TIER-1 FOUNDATION FROM DATABASE
-        self._load_chart_of_accounts(client_id)
+        self._load_chart_of_accounts()
 
     def calculate_cost(self, usage, model_id):
         rates = {"gemini-3.1-pro-preview": {"in": 1.25, "out": 10.00}, "gemini-3-flash-preview": {"in": 0.10, "out": 0.40}}
@@ -268,13 +270,13 @@ class GLMigrationProcessor:
         if usage: return ((usage.prompt_token_count / 1e6) * r["in"]) + ((usage.candidates_token_count / 1e6) * r["out"])
         return 0.0
 
-    def _load_chart_of_accounts(self, client_id):
+    def _load_chart_of_accounts(self):
         """Dynamically loads the Chart of Accounts and Rules from the Django Database."""
         # Ensure Account and AccountMappingRule are imported at the top of your file
-        from .models import Account, AccountMappingRule 
+        from account.models import Account, AccountMappingRule 
         try:
-            accounts = Account.objects.filter(client_id=client_id)
-            rules = AccountMappingRule.objects.filter(client_id=client_id).select_related('account')
+            accounts = Account.objects.all()
+            rules = AccountMappingRule.objects.all().select_related('account')
             rule_dict = {str(rule.account.account_id): rule for rule in rules}
 
             self.tier_1_prompt = "<TIER_1_CHART_OF_ACCOUNTS>\n"

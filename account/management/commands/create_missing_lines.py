@@ -63,7 +63,7 @@ class Command(BaseCommand):
             # CREDIT: Trade Payable
             if total_amount > 0:
                 ap_account, _ = Account.objects.get_or_create(
-                    client_id=je.client_id, account_id=credit_acct_id,
+                    account_id=credit_acct_id,
                     defaults={'name': 'Trade Payable - USD', 'account_type': 'Liability'}
                 )
                 JournalLine.objects.create(journal_entry=je, account=ap_account, description=f"Payable - {purchase.company}", credit=total_amount)
@@ -72,7 +72,7 @@ class Command(BaseCommand):
             # DEBIT: VAT Input
             if vat_amount > 0:
                 vat_account, _ = Account.objects.get_or_create(
-                    client_id=je.client_id, account_id='115010',
+                    account_id='115010',
                     defaults={'name': 'VAT input 进项增值税', 'account_type': 'Asset'}
                 )
                 JournalLine.objects.create(journal_entry=je, account=vat_account, description="Input VAT", debit=vat_amount)
@@ -81,7 +81,7 @@ class Command(BaseCommand):
             # DEBIT: Expense Account
             if net_amount > 0:
                 exp_account, _ = Account.objects.get_or_create(
-                    client_id=je.client_id, account_id=debit_acct_id,
+                    account_id=debit_acct_id,
                     defaults={'name': 'Operating Expense', 'account_type': 'Expense'}
                 )
                 JournalLine.objects.create(

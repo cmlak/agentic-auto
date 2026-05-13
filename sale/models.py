@@ -1,17 +1,16 @@
 from django.db import models
 import re
-from tools.models import Client
+from simple_history.models import HistoricalRecords
+
 
 class Customer(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='customer_client', null=True)
     customer_id = models.CharField(max_length=50) # e.g., V001
     name = models.CharField(max_length=255)
     normalized_name = models.CharField(max_length=255, db_index=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
-    class Meta:
-        # A vendor_id (like V001) should be unique per client, but not globally.
-        unique_together = ('client', 'customer_id')
+    # ADDED: The django-simple-history audit trail
+    history = HistoricalRecords()
 
     def save(self, *args, **kwargs):
         if self.name:
@@ -26,7 +25,6 @@ class Customer(models.Model):
 # --- 3. SALE MODEL ---
 # ====================================================================
 class Sale(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True, related_name='sale_client')
     batch = models.CharField(max_length=255, blank=True, null=True) 
     
     date = models.DateField(blank=True, null=True)
@@ -40,6 +38,9 @@ class Sale(models.Model):
 
     description = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
+
+    # ADDED: The django-simple-history audit trail
+    history = HistoricalRecords()
     
     PAYMENT_STATUS_CHOICES = [
         ('Open', 'Open'),

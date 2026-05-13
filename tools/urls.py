@@ -14,7 +14,7 @@ urlpatterns = [
     path('download-invoice-report/', views.download_invoice_report, name='download_invoice_report'),
     path('invoice/manual-entry/', views.manual_invoice_entry_view, name='manual_invoice_entry'),
     
-    path('export/purchases/<int:client_id>/', views.export_purchase_invoices, name='export_purchases'),
+    path('export/purchases/', views.export_purchase_invoices, name='export_purchases'),
     path('export/purchases/success/', views.purchase_export_success_view, name='purchase_export_success'),
     path('export/purchases/download/', views.download_exported_purchases, name='download_exported_purchases'),
     
@@ -59,5 +59,5 @@ urlpatterns = [
     path('adjustments/<int:pk>/update/', views.AdjustmentUpdateView.as_view(), name='adjustment_update'),
     path('adjustments/<int:pk>/delete/', views.AdjustmentDeleteView.as_view(), name='adjustment_delete'),
 
-    path('ajax/load-vendors/', views.load_client_vendors, name='ajax_load_vendors'),
+    path('ajax/load-vendors/', views.load_vendors, name='ajax_load_vendors'),
 ]

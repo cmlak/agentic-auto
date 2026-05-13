@@ -26,9 +26,6 @@
                     <form method="POST">
                         {% csrf_token %}
                         <div class="row">
-                            <div class="col-md-12 mb-3">
-                                {{ form.client|as_crispy_field }}
-                            </div>
                             <div class="col-md-6 mb-3">
                                 {{ form.start_date|as_crispy_field }}
                             </div>

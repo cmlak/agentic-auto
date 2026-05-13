@@ -1,6 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import User
 import re
+from simple_history.models import HistoricalRecords
 
 class Client(models.Model):
     name = models.CharField(max_length=255, unique=True)
@@ -12,18 +13,21 @@ class Client(models.Model):
 
 
 # ====================================================================
-# --- 2. VENDOR MODEL (Isolated per Client) ---
+# --- VENDOR MODEL ---
 # ====================================================================
 class Vendor(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='vendors', null=True)
-    vendor_id = models.CharField(max_length=50) # e.g., V001
+    # DELETED: client = models.ForeignKey(...)
+    
+    # ADDED 'unique=True' since this table is now isolated per client
+    vendor_id = models.CharField(max_length=50, unique=True) 
     name = models.CharField(max_length=255)
     normalized_name = models.CharField(max_length=255, db_index=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
-    class Meta:
-        # A vendor_id (like V001) should be unique per client, but not globally.
-        unique_together = ('client', 'vendor_id')
+    # ADDED: The django-simple-history audit trail
+    history = HistoricalRecords()
+
+    # DELETED: class Meta with unique_together
 
     def save(self, *args, **kwargs):
         if self.name:
@@ -38,7 +42,8 @@ class Vendor(models.Model):
 # --- 3. PURCHASE MODEL ---
 # ====================================================================
 class Purchase(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    # DELETED: client = models.ForeignKey(...)
+    
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     batch = models.CharField(max_length=255, blank=True, null=True) 
     
@@ -74,6 +79,9 @@ class Purchase(models.Model):
     page = models.IntegerField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
+    # ADDED: The django-simple-history audit trail
+    history = HistoricalRecords()
+
     def save(self, *args, **kwargs):
         # Double-check cleanup to prevent ="null" or ="1"
         if self.invoice_no and str(self.invoice_no).lower() in ['null', 'none', 'unknown', '1']:
@@ -88,8 +96,7 @@ class Purchase(models.Model):
         super(Purchase, self).save(*args, **kwargs)
 
 class Old(models.Model):
-
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    # DELETED: client = models.ForeignKey(...)
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     date = models.DateField(blank=True, null=True)
     account_id = models.IntegerField(blank=True, null=True)
@@ -99,15 +106,19 @@ class Old(models.Model):
     credit = models.FloatField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
+    # ADDED: Audit Trail
+    history = HistoricalRecords()
+
     def __str__(self):
-        return f"{self.client.name} -{self.account_id} - {self.description}"
+        # REMOVED self.client.name from the string representation
+        return f"{self.account_id} - {self.description}"
 
 class JournalVoucher(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
+    # DELETED: client = models.ForeignKey(...)
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     date = models.DateField(blank=True, null=True)
     account_id = models.CharField(max_length=20, blank=True, null=True)
-    vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
+    vendor = models.ForeignKey('tools.Vendor', on_delete=models.SET_NULL, null=True, blank=True)
     description = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
     
@@ -122,8 +133,28 @@ class JournalVoucher(models.Model):
     credit = models.FloatField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
+    history = HistoricalRecords()
+
     def __str__(self):
-        return f"{self.date.strftime('%Y-%m-%d %H:%M')} - {self.description}"
+        return f"{self.date.strftime('%Y-%m-%d %H:%M') if self.date else 'No Date'} - {self.description}"
+
+class Adjustment(models.Model):
+    # DELETED: client = models.ForeignKey(...)
+    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
+    date = models.DateField(blank=True, null=True)
+    vendor = models.ForeignKey('tools.Vendor', on_delete=models.SET_NULL, null=True, blank=True)
+    customer = models.ForeignKey('sale.Customer', on_delete=models.SET_NULL, null=True, blank=True)
+    debit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_debit_account', null=True, blank=True)
+    credit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_credit_account', null=True, blank=True)
+    debit = models.FloatField(blank=True, null=True)
+    credit = models.FloatField(blank=True, null=True)   
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)   
+
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return f"{self.date.strftime('%Y-%m-%d %H:%M') if self.date else 'No Date'} - ({self.description})"
 
 class AICostLog(models.Model):
     date = models.DateTimeField(auto_now_add=True)
@@ -137,18 +168,3 @@ class AICostLog(models.Model):
     def __str__(self):
         return f"{self.date.strftime('%Y-%m-%d %H:%M')} - {self.file_name} (${self.total_cost})"
 
-class Adjustment(models.Model):
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, null=True)
-    user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
-    date = models.DateField(blank=True, null=True)
-    vendor = models.ForeignKey(Vendor, on_delete=models.SET_NULL, null=True, blank=True)
-    customer = models.ForeignKey('sale.Customer', on_delete=models.SET_NULL, null=True, blank=True)
-    debit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_debit_account', null=True, blank=True)
-    credit_account_id = models.ForeignKey('account.Account', on_delete=models.CASCADE, related_name='adjustment_credit_account', null=True, blank=True)
-    debit = models.FloatField(blank=True, null=True)
-    credit = models.FloatField(blank=True, null=True)    
-    description = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)    
-
-    def __str__(self):
-        return f"{self.date.strftime('%Y-%m-%d %H:%M')} - ({self.description})"

@@ -2,7 +2,6 @@ from django import forms
 from django.forms import formset_factory
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Field
-from tools.models import Client
 from .models import Bank, Cash
 
 BANK_PROCESSOR_CHOICES = [
@@ -12,12 +11,6 @@ BANK_PROCESSOR_CHOICES = [
 ]
 
 class BankBatchUploadForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(), 
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-success'})
-    )
     processor_config = forms.ChoiceField(
         choices=BANK_PROCESSOR_CHOICES, 
         label="Select Bank Configuration",
@@ -175,7 +168,7 @@ class BankReviewForm(forms.ModelForm):
 
     class Meta:
         model = Bank
-        exclude = ['client', 'matched_purchase', 'matched_sale']
+        exclude = ['matched_purchase', 'matched_sale']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'purpose': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
@@ -206,12 +199,6 @@ class BankReviewForm(forms.ModelForm):
 BankFormSet = formset_factory(BankReviewForm, extra=0, can_delete=True)
 
 class ManualBankEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-success'})
-    )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
@@ -260,7 +247,6 @@ class ManualBankEntryForm(forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-8'),
                 Column('date', css_class='form-group col-md-4'),
             ),
             Row(
@@ -297,7 +283,7 @@ class ManualBankEntryForm(forms.ModelForm):
     class Meta:
         model = Bank
         fields = [
-            'client', 'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
+            'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
             'debit_account_id', 'credit_account_id', 'debit', 'credit', 
             'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]
@@ -356,12 +342,6 @@ CASH_PROCESSOR_CHOICES = [
 ]
 
 class CashBatchUploadForm(forms.Form):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(), 
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-warning'})
-    )
     processor_config = forms.ChoiceField(
         choices=CASH_PROCESSOR_CHOICES, 
         label="Select Processor Rules",
@@ -492,7 +472,7 @@ class CashReviewForm(forms.ModelForm):
 
     class Meta:
         model = Cash
-        exclude = ['client', 'matched_purchase', 'matched_sale']
+        exclude = ['matched_purchase', 'matched_sale']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
             'description': forms.Textarea(attrs={'rows': 1, 'class': 'auto-expand'}),
@@ -524,12 +504,6 @@ CashFormSet = formset_factory(CashReviewForm, extra=0, can_delete=True)
 
 
 class ManualCashEntryForm(forms.ModelForm):
-    client = forms.ModelChoiceField(
-        queryset=Client.objects.all(),
-        empty_label="--- Select Client ---",
-        label="Client / Company",
-        widget=forms.Select(attrs={'class': 'form-select fw-bold border-warning'})
-    )
     vendor_choice = forms.ChoiceField(label="Vendor Selection", required=False)
     customer_choice = forms.ChoiceField(label="Customer Selection", required=False, widget=forms.Select(attrs={'class': 'form-select text-primary'}))
     debit_account_id = forms.ChoiceField(
@@ -577,7 +551,6 @@ class ManualCashEntryForm(forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('client', css_class='form-group col-md-3'),
                 Column('date', css_class='form-group col-md-3'),
                 Column('voucher_no', css_class='form-group col-md-3'),
                 Column('invoice_no', css_class='form-group col-md-3'),
@@ -608,7 +581,7 @@ class ManualCashEntryForm(forms.ModelForm):
     class Meta:
         model = Cash
         fields = [
-            'client', 'date', 'voucher_no', 'invoice_no', 'description',
+            'date', 'voucher_no', 'invoice_no', 'description',
             'debit_account_id', 'credit_account_id', 'debit', 'credit',
             'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]

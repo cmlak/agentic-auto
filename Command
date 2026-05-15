@@ -10,6 +10,8 @@ python -m pip install django-crispy-forms crispy-bootstrap5
 
 pip install -r requirements.txt
 
+pip freeze > requirements.txt
+
 python manage.py migrate_schemas --tenant
 
 python manage.py account_mapping_rules account_accountmappingrule.csv --schema "CCKT"

@@ -28,13 +28,16 @@ ALLOWED_HOSTS = [
     'localhost',
     '127.0.0.1',
     '.localhost',  # Allows any subdomain locally, like cckt.localhost
+    '.cambodiasmeprojects.com',
 ]
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = [
     'https://agentic-platform-521063372903.asia-southeast1.run.app',
-    'https://*.cloudshell.dev',    
+    'https://*.cloudshell.dev',
+    'https://*.cambodiasmeprojects.com',
+    
 ]
 
 # ==============================================================================

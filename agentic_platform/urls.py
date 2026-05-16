@@ -18,6 +18,8 @@ urlpatterns = [
     # path('', IndexView, name='main'),
     # The root domain (localhost:8000 / your base URL) goes to the lobby
     path('', client_dashboard, name='portal_dashboard'),
+    # Map the URL that Cloud Scheduler is currently looking for
+    path('api/trigger-backup/', trigger_nightly_backup, name='trigger_backup'),
 ]
 
 if settings.DEBUG:

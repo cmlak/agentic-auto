@@ -205,3 +205,25 @@ USE_TZ = True
 
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
 CRISPY_TEMPLATE_PACK = "bootstrap5"
+
+# ==========================================
+# CELERY & REDIS CONFIGURATION
+# ==========================================
+
+# Use env() for consistency with the rest of your file
+CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+
+# Standard good-practice settings for Celery in Django
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_TIMEZONE = TIME_ZONE 
+
+# NEW: Required for Upstash's secure rediss:// connection in Cloud Run
+CELERY_BROKER_USE_SSL = {
+    'ssl_cert_reqs': 'CERT_NONE'
+}
+CELERY_REDIS_BACKEND_USE_SSL = {
+    'ssl_cert_reqs': 'CERT_NONE'
+}

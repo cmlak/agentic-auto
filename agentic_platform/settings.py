@@ -40,6 +40,17 @@ CSRF_TRUSTED_ORIGINS = [
     
 ]
 
+# Share session and CSRF cookies across all subdomains (Multi-tenant authentication)
+if not DEBUG:
+    SESSION_COOKIE_DOMAIN = '.cambodiasmeprojects.com'
+    CSRF_COOKIE_DOMAIN = '.cambodiasmeprojects.com'
+    SESSION_COOKIE_SECURE = True
+    CSRF_COOKIE_SECURE = True
+    SESSION_COOKIE_SAMESITE = 'Lax'
+else:
+    SESSION_COOKIE_DOMAIN = '.localhost'
+    CSRF_COOKIE_DOMAIN = '.localhost'
+
 # ==============================================================================
 # MULTI-TENANCY APP CONFIGURATION
 # ==============================================================================

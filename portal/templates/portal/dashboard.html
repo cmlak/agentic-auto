@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 
 {% block content %}
+<style>
+    /* Guarantee only one button is visible even if multiple domains are configured */
+    .workspace-btn-container .btn-workspace ~ .btn-workspace {
+        display: none !important;
+    }
+</style>
 <div class="container mt-5">
     <div class="row mb-4">
         <div class="col-12">
@@ -19,17 +25,36 @@
                             Schema: <strong>{{ client.schema_name }}</strong>
                         </p>
                         
-                        {% with domain=client.domains.first %}
-                            {% if domain %}
-                                <a href="{{ request.scheme }}://{{ domain.domain }}:{{ request.META.SERVER_PORT }}/" class="btn btn-primary mt-auto">
-                                    Enter Workspace &rarr;
-                                </a>
+                        <div class="d-grid gap-2 mt-auto workspace-btn-container">
+                        {% for domain in client.domains.all %}
+                            
+                            {% if "localhost" in request.get_host or "127.0.0.1" in request.get_host %}
+                                {% if "localhost" in domain.domain or "127.0.0.1" in domain.domain %}
+                                    <a href="http://{{ domain.domain }}:{{ request.META.SERVER_PORT }}/" class="btn btn-primary btn-workspace">
+                                        Enter Workspace &rarr;
+                                    </a>
+                                {% endif %}
+                            {% elif "cloudshell.dev" in request.get_host %}
+                                {% if "cloudshell.dev" in domain.domain %}
+                                    <a href="https://{{ domain.domain }}/" class="btn btn-primary btn-workspace">
+                                        Enter Workspace &rarr;
+                                    </a>
+                                {% endif %}
                             {% else %}
-                                <button class="btn btn-outline-secondary mt-auto" disabled>
-                                    ⚠️ No Domain Configured
-                                </button>
+                                {% if domain.is_primary and "localhost" not in domain.domain and "127.0.0.1" not in domain.domain and "cloudshell.dev" not in domain.domain %}
+                                    <a href="https://{{ domain.domain }}/" class="btn btn-primary btn-workspace">
+                                        Enter Workspace &rarr;
+                                    </a>
+                                {% endif %}
                             {% endif %}
-                        {% endwith %}
+                            
+                        {% empty %}
+                            <button class="btn btn-outline-secondary" disabled>
+                                ⚠️ No Domain Configured
+                            </button>
+                        {% endfor %}
+                        </div>
+                        
                     </div>
                 </div>
             </div>

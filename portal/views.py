@@ -23,11 +23,13 @@ def trigger_nightly_backup(request):
     if provided_token != EXPECTED_TOKEN:
         return HttpResponseForbidden("Access Denied: Invalid Security Token")
 
-    # FIX: Force Django to break out of the multi-tenant middleware loop
-    # and execute the Celery task delegation directly from the 'public' base schema context
-    connection.set_schema_to_public() 
+    try:
+        # Force the database routing connection wrapper back to the global infrastructure
+        connection.set_schema_to_public()
+    except Exception:
+        pass
 
-    # Dispatch to Upstash Redis natively
+    # Hand off to Upstash instantly
     backup_all_tenant_schemas.delay() 
     
     return HttpResponse("Backup task successfully handed off to Celery worker!", status=200)

@@ -5,7 +5,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.shortcuts import redirect
 from register.views import IndexView
-from portal.views import client_dashboard
+from portal.views import client_dashboard, trigger_nightly_backup
 
 
 urlpatterns = [

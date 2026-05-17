@@ -225,3 +225,16 @@ CELERY_BROKER_USE_SSL = {
 CELERY_REDIS_BACKEND_USE_SSL = {
     'ssl_cert_reqs': 'CERT_NONE'
 }
+
+# NEW: Prevent handshakes from hanging indefinitely over the public internet
+CELERY_BROKER_TRANSPORT_OPTIONS = {
+    'max_retries': 3,          # Give up quickly if the handshake fails
+    'interval_start': 0,
+    'interval_step': 0.2,
+    'interval_max': 0.5,
+    'socket_timeout': 5.0,     # If Redis doesn't answer in 5 seconds, break the loop!
+    'socket_connect_timeout': 5.0,
+}
+
+# Ensure connections are recycled cleanly rather than staying pooled across data centers
+CELERY_BROKER_POOL_LIMIT = None

@@ -20,8 +20,8 @@ environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env('SECRET_KEY')
 
-# SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = env('DEBUG')
+# FIX: Explicitly cast DEBUG from a string to a real Python Boolean
+DEBUG = env.bool('DEBUG', default=False)
 
 ALLOWED_HOSTS = [
     'agentic-platform-521063372903.asia-southeast1.run.app',
@@ -37,7 +37,6 @@ CSRF_TRUSTED_ORIGINS = [
     'https://agentic-platform-521063372903.asia-southeast1.run.app',
     'https://*.cloudshell.dev',
     'https://*.cambodiasmeprojects.com',
-    
 ]
 
 # Share session and CSRF cookies across all subdomains (Multi-tenant authentication)
@@ -58,7 +57,7 @@ else:
 # 1. SHARED APPS (Lives in the 'public' schema, shared by everyone)
 SHARED_APPS = (
     'django_tenants',  # Mandatory: must be first
-    'clients',         # NEW: You must create this app to hold Client/Domain models
+    'clients',         # Holds Client/Domain models
     'portal',
 
     'django.contrib.admin',
@@ -80,7 +79,7 @@ SHARED_APPS = (
 
 # 2. TENANT APPS (Lives in each isolated client schema like 'client_a', 'client_b')
 TENANT_APPS = (
-    'simple_history',  # Optional: Add if you are using django-simple-history for audit trails
+    'simple_history',  # Optional: For audit trails
 
     # Custom Tenant Apps (Accounting Ledgers, Invoices, Tools)
     'document',
@@ -159,7 +158,6 @@ DATABASES = {
 }
 
 # CRITICAL OVERRIDE: django-tenants requires a specific PostgreSQL backend wrapper.
-# You CANNOT use SQLite anymore. Your DATABASE_URL must point to a Postgres DB.
 DATABASES['default']['ENGINE'] = 'django_tenants.postgresql_backend'
 
 # Apply connection pooling
@@ -210,9 +208,9 @@ CRISPY_TEMPLATE_PACK = "bootstrap5"
 # CELERY & REDIS CONFIGURATION
 # ==========================================
 
-# Use env() for consistency with the rest of your file
-CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
-CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+# FIX: Force direct system environment variable reading to prevent container fallback bugs
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', env('CELERY_BROKER_URL', default='redis://localhost:6379/0'))
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0'))
 
 # Standard good-practice settings for Celery in Django
 CELERY_ACCEPT_CONTENT = ['json']

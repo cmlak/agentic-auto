@@ -245,3 +245,9 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
 
 # 5. Recycle connections cleanly rather than staying pooled across clouds
 CELERY_BROKER_POOL_LIMIT = None
+
+# Tell django-tenants which URL configurations belong exclusively to the public infrastructure
+PUBLIC_SCHEMA_URLCONF = 'agentic_platform.urls'
+
+# Explicitly exempt your API paths from multi-tenant scoping mechanisms
+TENANT_SUBFOLDER_PREFIX = 'None'

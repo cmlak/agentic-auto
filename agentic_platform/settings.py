@@ -208,17 +208,24 @@ CRISPY_TEMPLATE_PACK = "bootstrap5"
 # CELERY & REDIS CONFIGURATION
 # ==========================================
 
-# FIX: Force direct system environment variable reading to prevent container fallback bugs
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL', env('CELERY_BROKER_URL', default='redis://localhost:6379/0'))
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND', env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0'))
+# 1. Absolute system environment enforcement (Run this first!)
+if 'CELERY_BROKER_URL' in os.environ:
+    CELERY_BROKER_URL = os.environ['CELERY_BROKER_URL']
+else:
+    CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
 
-# Standard good-practice settings for Celery in Django
+if 'CELERY_RESULT_BACKEND' in os.environ:
+    CELERY_RESULT_BACKEND = os.environ['CELERY_RESULT_BACKEND']
+else:
+    CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
+
+# 2. Standard good-practice settings for Celery in Django
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_TIMEZONE = TIME_ZONE 
 
-# NEW: Required for Upstash's secure rediss:// connection in Cloud Run
+# 3. Secure Upstash rediss:// TLS settings over the public internet
 CELERY_BROKER_USE_SSL = {
     'ssl_cert_reqs': 'CERT_NONE'
 }
@@ -226,7 +233,7 @@ CELERY_REDIS_BACKEND_USE_SSL = {
     'ssl_cert_reqs': 'CERT_NONE'
 }
 
-# NEW: Prevent handshakes from hanging indefinitely over the public internet
+# 4. Prevent handshakes from hanging indefinitely between GCP and AWS datacenters
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     'max_retries': 3,          # Give up quickly if the handshake fails
     'interval_start': 0,
@@ -236,5 +243,5 @@ CELERY_BROKER_TRANSPORT_OPTIONS = {
     'socket_connect_timeout': 5.0,
 }
 
-# Ensure connections are recycled cleanly rather than staying pooled across data centers
+# 5. Recycle connections cleanly rather than staying pooled across clouds
 CELERY_BROKER_POOL_LIMIT = None

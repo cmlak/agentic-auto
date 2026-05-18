@@ -25,10 +25,6 @@
                     <form method="POST" enctype="multipart/form-data">
                         {% csrf_token %}
                         <div class="mb-3">
-                            {{ form.client.label_tag }}
-                            {{ form.client }}
-                        </div>
-                        <div class="mb-3">
                             {{ form.date.label_tag }}
                             {{ form.date }}
                         </div>

@@ -204,50 +204,33 @@ USE_TZ = True
 CRISPY_ALLOWED_TEMPLATE_PACKS = "bootstrap5"
 CRISPY_TEMPLATE_PACK = "bootstrap5"
 
-# ==========================================
-# CELERY & REDIS CONFIGURATION
-# ==========================================
+# ==============================================================================
+# CELERY PRODUCTION SETTINGS (UPSTASH REDIS COMPATIBLE)
+# ==============================================================================
 
-# 1. Absolute system environment enforcement (Run this first!)
-if 'CELERY_BROKER_URL' in os.environ:
-    CELERY_BROKER_URL = os.environ['CELERY_BROKER_URL']
-else:
-    CELERY_BROKER_URL = env('CELERY_BROKER_URL', default='redis://localhost:6379/0')
+# 1. Base Connection URLs (Keep clean of query string parameters)
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND')
 
-if 'CELERY_RESULT_BACKEND' in os.environ:
-    CELERY_RESULT_BACKEND = os.environ['CELERY_RESULT_BACKEND']
-else:
-    CELERY_RESULT_BACKEND = env('CELERY_RESULT_BACKEND', default='redis://localhost:6379/0')
-
-# 2. Standard good-practice settings for Celery in Django
-CELERY_ACCEPT_CONTENT = ['json']
-CELERY_TASK_SERIALIZER = 'json'
-CELERY_RESULT_SERIALIZER = 'json'
-CELERY_TIMEZONE = TIME_ZONE 
-
-# 3. Secure Upstash rediss:// TLS settings over the public internet
+# 2. Force Explicit SSL Verification Mode for Secure Connections (rediss://)
+# This completely satisfies the 'ssl_cert_reqs' requirement globally
 CELERY_BROKER_USE_SSL = {
-    'ssl_cert_reqs': 'CERT_NONE'
+    'ssl_cert_reqs': 'none'
 }
 CELERY_REDIS_BACKEND_USE_SSL = {
-    'ssl_cert_reqs': 'CERT_NONE'
+    'ssl_cert_reqs': 'none'
 }
 
-# 4. Prevent handshakes from hanging indefinitely between GCP and AWS datacenters
-CELERY_BROKER_TRANSPORT_OPTIONS = {
-    'max_retries': 3,          # Give up quickly if the handshake fails
-    'interval_start': 0,
-    'interval_step': 0.2,
-    'interval_max': 0.5,
-    'socket_timeout': 5.0,     # If Redis doesn't answer in 5 seconds, break the loop!
-    'socket_connect_timeout': 5.0,
-}
+# 3. Cloud Infrastructure Optimization
+CELERY_TASK_SERIALIZER = 'json'
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TIME_ZONE = 'Asia/Phnom_Penh'
 
-# 5. Recycle connections cleanly rather than staying pooled across clouds
-CELERY_BROKER_POOL_LIMIT = None
+# Prevent Celery from hogging connection sockets in a serverless environment
+CELERY_REDIS_MAX_CONNECTIONS = 20
+CELERY_BROKER_POOL_LIMIT = 10
 
-# Tell django-tenants which URL configurations belong exclusively to the public infrastructure
-PUBLIC_SCHEMA_URLCONF = 'agentic_platform.urls'
-
-# Explicitly exempt your API paths from multi-tenant scoping mechanisms
-TENANT_SUBFOLDER_PREFIX = 'None'
+# Force immediate execution synchronization visibility
+CELERY_TASK_TRACK_STARTED = True
+CELERY_TASK_LOG_FMT = '[%(asctime)s: %(levelname)s/%(processName)s] %(message)s'

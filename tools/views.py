@@ -30,7 +30,7 @@ from pypdf import PdfReader, PdfWriter
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
 MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm,\
-AdjustmentEntryForm
+AdjustmentEntryForm, AdjustmentFormSet
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
@@ -39,7 +39,7 @@ from register.models import Profile
 from .filters import PurchaseFilter, JournalVoucherFilter, AdjustmentFilter
 from .resources import PurchaseResource, AdjustmentResource
 from cash.models import Bank
-from sale.models import Customer
+from sale.models import Customer, Sale
 
 # ====================================================================
 # --- 1. AI INVOICE UPLOAD & PROCESSING ---
@@ -2186,30 +2186,74 @@ def AdjustmentListView(request):
 @login_required(login_url="register:login")
 def manual_adjustment_entry_view(request):
     if request.method == 'POST':
-        form = AdjustmentEntryForm(request.POST)
-        if form.is_valid():
+        formset = AdjustmentFormSet(request.POST)
+        if formset.is_valid():
             with transaction.atomic():
-                adj_record = form.save(commit=False)
-                adj_record.user = request.user
-                adj_record.save()
-                
-                je = JournalEntry.objects.create(
-                    date=adj_record.date or date.today(),
-                    description=f"Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
-                    adjustment=adj_record
-                )
-                safe_desc = adj_record.description[:255] if adj_record.description else "Adjustment"
-                if adj_record.debit_account_id:
-                    JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)
-                if adj_record.credit_account_id:
-                    JournalLine.objects.create(journal_entry=je, account=adj_record.credit_account_id, description=safe_desc, credit=adj_record.credit or 0.0)
+                adjustments_created = 0
+                for form in formset:
+                    if form.cleaned_data and not form.cleaned_data.get('DELETE'):
+                        adj_record = form.save(commit=False)
+                        adj_record.user = request.user
+                        adj_record.save()
+                        adjustments_created += 1
+                        
+                        je = JournalEntry.objects.create(
+                            date=adj_record.date or date.today(),
+                            description=f"Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
+                            adjustment=adj_record
+                        )
+                        safe_desc = adj_record.description[:255] if adj_record.description else "Adjustment"
+                        if adj_record.debit_account_id:
+                            JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)
+                        if adj_record.credit_account_id:
+                            JournalLine.objects.create(journal_entry=je, account=adj_record.credit_account_id, description=safe_desc, credit=adj_record.credit or 0.0)
+                            
+                        purchase_ids = form.cleaned_data.get('purchase_id', '')
+                        sale_ids = form.cleaned_data.get('sale_id', '')
+                        jv_ids = form.cleaned_data.get('journal_voucher_id', '')
+                        
+                        for p_id in [x.strip() for x in purchase_ids.split(',') if x.strip()]:
+                            try:
+                                p = Purchase.objects.get(id=p_id)
+                                if p.payment_status == 'Open':
+                                    acct = Account.objects.filter(account_id=str(p.credit_account_id)).first()
+                                    if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                                        p.payment_status = 'Paid'
+                                        p.save(update_fields=['payment_status'])
+                            except Exception:
+                                pass
+                                
+                        for s_id in [x.strip() for x in sale_ids.split(',') if x.strip()]:
+                            try:
+                                s = Sale.objects.get(id=s_id)
+                                if s.payment_status == 'Open':
+                                    acct_id = getattr(s, 'account_id', None) or getattr(s, 'debit_account_id', None) or getattr(s, 'credit_account_id', None)
+                                    acct = Account.objects.filter(account_id=str(acct_id)).first()
+                                    if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                                        s.payment_status = 'Paid'
+                                        s.save(update_fields=['payment_status'])
+                            except Exception:
+                                pass
+                                
+                        for j_id in [x.strip() for x in jv_ids.split(',') if x.strip()]:
+                            try:
+                                j = JournalVoucher.objects.get(id=j_id)
+                                if j.payment_status == 'Open':
+                                    acct = Account.objects.filter(account_id=str(j.account_id)).first()
+                                    if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                                        j.payment_status = 'Paid'
+                                        j.save(update_fields=['payment_status'])
+                            except Exception:
+                                pass
             
-            messages.success(request, f"Successfully created adjustment and posted to GL.")
+            messages.success(request, f"Successfully created {adjustments_created} adjustments and posted to GL.")
             return redirect('tools:adjustment_list') 
+        else:
+            messages.error(request, "Please correct the errors below.")
     else:
-        form = AdjustmentEntryForm()
+        formset = AdjustmentFormSet()
 
-    return render(request, 'tools/adjustment_form.html', {'form': form})
+    return render(request, 'tools/adjustment_form.html', {'formset': formset})
 
 class AdjustmentDetailView(LoginRequiredMixin, DetailView):
     login_url = "register:login"
@@ -2243,6 +2287,44 @@ class AdjustmentUpdateView(LoginRequiredMixin, UpdateView):
                 JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)
             if adj_record.credit_account_id:
                 JournalLine.objects.create(journal_entry=je, account=adj_record.credit_account_id, description=safe_desc, credit=adj_record.credit or 0.0)
+                
+            purchase_ids = form.cleaned_data.get('purchase_id', '')
+            sale_ids = form.cleaned_data.get('sale_id', '')
+            jv_ids = form.cleaned_data.get('journal_voucher_id', '')
+            
+            for p_id in [x.strip() for x in purchase_ids.split(',') if x.strip()]:
+                try:
+                    p = Purchase.objects.get(id=p_id)
+                    if p.payment_status == 'Open':
+                        acct = Account.objects.filter(account_id=str(p.credit_account_id)).first()
+                        if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                            p.payment_status = 'Paid'
+                            p.save(update_fields=['payment_status'])
+                except Exception:
+                    pass
+                    
+            for s_id in [x.strip() for x in sale_ids.split(',') if x.strip()]:
+                try:
+                    s = Sale.objects.get(id=s_id)
+                    if s.payment_status == 'Open':
+                        acct_id = getattr(s, 'account_id', None) or getattr(s, 'debit_account_id', None) or getattr(s, 'credit_account_id', None)
+                        acct = Account.objects.filter(account_id=str(acct_id)).first()
+                        if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                            s.payment_status = 'Paid'
+                            s.save(update_fields=['payment_status'])
+                except Exception:
+                    pass
+                    
+            for j_id in [x.strip() for x in jv_ids.split(',') if x.strip()]:
+                try:
+                    j = JournalVoucher.objects.get(id=j_id)
+                    if j.payment_status == 'Open':
+                        acct = Account.objects.filter(account_id=str(j.account_id)).first()
+                        if acct and acct.account_type in ['Liability', 'Revenue', 'Expense']:
+                            j.payment_status = 'Paid'
+                            j.save(update_fields=['payment_status'])
+                except Exception:
+                    pass
         
         messages.success(self.request, "Adjustment and General Ledger entries updated successfully!")
         return HttpResponseRedirect(reverse('tools:adjustment_detail', kwargs={'pk': self.object.pk}))

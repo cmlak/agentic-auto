@@ -1,5 +1,6 @@
 from django import forms
-from django.forms import formset_factory
+from django.forms import formset_factory, BaseFormSet
+from django.core.exceptions import ValidationError
 from crispy_forms.helper import FormHelper
 from django.urls import reverse_lazy
 from datetime import date
@@ -778,6 +779,18 @@ class AdjustmentEntryForm(forms.ModelForm):
         label="Credit Account", required=False, 
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
+    purchase_id = forms.CharField(
+        label="Purchase IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 10, 11'})
+    )
+    sale_id = forms.CharField(
+        label="Sale IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 20, 21'})
+    )
+    journal_voucher_id = forms.CharField(
+        label="JV IDs", required=False, 
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 30'})
+    )
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -792,28 +805,51 @@ class AdjustmentEntryForm(forms.ModelForm):
         self.helper.form_tag = False
         self.helper.layout = Layout(
             Row(
-                Column('date', css_class='form-group col-md-4'), 
+                Column('date', css_class='form-group col-md-2'), 
+                Column('vendor', css_class='form-group col-md-2'), 
+                Column('customer', css_class='form-group col-md-2'),
+                Column('debit_account_id', css_class='form-group col-md-2'), 
+                Column('credit_account_id', css_class='form-group col-md-2'),
+                Column('DELETE', css_class='form-group col-md-2 text-center mt-4'),
             ),
             Row(
-                Column('vendor', css_class='form-group col-md-6'), 
-                Column('customer', css_class='form-group col-md-6'),
+                Column('purchase_id', css_class='form-group col-md-2'),
+                Column('sale_id', css_class='form-group col-md-2'),
+                Column('journal_voucher_id', css_class='form-group col-md-2'),
+                Column('description', css_class='form-group col-md-4'),
+                Column('debit', css_class='form-group col-md-1'), 
+                Column('credit', css_class='form-group col-md-1'),
             ),
-            Row(
-                Column('debit_account_id', css_class='form-group col-md-6'), 
-                Column('credit_account_id', css_class='form-group col-md-6'),
-            ),
-            Row(
-                Column('description', css_class='form-group col-md-12'),
-            ),
-            Row(
-                Column('debit', css_class='form-group col-md-6'), 
-                Column('credit', css_class='form-group col-md-6'),
-            ))
+            HTML('<hr>')
+        )
 
     class Meta:
         model = Adjustment
         fields = ['date', 'vendor', 'customer', 'debit_account_id', 'credit_account_id', 'description', 'debit', 'credit']
         widgets = {
             'date': forms.DateInput(attrs={'type': 'date'}),
-            'description': forms.Textarea(attrs={'rows': 2}),
+            'description': forms.Textarea(attrs={'rows': 1}),
         }
+
+class BaseAdjustmentFormSet(BaseFormSet):
+    def clean(self):
+        if any(self.errors):
+            return
+        total_debit = 0.0
+        total_credit = 0.0
+        has_forms = False
+        for form in self.forms:
+            if self.can_delete and self._should_delete_form(form):
+                continue
+            if not form.cleaned_data:
+                continue
+            has_forms = True
+            debit = form.cleaned_data.get('debit') or 0.0
+            credit = form.cleaned_data.get('credit') or 0.0
+            total_debit += debit
+            total_credit += credit
+        
+        if has_forms and round(total_debit, 2) != round(total_credit, 2):
+            raise ValidationError(f"Total Debit ({total_debit}) must equal Total Credit ({total_credit}) to proceed.")
+
+AdjustmentFormSet = formset_factory(AdjustmentEntryForm, formset=BaseAdjustmentFormSet, extra=4, can_delete=True)

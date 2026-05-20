@@ -209,34 +209,31 @@ CRISPY_TEMPLATE_PACK = "bootstrap5"
 # ==============================================================================
 import os
 
-# 1. Base Connection URLs (Keep clean of query string parameters)
-CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
-CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND')
+# Read the clean, unparameterized base URLs from your environment
+RAW_BROKER_URL = os.environ.get('CELERY_BROKER_URL', '')
+RAW_BACKEND_URL = os.environ.get('CELERY_RESULT_BACKEND', '')
 
-# 2. Force Explicit SSL Verification Mode for Secure Connections (rediss://)
-CELERY_BROKER_USE_SSL = {
-    'ssl_cert_reqs': 'none'
-}
-CELERY_REDIS_BACKEND_USE_SSL = {
-    'ssl_cert_reqs': 'none'
-}
+# Append the required query options safely inside Python where strings won't split
+# This completely satisfies line 296 of celery/backends/redis.py
+if "ssl_cert_reqs" not in RAW_BROKER_URL:
+    CELERY_BROKER_URL = f"{RAW_BROKER_URL.rstrip('/')}?ssl_cert_reqs=CERT_NONE"
+else:
+    CELERY_BROKER_URL = RAW_BROKER_URL
 
-# 3. THE CRUCIAL PIECE: Explicit backend options dictionary
-# This satisfies the backend engine validation check (line 296 of redis.py)
-CELERY_REDIS_BACKEND_TRANSPORT_OPTIONS = {
-    'ssl_cert_reqs': 'CERT_NONE'
-}
+if "ssl_cert_reqs" not in RAW_BACKEND_URL:
+    CELERY_RESULT_BACKEND = f"{RAW_BACKEND_URL.rstrip('/')}?ssl_cert_reqs=CERT_NONE"
+else:
+    CELERY_RESULT_BACKEND = RAW_BACKEND_URL
 
-# 4. Cloud Infrastructure Optimization
+# Keep your optimization defaults below
+CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': 'none'}
+CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': 'none'}
+
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIME_ZONE = 'Asia/Phnom_Penh'
-
-# Prevent Celery from hogging connection sockets in a serverless environment
 CELERY_REDIS_MAX_CONNECTIONS = 20
 CELERY_BROKER_POOL_LIMIT = 10
-
-# Force immediate execution synchronization visibility
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_LOG_FMT = '[%(asctime)s: %(levelname)s/%(processName)s] %(message)s'

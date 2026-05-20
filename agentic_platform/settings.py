@@ -207,13 +207,13 @@ CRISPY_TEMPLATE_PACK = "bootstrap5"
 # ==============================================================================
 # CELERY PRODUCTION SETTINGS (UPSTASH REDIS COMPATIBLE)
 # ==============================================================================
+import os
 
 # 1. Base Connection URLs (Keep clean of query string parameters)
 CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
 CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND')
 
 # 2. Force Explicit SSL Verification Mode for Secure Connections (rediss://)
-# This completely satisfies the 'ssl_cert_reqs' requirement globally
 CELERY_BROKER_USE_SSL = {
     'ssl_cert_reqs': 'none'
 }
@@ -221,7 +221,13 @@ CELERY_REDIS_BACKEND_USE_SSL = {
     'ssl_cert_reqs': 'none'
 }
 
-# 3. Cloud Infrastructure Optimization
+# 3. THE CRUCIAL PIECE: Explicit backend options dictionary
+# This satisfies the backend engine validation check (line 296 of redis.py)
+CELERY_REDIS_BACKEND_TRANSPORT_OPTIONS = {
+    'ssl_cert_reqs': 'CERT_NONE'
+}
+
+# 4. Cloud Infrastructure Optimization
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']

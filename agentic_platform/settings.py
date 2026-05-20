@@ -207,33 +207,23 @@ CRISPY_TEMPLATE_PACK = "bootstrap5"
 # ==============================================================================
 # CELERY PRODUCTION SETTINGS (UPSTASH REDIS COMPATIBLE)
 # ==============================================================================
-import os
 
-# Read the clean, unparameterized base URLs from your environment
-RAW_BROKER_URL = os.environ.get('CELERY_BROKER_URL', '')
-RAW_BACKEND_URL = os.environ.get('CELERY_RESULT_BACKEND', '')
+# 1. Base Connection URLs 
+# (Now pulling the complete, parameterized rediss:// strings directly from the OS environment)
+CELERY_BROKER_URL = os.environ.get('CELERY_BROKER_URL')
+CELERY_RESULT_BACKEND = os.environ.get('CELERY_RESULT_BACKEND')
 
-# Append the required query options safely inside Python where strings won't split
-# This completely satisfies line 296 of celery/backends/redis.py
-if "ssl_cert_reqs" not in RAW_BROKER_URL:
-    CELERY_BROKER_URL = f"{RAW_BROKER_URL.rstrip('/')}?ssl_cert_reqs=CERT_NONE"
-else:
-    CELERY_BROKER_URL = RAW_BROKER_URL
-
-if "ssl_cert_reqs" not in RAW_BACKEND_URL:
-    CELERY_RESULT_BACKEND = f"{RAW_BACKEND_URL.rstrip('/')}?ssl_cert_reqs=CERT_NONE"
-else:
-    CELERY_RESULT_BACKEND = RAW_BACKEND_URL
-
-# Keep your optimization defaults below
-CELERY_BROKER_USE_SSL = {'ssl_cert_reqs': 'none'}
-CELERY_REDIS_BACKEND_USE_SSL = {'ssl_cert_reqs': 'none'}
-
+# 2. Cloud Infrastructure & Task Serialization Tuning
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TIME_ZONE = 'Asia/Phnom_Penh'
+
+# 3. Connection Pool Management (Optimized for Serverless Cloud Run)
+# Prevents container tasks from exhausting connection sockets on Upstash
 CELERY_REDIS_MAX_CONNECTIONS = 20
 CELERY_BROKER_POOL_LIMIT = 10
+
+# 4. Execution Visibility Logging
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_LOG_FMT = '[%(asctime)s: %(levelname)s/%(processName)s] %(message)s'

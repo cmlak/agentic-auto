@@ -29,10 +29,9 @@ def backup_all_tenant_schemas():
         db_port = "5432"
 
     # 3. Target Schemas (Case-Sensitive Database Matches)
-    schemas_to_backup = ['public', 'cckt', 'abc']
+    schemas_to_backup = ['public', 'ABC', 'CCKT']
     
     # 4. Initialize Google Cloud Storage Client
-    # Set fallback bucket identifier string if missing from project configuration parameters
     bucket_name = getattr(settings, 'GS_BUCKET_NAME', 'document-project-464509-backups')
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
@@ -51,8 +50,8 @@ def backup_all_tenant_schemas():
             '-p', str(db_port),
             '-U', db_user,
             '-d', db_name,
-            '-n', schema_name,  # Matches lowecase db catalogs perfectly
-            '-F', 'c',          # Custom tar archive layout formatting
+            '-n', schema_name,  # Matches uppercase DB catalogs perfectly
+            '-F', 'c',          # Compressed custom archive format
             '-f', local_backup_path
         ]
 

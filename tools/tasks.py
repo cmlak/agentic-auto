@@ -28,7 +28,7 @@ def backup_all_tenant_schemas():
         db_host = "/cloudsql/document-project-464509:asia-southeast1:agentic-platform-2"
         db_port = "5432"
 
-    # 3. Target Schemas (Case-Sensitive Database Matches)
+    # 3. Target Schemas (Case-Sensitive Production Database Matches)
     schemas_to_backup = ['public', 'ABC', 'CCKT']
     
     # 4. Initialize Google Cloud Storage Client
@@ -43,15 +43,20 @@ def backup_all_tenant_schemas():
         backup_filename = f"{schema_name}_backup_{timestamp}.dump"
         local_backup_path = f"/tmp/{backup_filename}"
         
-        # 5. Construct pg_dump Execution Command
+        # 5. Escaped Formatting for Strict Case-Sensitive Identifiers
+        # public is standard lowercase; ABC and CCKT must be explicitly double-quoted 
+        # so pg_dump treats them as literal uppercase matches in the Postgres catalog.
+        formatted_schema = f'"{schema_name}"' if schema_name != 'public' else schema_name
+        
+        # Construct pg_dump Execution Command
         cmd = [
             'pg_dump',
             '-h', db_host,
             '-p', str(db_port),
             '-U', db_user,
             '-d', db_name,
-            '-n', schema_name,  # Matches uppercase DB catalogs perfectly
-            '-F', 'c',          # Compressed custom archive format
+            '-n', formatted_schema,  # Enforces strict uppercase preservation
+            '-F', 'c',               # Compressed custom archive format
             '-f', local_backup_path
         ]
 

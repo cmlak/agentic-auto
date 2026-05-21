@@ -8,20 +8,26 @@ ENV PYTHONUNBUFFERED=1
 # Set the working directory in the container
 WORKDIR /app
 
-# Install system dependencies for Postgres (psycopg2)
+# Install system dependencies for build tools and repository setups
 RUN apt-get update && apt-get install -y \
     libpq-dev \
     gcc \
+    gnupg2 \
+    wget \
+    lsb-release \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PostgreSQL client tools so we can run pg_dump
-RUN apt-get update && apt-get install -y postgresql-client
+# Add official PostgreSQL apt repository and install version 18 client tools
+RUN wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | apt-key add - \
+    && echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y postgresql-client-18 \
+    && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# ---> THIS IS THE MISSING LINE! Copy the rest of your Django project code <---
+# Copy the rest of your Django project code
 COPY . .
 
 # Run collectstatic with a dummy database variable

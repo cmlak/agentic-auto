@@ -516,6 +516,7 @@ def account_ledger_detail_view(request, account_id):
         journal_voucher_id = line.journal_entry.journal_voucher_id
         old_id = line.journal_entry.old_id
         adjustment_id = getattr(line.journal_entry, 'adjustment_id', None)
+        sale_id = getattr(line.journal_entry, 'sale_id', None)
         
         purchase_detail = getattr(line.journal_entry.purchase, 'company', "Details") if purchase_id and getattr(line.journal_entry, 'purchase', None) else "Details"
         bank_detail = (getattr(line.journal_entry.bank, 'counterparty', "") or getattr(line.journal_entry.bank, 'purpose', "Details")) if bank_id and getattr(line.journal_entry, 'bank', None) else "Details"
@@ -523,10 +524,29 @@ def account_ledger_detail_view(request, account_id):
         jv_detail = getattr(line.journal_entry.journal_voucher, 'description', "Details") if journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None) else "Details"
         old_detail = getattr(line.journal_entry.old, 'description', "Details") if old_id and getattr(line.journal_entry, 'old', None) else "Details"
         adjustment_detail = getattr(line.journal_entry.adjustment, 'description', "Details") if adjustment_id and getattr(line.journal_entry, 'adjustment', None) else "Details"
+        
+        description = None
+        
+        if purchase_id and getattr(line.journal_entry, 'purchase', None):
+            description = getattr(line.journal_entry.purchase, 'description_en', None) or getattr(line.journal_entry.purchase, 'description', None)
+        elif sale_id and getattr(line.journal_entry, 'sale', None):
+            description = getattr(line.journal_entry.sale, 'description', None)
+        elif journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None):
+            description = getattr(line.journal_entry.journal_voucher, 'description', None)
+        elif adjustment_id and getattr(line.journal_entry, 'adjustment', None):
+            description = getattr(line.journal_entry.adjustment, 'description', None)
+        elif bank_id and getattr(line.journal_entry, 'bank', None):
+            description = getattr(line.journal_entry.bank, 'remark', None) or getattr(line.journal_entry.bank, 'purpose', None)
+        elif cash_id and getattr(line.journal_entry, 'cash', None):
+            description = getattr(line.journal_entry.cash, 'description', None)
+        elif old_id and getattr(line.journal_entry, 'old', None):
+            description = getattr(line.journal_entry.old, 'description', None)
+
+        description = description or line.description or line.journal_entry.description
 
         ledger_data.append({
             'date': line.journal_entry.date,
-            'description': line.description or line.journal_entry.description,
+            'description': description,
             'source': source_display,
             'purchase_id': purchase_id,
             'bank_id': bank_id,
@@ -941,9 +961,32 @@ def export_account_ledger_detail(request, account_id):
         cash_id = line.journal_entry.cash_id
         journal_voucher_id = line.journal_entry.journal_voucher_id
         old_id = line.journal_entry.old_id
+        adjustment_id = getattr(line.journal_entry, 'adjustment_id', None)
+        sale_id = getattr(line.journal_entry, 'sale_id', None)
+        
+        description = None
+        
+        if purchase_id and getattr(line.journal_entry, 'purchase', None):
+            description = getattr(line.journal_entry.purchase, 'description_en', None) or getattr(line.journal_entry.purchase, 'description', None)
+        elif sale_id and getattr(line.journal_entry, 'sale', None):
+            description = getattr(line.journal_entry.sale, 'description', None)
+        elif journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None):
+            description = getattr(line.journal_entry.journal_voucher, 'description', None)
+        elif adjustment_id and getattr(line.journal_entry, 'adjustment', None):
+            description = getattr(line.journal_entry.adjustment, 'description', None)
+        elif bank_id and getattr(line.journal_entry, 'bank', None):
+            description = getattr(line.journal_entry.bank, 'remark', None) or getattr(line.journal_entry.bank, 'purpose', None)
+        elif cash_id and getattr(line.journal_entry, 'cash', None):
+            description = getattr(line.journal_entry.cash, 'description', None)
+        elif old_id and getattr(line.journal_entry, 'old', None):
+            description = getattr(line.journal_entry.old, 'description', None)
+
+        description = description or line.description or line.journal_entry.description
         
         if purchase_id and getattr(line.journal_entry, 'purchase', None):
             source_display = f"Purchase: {getattr(line.journal_entry.purchase, 'company', 'Details')}"
+        elif sale_id and getattr(line.journal_entry, 'sale', None):
+            source_display = f"Sale: {getattr(line.journal_entry.sale, 'company', 'Details')}"
         elif bank_id and getattr(line.journal_entry, 'bank', None):
             source_display = f"Bank: {getattr(line.journal_entry.bank, 'counterparty', '') or getattr(line.journal_entry.bank, 'purpose', 'Details')}"
         elif cash_id and getattr(line.journal_entry, 'cash', None):
@@ -952,12 +995,12 @@ def export_account_ledger_detail(request, account_id):
             source_display = f"Journal Voucher: {getattr(line.journal_entry.journal_voucher, 'description', 'Details')}"
         elif old_id and getattr(line.journal_entry, 'old', None):
             source_display = f"Historical: {getattr(line.journal_entry.old, 'description', 'Details')}"
-        elif getattr(line.journal_entry, 'adjustment_id', None) and getattr(line.journal_entry, 'adjustment', None):
+        elif adjustment_id and getattr(line.journal_entry, 'adjustment', None):
             source_display = f"Adjustment: {getattr(line.journal_entry.adjustment, 'description', 'Details')}"
 
         ledger_data.append({
             'date': line.journal_entry.date,
-            'description': line.description or line.journal_entry.description,
+            'description': description,
             'source': source_display,
             'debit': line.debit,
             'credit': line.credit,

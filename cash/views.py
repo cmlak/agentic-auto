@@ -1299,7 +1299,6 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 bank.matched_jv = None
                 
             bank.save()
-            JournalEntry.objects.filter(bank=bank).delete()
             
             dr_acct_id = str(bank.debit_account_id) if bank.debit_account_id else None
             cr_acct_id = str(bank.credit_account_id) if bank.credit_account_id else None
@@ -1322,7 +1321,20 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 je_desc += f", matched with JV IDs {matched_jv_ids}."
             je_desc = je_desc[:500]
 
-            je = JournalEntry.objects.create(date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
+            je, created = JournalEntry.objects.get_or_create(
+                bank=bank,
+                defaults={
+                    'date': bank.date or date.today(),
+                    'description': je_desc,
+                    'reference_number': bank.bank_ref_id,
+                }
+            )
+            if not created:
+                je.date = bank.date or date.today()
+                je.description = je_desc
+                je.reference_number = bank.bank_ref_id
+                je.save(update_fields=['date', 'description', 'reference_number'])
+                je.lines.all().delete()
             
             _distribute_settlement_lines(
                 je, amount, dr_acct, cr_acct, je_desc
@@ -1612,8 +1624,6 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 
             cash.save()
             
-            JournalEntry.objects.filter(cash=cash).delete()
-            
             dr_acct_id = str(cash.debit_account_id) if cash.debit_account_id else None
             cr_acct_id = str(cash.credit_account_id) if cash.credit_account_id else None
             
@@ -1635,7 +1645,20 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 je_desc += f", matched with JV IDs {matched_jv_ids}."
             je_desc = je_desc[:500]
 
-            je = JournalEntry.objects.create(date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
+            je, created = JournalEntry.objects.get_or_create(
+                cash=cash,
+                defaults={
+                    'date': cash.date or date.today(),
+                    'description': je_desc,
+                    'reference_number': cash.voucher_no,
+                }
+            )
+            if not created:
+                je.date = cash.date or date.today()
+                je.description = je_desc
+                je.reference_number = cash.voucher_no
+                je.save(update_fields=['date', 'description', 'reference_number'])
+                je.lines.all().delete()
             
             _distribute_settlement_lines(
                 je, amount, dr_acct, cr_acct, je_desc

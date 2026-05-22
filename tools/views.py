@@ -944,34 +944,33 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
     def form_valid(self, form):
         # Wrap everything in an atomic transaction to prevent partial writes/duplicates
         with transaction.atomic():
-            
             purchase = form.save(commit=False)
-            
             for field in ['account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id']:
                 val = getattr(purchase, field)
                 if val == '' or val == "":
                     setattr(purchase, field, None)
-            
             vc = form.cleaned_data.get('vendor_choice')
             if vc:
                 purchase.vendor_id = int(vc)
-                
-            purchase.save() # Updates existing, no duplicate created
+            purchase.save()
 
             # ==========================================================
             # --- ATOMIC RECALCULATION OF GENERAL LEDGER ---
             # ==========================================================
-            
-            # 1. Safely wipe old entries. (Requires JournalLine to have on_delete=models.CASCADE in models.py)
-            JournalEntry.objects.filter(purchase=purchase).delete()
-            
-            # 2. Rebuild the entries
-            je = JournalEntry.objects.create(
-                date=purchase.date or date.today(),
-                description=f"Updated Manual Purchase: {purchase.company}",
-                reference_number=purchase.invoice_no,
-                purchase=purchase
+            je, created = JournalEntry.objects.get_or_create(
+                purchase=purchase,
+                defaults={
+                    'date': purchase.date or date.today(),
+                    'description': f"Purchase: {purchase.company}",
+                    'reference_number': purchase.invoice_no,
+                }
             )
+            if not created:
+                je.date = purchase.date or date.today()
+                je.description = f"Updated Purchase: {purchase.company}"
+                je.reference_number = purchase.invoice_no
+                je.save(update_fields=['date', 'description', 'reference_number'])
+                je.lines.all().delete()
 
             total_amount = float(purchase.total_usd or 0.0)
             vat_amount = float(purchase.vat_usd or 0.0)
@@ -982,7 +981,6 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
                 wht_amount = round(total_amount - unreg_amount, 2)
 
             main_net = (total_amount - vat_amount - wht_amount)
-            
             if purchase.account_id and main_net > 0:
                 acct, _ = Account.objects.get_or_create(account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
                 JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
@@ -1141,14 +1139,20 @@ class OldUpdateView(LoginRequiredMixin, UpdateView):
     def form_valid(self, form):
         with transaction.atomic():
             old_record = form.save()
-            JournalEntry.objects.filter(Q(old=old_record) | Q(reference_number=f"OLD-{old_record.id}")).delete()
-            
-            je = JournalEntry.objects.create(
-                date=old_record.date or date.today(),
-                description=f"Updated Historical Entry: {old_record.description}"[:255], 
-                reference_number=f"OLD-{old_record.id}",
-                old=old_record
+            je, created = JournalEntry.objects.get_or_create(
+                old=old_record,
+                defaults={
+                    'date': old_record.date or date.today(),
+                    'description': f"Historical Entry: {old_record.description}"[:255],
+                    'reference_number': f"OLD-{old_record.id}",
+                }
             )
+            if not created:
+                je.date = old_record.date or date.today()
+                je.description = f"Updated Historical Entry: {old_record.description}"[:255]
+                je.save(update_fields=['date', 'description'])
+                je.lines.all().delete()
+
             acct, _ = Account.objects.get_or_create(account_id=str(old_record.account_id), defaults={'name': 'Historical Default', 'account_type': 'Asset'})
             safe_desc = old_record.description[:255] if old_record.description else "Historical Entry"
             debit_val = old_record.debit or 0.0
@@ -2133,14 +2137,20 @@ class JournalVoucherUpdateView(LoginRequiredMixin, UpdateView):
                 jv_record.payment_status = 'Paid'
                 
             jv_record.save()
-            
-            JournalEntry.objects.filter(Q(journal_voucher=jv_record) | Q(reference_number=f"JV-{jv_record.id}")).delete()
-            
-            je = JournalEntry.objects.create(
-                date=jv_record.date or date.today(),
-                description=f"Updated Journal Voucher: {jv_record.description}"[:255], reference_number=f"JV-{jv_record.id}",
-                journal_voucher=jv_record
+            je, created = JournalEntry.objects.get_or_create(
+                journal_voucher=jv_record,
+                defaults={
+                    'date': jv_record.date or date.today(),
+                    'description': f"Journal Voucher: {jv_record.description}"[:255],
+                    'reference_number': f"JV-{jv_record.id}",
+                }
             )
+            if not created:
+                je.date = jv_record.date or date.today()
+                je.description = f"Updated Journal Voucher: {jv_record.description}"[:255]
+                je.save(update_fields=['date', 'description'])
+                je.lines.all().delete()
+
             safe_desc = jv_record.description[:255] if jv_record.description else "Journal Voucher"
             debit_val = jv_record.debit or 0.0
             credit_val = jv_record.credit or 0.0
@@ -2275,13 +2285,20 @@ class AdjustmentUpdateView(LoginRequiredMixin, UpdateView):
     def form_valid(self, form):
         with transaction.atomic():
             adj_record = form.save()
-            JournalEntry.objects.filter(Q(adjustment=adj_record) | Q(reference_number=f"ADJ-{adj_record.id}")).delete()
-            
-            je = JournalEntry.objects.create(
-                date=adj_record.date or date.today(),
-                description=f"Updated Adjustment: {adj_record.description}"[:255], reference_number=f"ADJ-{adj_record.id}",
-                adjustment=adj_record
+            je, created = JournalEntry.objects.get_or_create(
+                adjustment=adj_record,
+                defaults={
+                    'date': adj_record.date or date.today(),
+                    'description': f"Adjustment: {adj_record.description}"[:255],
+                    'reference_number': f"ADJ-{adj_record.id}",
+                }
             )
+            if not created:
+                je.date = adj_record.date or date.today()
+                je.description = f"Updated Adjustment: {adj_record.description}"[:255]
+                je.save(update_fields=['date', 'description'])
+                je.lines.all().delete()
+
             safe_desc = adj_record.description[:255] if adj_record.description else "Adjustment"
             if adj_record.debit_account_id:
                 JournalLine.objects.create(journal_entry=je, account=adj_record.debit_account_id, description=safe_desc, debit=adj_record.debit or 0.0)

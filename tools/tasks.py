@@ -8,10 +8,10 @@ from celery import shared_task
 @shared_task
 def backup_all_tenant_schemas():
     """
-    Synchronously loops through database schemas, creates a compressed pg_dump 
-    binary archive file for each, and uploads the results to Google Cloud Storage.
+    Synchronously loops through database schemas, creates a plain-text SQL 
+    script file for each, and uploads the results to Google Cloud Storage.
     """
-    print("Initializing synchronous database backup sequence...")
+    print("Initializing synchronous database backup sequence (Plain-Text SQL Mode)...")
     
     # 1. Extract Connection Properties from Django Database Block
     db_config = settings.DATABASES['default']
@@ -22,8 +22,6 @@ def backup_all_tenant_schemas():
     db_password = db_config.get('PASSWORD', '')
 
     # 2. Infrastructure Socket Fallback
-    # If the host string is blank, path-based, or referencing a unix socket proxy,
-    # point explicitly to Cloud Run's native Cloud SQL proxy directory frame.
     if not db_host or '/' in db_host or 'cloudsql' in db_host:
         db_host = "/cloudsql/document-project-464509:asia-southeast1:agentic-platform-2"
         db_port = "5432"
@@ -32,7 +30,6 @@ def backup_all_tenant_schemas():
     schemas_to_backup = ['public', 'ABC', 'CCKT']
     
     # 4. Initialize Google Cloud Storage Client
-    # Hardcoded to bypass any dynamic configuration overrides completely
     bucket_name = 'cambodiasmeprojects_sql_backup'
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
@@ -41,12 +38,11 @@ def backup_all_tenant_schemas():
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
 
     for schema_name in schemas_to_backup:
-        backup_filename = f"{schema_name}_backup_{timestamp}.dump"
+        # 💡 UPDATED: Extension changed to .sql
+        backup_filename = f"{schema_name}_backup_{timestamp}.sql"
         local_backup_path = f"/tmp/{backup_filename}"
         
         # 5. Escaped Formatting for Strict Case-Sensitive Identifiers
-        # public is standard lowercase; ABC and CCKT must be explicitly double-quoted 
-        # so pg_dump treats them as literal uppercase matches in the Postgres catalog.
         formatted_schema = f'"{schema_name}"' if schema_name != 'public' else schema_name
         
         # Construct pg_dump Execution Command
@@ -56,8 +52,8 @@ def backup_all_tenant_schemas():
             '-p', str(db_port),
             '-U', db_user,
             '-d', db_name,
-            '-n', formatted_schema,  # Enforces strict uppercase preservation
-            '-F', 'c',               # Compressed custom archive format
+            '-n', formatted_schema,
+            '-F', 'p',               # 💡 UPDATED: 'p' forces Plain-Text SQL Script output
             '-f', local_backup_path
         ]
 
@@ -66,7 +62,7 @@ def backup_all_tenant_schemas():
         env['PGPASSWORD'] = db_password
 
         try:
-            print(f"Starting dump for schema: {schema_name}...")
+            print(f"Starting SQL plain-text dump for schema: {schema_name}...")
             
             # Execute database binary dump extraction
             subprocess.run(cmd, env=env, capture_output=True, text=True, check=True)

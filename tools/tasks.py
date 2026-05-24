@@ -32,7 +32,8 @@ def backup_all_tenant_schemas():
     schemas_to_backup = ['public', 'ABC', 'CCKT']
     
     # 4. Initialize Google Cloud Storage Client
-    bucket_name = getattr(settings, 'GS_BUCKET_NAME', 'document-project-464509-backups')
+    # Modified fallback parameter value to target your real verified bucket infrastructure
+    bucket_name = getattr(settings, 'GS_BUCKET_NAME', 'cambodiasmeprojects_sql_backup')
     storage_client = storage.Client()
     bucket = storage_client.bucket(bucket_name)
 

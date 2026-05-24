@@ -53,7 +53,9 @@ def backup_all_tenant_schemas():
             '-U', db_user,
             '-d', db_name,
             '-n', formatted_schema,
-            '-F', 'p',               # 💡 UPDATED: 'p' forces Plain-Text SQL Script output
+            '-F', 'p',               # Plain-Text SQL Script output
+            '--clean',               # 💡 NEW: Drops database objects before recreating them
+            '--if-exists',           # 💡 NEW: Prevents errors if objects don't exist yet
             '-f', local_backup_path
         ]
 

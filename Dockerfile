@@ -9,19 +9,22 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies for build tools and repository setups
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     gcc \
     gnupg2 \
     wget \
     lsb-release \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Add official PostgreSQL apt repository using the modern keyring method and install v18
+# Explicitly updating the certificate authorities ensures the signing verification handshake clears flawlessly.
 RUN mkdir -p /etc/apt/keyrings \
-    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /etc/apt/keyrings/postgresql.gpg \
+    && wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor --yes -o /etc/apt/keyrings/postgresql.gpg \
     && echo "deb [signed-by=/etc/apt/keyrings/postgresql.gpg] http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
-    && apt-get update && apt-get install -y postgresql-client-18 \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends postgresql-client-18 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies

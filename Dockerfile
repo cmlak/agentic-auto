@@ -9,11 +9,13 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Install system dependencies for build tools and repository setups
+# Added curl to explicitly break the layer cache and force a clean apt rebuild
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     gcc \
     gnupg2 \
     wget \
+    curl \
     lsb-release \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*

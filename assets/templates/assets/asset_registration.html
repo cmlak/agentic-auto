@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+{% extends 'base_4_assets.html' %}
 {% load crispy_forms_tags %}
 
 {% block title %}Asset Registration{% endblock %}
@@ -14,7 +14,7 @@
                 <div class="card-body">
                     <form method="post" novalidate>
                         {% csrf_token %}
-                        {{ form|crispy }}
+                        {% crispy form %}
                         
                         <div class="d-grid mt-4">
                             <button type="submit" class="btn btn-primary">Save Asset Record</button>
@@ -25,4 +25,17 @@
         </div>
     </div>
 </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    const purchaseCosts = {{ purchase_costs_json|safe }};
+    function updatePurchaseCost(selectElem) {
+        const purchaseId = selectElem.value;
+        const costField = document.getElementById('id_purchase_cost');
+        if (purchaseId && purchaseCosts[purchaseId] !== undefined) {
+            costField.value = purchaseCosts[purchaseId];
+        }
+    }
+</script>
 {% endblock %}

@@ -1,4 +1,4 @@
-{% extends 'base.html' %}
+{% extends 'base_4_assets.html' %}
 
 {% block title %}Asset Dashboard{% endblock %}
 
@@ -24,7 +24,7 @@
             </div>
         </div>
         <div class="col-md-4">
-            <a href="{% url 'tools:run_depreciation' %}" class="btn btn-warning w-100 h-100 d-flex align-items-center justify-content-center">
+            <a href="{% url 'assets:run_depreciation' %}" class="btn btn-warning w-100 h-100 d-flex align-items-center justify-content-center">
                 <h4>Execute Monthly Depreciation</h4>
             </a>
         </div>
@@ -59,7 +59,7 @@
                 </td>
                 <td>
                     {% if asset.status == 'ACTIVE' %}
-                        <a href="{% url 'tools:dispose_asset' asset.id %}" class="btn btn-sm btn-danger">Dispose</a>
+                        <a href="{% url 'assets:dispose_asset' asset.id %}" class="btn btn-sm btn-danger">Dispose</a>
                     {% endif %}
                 </td>
             </tr>

@@ -501,7 +501,7 @@ def ai_cost_dashboard(request):
     """Dashboard to review AI processing costs."""
     if not (request.user.is_staff or request.user.is_superuser):
         messages.error(request, "You do not have permission to view the AI cost dashboard.")
-        return redirect('main')
+        return redirect('register:main')
 
     cost_logs_list = AICostLog.objects.all().order_by('-date')
 

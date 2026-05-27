@@ -1,11 +1,15 @@
+import json
+import calendar
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.db import transaction
 from decimal import Decimal
 from django.contrib.auth.decorators import login_required
 from .models import Asset, DepreciationEntry, AssetDisposal
-from .forms import AssetRegistrationForm, RunDepreciationForm, AssetDisposalForm
+from .forms import AssetRegistrationForm, RunDepreciationForm, AssetDisposalForm, AssetDepreciationFormSet
 from account.models import JournalEntry, JournalLine
+from tools.models import Purchase
+from datetime import date
 
 @login_required(login_url="register:login")
 def asset_dashboard(request):
@@ -26,8 +30,12 @@ def asset_dashboard(request):
 @login_required(login_url="register:login")
 def register_asset(request):
     """Handles the creation of a new Fixed Asset"""
+    purchases = Purchase.objects.filter(account_id__startswith='1500')
+    purchase_costs = {p.id: float(p.total_usd or 0.0) for p in purchases}
+
     if request.method == 'POST':
         form = AssetRegistrationForm(request.POST)
+        form.fields['purchase'].queryset = purchases
         if form.is_valid():
             # Save the new asset
             asset = form.save(commit=False)
@@ -45,23 +53,39 @@ def register_asset(request):
     else:
         # If GET request, show empty form
         form = AssetRegistrationForm()
+        form.fields['purchase'].queryset = purchases
 
-    return render(request, 'asset_registration.html', {'form': form})
+    return render(request, 'assets/asset_registration.html', {'form': form, 'purchase_costs_json': json.dumps(purchase_costs)})
 
 @transaction.atomic
 @login_required(login_url="register:login")
 def run_monthly_depreciation(request):
     """Automates Monthly Calculation and GL Posting"""
+    active_assets = Asset.objects.filter(status='ACTIVE').order_by('asset_code')
+    
     if request.method == 'POST':
         form = RunDepreciationForm(request.POST)
-        if form.is_valid():
+        formset = AssetDepreciationFormSet(request.POST)
+        if form.is_valid() and formset.is_valid():
             run_date = form.cleaned_data['run_date']
-            active_assets = Asset.objects.filter(status='ACTIVE', depreciation_start_date__lte=run_date)
+            
+            # Full Month basic: ensure we include assets placed in service anytime during this month
+            _, last_day = calendar.monthrange(run_date.year, run_date.month)
+            end_of_month = run_date.replace(day=last_day)
+            
+            selected_asset_ids = []
+            for f in formset:
+                if f.cleaned_data and f.cleaned_data.get('select'):
+                    selected_asset_ids.append(f.cleaned_data.get('asset_id'))
+            
+            assets_to_process = active_assets.filter(id__in=selected_asset_ids, depreciation_start_date__lte=end_of_month)
             
             entries_created = 0
-            for asset in active_assets:
+            skipped_entries = 0
+            for asset in assets_to_process:
                 # Prevent running twice in the same month
                 if DepreciationEntry.objects.filter(asset=asset, date__month=run_date.month, date__year=run_date.year).exists():
+                    skipped_entries += 1
                     continue
                 
                 # Straight Line Math: (Cost - Salvage) / Useful Life
@@ -93,11 +117,37 @@ def run_monthly_depreciation(request):
                 entry.save()
                 entries_created += 1
                 
-            messages.success(request, f"Successfully processed {entries_created} depreciation entries.")
-            return redirect('tools:asset_dashboard')
+            if entries_created > 0:
+                msg = f"Successfully processed {entries_created} depreciation entries."
+                if skipped_entries > 0:
+                    msg += f" (Skipped {skipped_entries} assets already depreciated for this month)."
+                messages.success(request, msg)
+            else:
+                if skipped_entries > 0:
+                    messages.warning(request, f"No new depreciation entries created. All {skipped_entries} selected assets were already depreciated for this month.")
+                else:
+                    messages.info(request, "No assets were eligible for depreciation.")
+                    
+            return redirect('assets:asset_dashboard')
     else:
-        form = RunDepreciationForm()
-    return render(request, 'assets/run_depreciation.html', {'form': form})
+        today = date.today()
+        _, last_day = calendar.monthrange(today.year, today.month)
+        default_run_date = today.replace(day=last_day)
+        form = RunDepreciationForm(initial={'run_date': default_run_date})
+
+        initial_data = []
+        for asset in active_assets:
+            initial_data.append({
+                'asset_id': asset.id,
+                'asset_code': asset.asset_code,
+                'asset_type': asset.get_asset_type_display(),
+                'purchase_cost': asset.purchase_cost,
+                'depreciation_start_date': asset.depreciation_start_date,
+                'select': True
+            })
+        formset = AssetDepreciationFormSet(initial=initial_data)
+        
+    return render(request, 'assets/run_depreciation.html', {'form': form, 'formset': formset})
 
 @transaction.atomic
 @login_required(login_url="register:login")
@@ -144,7 +194,7 @@ def dispose_asset(request, asset_id):
             asset.save()
             
             messages.success(request, f"Asset {asset.asset_code} disposed. Gain/Loss: ${disposal.gain_loss_amount}")
-            return redirect('tools:asset_dashboard')
+            return redirect('assets:asset_dashboard')
     else:
         form = AssetDisposalForm()
         

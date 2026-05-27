@@ -153,11 +153,21 @@ class GeminiInvoiceProcessor:
         coa_qs = Account.objects.all().order_by('account_id')
         coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
         
+        # 💡 FIX 1: Check the Top Priority Custom Prompt for a starting page override constraint.
+        # This dynamically calculates the page sequence based on your custom prompt instructions.
+        computed_page = pg
+        page_match = re.search(r'(?:start page numbering from|start page|page number starts from|page)\s*[:=]?\s*(\d+)', custom_prompt.lower())
+        if page_match:
+            base_offset = int(page_match.group(1))
+            computed_page = base_offset + (pg - 1)
+
         try:
             document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+            
+            # 💡 FIX 2: Dynamically bind the `computed_page` index into the core context template frame.
             prompt = f"""
             TASK: Extract accounting data strictly from the attached invoice page.
-            This is Page {pg} of the batch.
+            This is Page {computed_page} of the transaction sequence.
             <CRITICAL_VATTIN_INSTRUCTION>Extract VATTIN EXACTLY as visually printed. Do NOT autocorrect.</CRITICAL_VATTIN_INSTRUCTION>
             <CHART_OF_ACCOUNTS>\n{coa_context}\n</CHART_OF_ACCOUNTS>
             <ACCOUNTING_HIERARCHY_RULES>
@@ -169,7 +179,7 @@ class GeminiInvoiceProcessor:
             1. AGGREGATION & SPLITTING: Output ONE PurchaseEntry per page. EXCEPTION: Split Equipment Rental and Driver Fee into TWO entries.
             2. DATE: YYYY-MM-DD.
             3. VENDOR NAME: Extract the company/shop name.
-            4. DESCRIPTION_EN: Summarize in English ONLY. Max 25 words!
+            4. DESCRIPTION_EN: Summarize in English ONLY.
             5. TAX AMOUNTS: If NO VAT is charged, put the entire amount in unreg_usd.
             6. BALANCED ASSIGNMENT: Assign Account IDs strictly from the <CHART_OF_ACCOUNTS>.
             7. SEQUENCES & INVOICE NUMBERS: Extract EXACTLY as printed. If missing, output "NEEDS_SEQ".
@@ -224,7 +234,10 @@ class GeminiInvoiceProcessor:
                     entry_dict['temp_id'] = vendor_data.get('temp_id')
                     entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
                     entry_dict['batch'] = batch_name
-                    entry_dict['page'] = pg
+                    
+                    # 💡 FIX 3: Assign to the computed_page variable to preserve the user's custom sequence offset!
+                    entry_dict['page'] = computed_page
+                    
                     ledgers.append(entry_dict)
 
         except Exception as e:

@@ -810,7 +810,7 @@ class AdjustmentEntryForm(forms.ModelForm):
                 Column('customer', css_class='form-group col-md-2'),
                 Column('debit_account_id', css_class='form-group col-md-2'), 
                 Column('credit_account_id', css_class='form-group col-md-2'),
-                Column('DELETE', css_class='form-group col-md-2 text-center mt-4'),
+                Column('DELETE', css_class='form-group col-md-2 text-center mt-4') if 'DELETE' in self.fields else HTML(''),
             ),
             Row(
                 Column('purchase_id', css_class='form-group col-md-2'),
@@ -853,3 +853,103 @@ class BaseAdjustmentFormSet(BaseFormSet):
             raise ValidationError(f"Total Debit ({total_debit}) must equal Total Credit ({total_credit}) to proceed.")
 
 AdjustmentFormSet = formset_factory(AdjustmentEntryForm, formset=BaseAdjustmentFormSet, extra=4, can_delete=True)
+
+class AdjustmentOffsetForm(forms.Form):
+    form_number = forms.CharField(label='No.', disabled=True, required=False)
+    # Hidden tracking field
+    purchase_id = forms.IntegerField(widget=forms.HiddenInput(), required=False)
+    journal_voucher_id = forms.IntegerField(widget=forms.HiddenInput(), required=False)
+    bank_id = forms.IntegerField(widget=forms.HiddenInput(), required=False)
+    
+    # Visible fields
+    date = forms.DateField(
+        required=True,
+        widget=forms.DateInput(attrs={'type': 'date', 'class': 'form-control'})
+    )
+    bank_date = forms.DateField(
+        label='Bank Date',
+        required=False,
+        widget=forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date', 'class': 'form-control text-muted', 'readonly': True})
+    )
+    purchase_date = forms.DateField(
+        label='Purchase Date',
+        required=False,
+        widget=forms.DateInput(format='%Y-%m-%d', attrs={'type': 'date', 'class': 'form-control text-muted', 'readonly': True})
+    )
+    vendor = forms.ModelChoiceField(
+        queryset=Vendor.objects.all(), 
+        widget=forms.Select(attrs={'class': 'form-select'})
+    )
+    debit_account_id = forms.ModelChoiceField(
+        queryset=Account.objects.all(), 
+        widget=forms.Select(attrs={'class': 'form-select text-success fw-bold', 'readonly': True})
+    )
+    credit_account_id = forms.ModelChoiceField(
+        queryset=Account.objects.all(), 
+        widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold', 'readonly': True})
+    )
+    debit = forms.FloatField(
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'readonly': True})
+    )
+    credit = forms.FloatField(
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'readonly': True})
+    )
+    # UI Reference Field
+    partial_offset = forms.BooleanField(
+        required=False, 
+        widget=forms.CheckboxInput(attrs={'onclick': 'return false;'}) # Prevents user from clicking it
+    )
+    description = forms.CharField(
+        required=False, 
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 2})
+    )
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # Numbering the formset rows dynamically based on prefix
+        if self.prefix:
+            try:
+                form_index = int(self.prefix.split('-')[-1]) + 1
+                self.fields['form_number'].initial = str(form_index)
+            except (ValueError, IndexError):
+                self.fields['form_number'].initial = 'N/A'
+        else:
+            self.fields['form_number'].initial = 'N/A'
+
+        # Inject 'title' attribute for native browser tooltips on hover
+        if self.initial.get('description'):
+            self.fields['description'].widget.attrs['title'] = self.initial.get('description')
+            
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('form_number', css_class='form-group col-md-1'),
+                Column('date', css_class='form-group col-md-2'),
+                Column('vendor', css_class='form-group col-md-7'),
+                Column('DELETE', css_class='form-group col-md-2 text-center bg-danger bg-opacity-10 text-danger fw-bold rounded pt-2 pb-2') if 'DELETE' in self.fields else HTML(''),
+                css_class='mt-4 border-top pt-3 border-2 border-primary' 
+            ),
+            Row(
+                Column('purchase_date', css_class='form-group col-md-2'),
+                Column('debit_account_id', css_class='form-group col-md-4'),
+                Column('bank_date', css_class='form-group col-md-2'),                
+                Column('credit_account_id', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('debit', css_class='form-group col-md-2'),
+                Column('credit', css_class='form-group col-md-2'),
+                Column('partial_offset', css_class='form-group col-md-2 mt-4'),
+            ),
+            Row(
+                Column('description', css_class='form-group col-md-12'),
+            ),
+            Field('purchase_id', type="hidden"),
+            Field('journal_voucher_id', type="hidden"),
+            Field('bank_id', type="hidden"),
+            HTML('<hr class="my-4 text-muted border-1">')
+        )
+
+# Use standard formset_factory (can_delete=True automatically adds the DELETE checkbox)
+OffsetFormSet = formset_factory(AdjustmentOffsetForm, extra=0, can_delete=True)

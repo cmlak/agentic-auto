@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card shadow-sm border-0">
+                <div class="card-body text-center p-5">
+                    <h2 class="text-success mb-4">
+                        <i class="fas fa-check-circle" style="font-size: 3rem;"></i>
+                    </h2>
+                    <h3 class="fw-bold mb-3">Prepayment Offsets Successful!</h3>
+                    <p class="text-muted mb-4">
+                        The selected prepayments have been successfully offset against the open purchases. 
+                        Journal entries have been securely posted to the General Ledger.
+                    </p>
+                    <div class="d-grid gap-2 d-md-flex justify-content-md-center">
+                        <a href="{% url 'tools:adjustment_list' %}" class="btn btn-primary px-4">View Adjustments</a>
+                        <a href="{% url 'tools:offset_prepayments' %}" class="btn btn-outline-secondary px-4">Process More Offsets</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

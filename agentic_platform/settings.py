@@ -47,8 +47,9 @@ if not DEBUG:
     CSRF_COOKIE_SECURE = True
     SESSION_COOKIE_SAMESITE = 'Lax'
 else:
-    SESSION_COOKIE_DOMAIN = '.localhost'
-    CSRF_COOKIE_DOMAIN = '.localhost'
+    # Allow login from 127.0.0.1 by not restricting the cookie domain locally
+    SESSION_COOKIE_DOMAIN = None
+    CSRF_COOKIE_DOMAIN = None
 
 # ==============================================================================
 # MULTI-TENANCY APP CONFIGURATION
@@ -87,6 +88,7 @@ TENANT_APPS = (
     'cash',
     'account',
     'sale',
+    'assets',
 )
 
 # 3. COMBINE APPS FOR DJANGO
@@ -183,7 +185,7 @@ if not DEBUG:
             "BACKEND": "storages.backends.gcloud.GoogleCloudStorage",
         },
         "staticfiles": {
-            "BACKEND": "whitenoise.storage.StaticFilesStorage", 
+            "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage", 
         },
     }
 else:

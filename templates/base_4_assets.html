@@ -168,10 +168,10 @@
                         <a class="nav-link" href="{% url 'portal_dashboard' %}">Home</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'tools:balancika_export' %}">Export Balancika</a>
+                        <a class="nav-link" href="{% url 'tools:asset_dashboard' %}">Asset Dashboard</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'tools:ai_cost_dashboard' %}">AI Costs</a>
+                        <a class="nav-link" href="{% url 'tools:register_asset' %}">Asset Register</a>
                     </li>
 
                     <li class="nav-item dropdown">
@@ -179,8 +179,8 @@
                           More
                         </a>
                         <div class="dropdown-menu" aria-labelledby="navbarDropdown">
-                            <a class="dropdown-item" href="">Tools</a>
-                            <a class="dropdown-item" href="">Tools</a>
+                            <a class="dropdown-item" href="{% url 'tools:run_depreciation' %}">Generate Depreciation</a>
+                            <a class="dropdown-item" href="{% url 'tools:dispose_asset' %}">Asset Disposal</a>
                         </div>
                     </li>
                 </ul>

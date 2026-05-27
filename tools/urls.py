@@ -60,4 +60,7 @@ urlpatterns = [
     path('adjustments/<int:pk>/delete/', views.AdjustmentDeleteView.as_view(), name='adjustment_delete'),
 
     path('ajax/load-vendors/', views.load_vendors, name='ajax_load_vendors'),
+
+    path('offset-prepayments/', views.automate_prepayment_offset, name='offset_prepayments'),
+    path('offset-prepayments/success/', views.offset_success_view, name='offset_success'),
 ]

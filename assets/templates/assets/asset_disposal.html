@@ -1,0 +1,21 @@
+{% extends 'base.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Asset Disposal{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <h3 class="text-danger mb-4">Dispose Asset: {{ asset.asset_code }}</h3>
+            
+            <div class="alert alert-warning">
+                <strong>Warning:</strong> This action will clear the asset's net book value and recognize gain/loss immediately.
+            </div>
+
+            {% crispy form %}
+            
+        </div>
+    </div>
+</div>
+{% endblock %}

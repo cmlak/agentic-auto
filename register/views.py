@@ -39,8 +39,8 @@ def login_request(request):
     context = {}
     if request.method == "POST":
         # SAFE EXTRACTION: Use .get() to prevent crashes
-        username = request.POST.get('username')
-        password = request.POST.get('psw') 
+        username = (request.POST.get('username') or '').strip()
+        password = request.POST.get('password') or request.POST.get('psw') 
         
         if not username or not password:
             context['message'] = "Please provide both a username and password."

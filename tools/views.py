@@ -30,7 +30,7 @@ from pypdf import PdfReader, PdfWriter
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
 MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm,\
-AdjustmentEntryForm, AdjustmentFormSet
+AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
@@ -2356,3 +2356,242 @@ class AdjustmentDeleteView(LoginRequiredMixin, DeleteView):
         JournalEntry.objects.filter(Q(adjustment=self.object) | Q(reference_number=f"ADJ-{self.object.id}")).delete()
         messages.success(self.request, 'Adjustment and associated Journal Entries deleted successfully!')
         return super().form_valid(form)
+
+@login_required(login_url="register:login")
+def generate_fifo_offset_proposals():
+    """Helper function to calculate FIFO offsets"""
+    print("DEBUG: Starting generate_fifo_offset_proposals")
+    proposals = []
+    
+    # 1. Get vendors who have unapplied prepayments (assigned to account 120000 in Bank)
+    vendors = Vendor.objects.filter(
+        bank__debit_account_id='120000'
+    ).distinct()
+    print(f"DEBUG: Found {vendors.count()} vendors with prepayments")
+    
+    for vendor in vendors:
+        print(f"DEBUG: Processing vendor: {vendor}")
+        
+        # Fetch all offset adjustments for this vendor to cross-check consumed balances
+        vendor_adjustments = list(Adjustment.objects.filter(
+            vendor=vendor,
+            credit_account_id__account_id='120000'
+        ))
+        
+        # 1. Get Unapplied Prepayments (Oldest first)
+        prepayments = []
+        
+        bank_prepayments = Bank.objects.filter(
+            vendor=vendor, 
+            debit_account_id='120000'
+        ).order_by('date', 'id')
+        
+        # FIFO Pooling: Sum all consumed prepayments for this vendor
+        total_prepayment_consumed = round(sum(adj.credit or 0.0 for adj in vendor_adjustments), 2)
+
+        for pr in bank_prepayments:
+            pr_amount = round(pr.credit or 0.0, 2)
+            
+            if total_prepayment_consumed >= pr_amount:
+                # Fully consumed
+                total_prepayment_consumed = round(total_prepayment_consumed - pr_amount, 2)
+                continue
+                
+            # Partially consumed or unconsumed
+            remaining_balance = round(pr_amount - total_prepayment_consumed, 2)
+            total_prepayment_consumed = 0.0
+            
+            if remaining_balance > 0.001:
+                pr.balance = remaining_balance
+                pr.original_amount = pr_amount
+                pr.source_type = 'bank'
+                prepayments.append(pr)
+            
+        # Sort combined prepayments by date
+        prepayments.sort(key=lambda x: x.date or date.today())
+        print(f"DEBUG: Found {len(prepayments)} total prepayments for vendor {vendor} with remaining balance")
+        
+        if not prepayments:
+            continue # Skip if all prepayments for this vendor have been fully offset!
+        
+        # 2. Get Open Purchases (Oldest first)
+        open_purchases_qs = Purchase.objects.filter(vendor=vendor, payment_status='Open').order_by('date', 'id')
+        open_purchases = []
+        
+        for pu in open_purchases_qs:
+            # Cross-check existing Adjustments for offsets on this Purchase ID
+            used_amount = round(sum(
+                adj.debit or 0.0 
+                for adj in vendor_adjustments 
+                if adj.description and f"Purchase ID: {pu.id} (" in adj.description
+            ), 2)
+            
+            remaining_balance = round((pu.total_usd or 0.0) - used_amount, 2)
+            
+            if remaining_balance > 0.001:
+                pu.balance_due = remaining_balance
+                pu.original_amount = pu.total_usd or 0.0
+                open_purchases.append(pu)
+                
+        print(f"DEBUG: Found {len(open_purchases)} open purchases for vendor {vendor} with remaining balance")
+        
+        # Calculate total open purchase amount to satisfy rule #5:
+        # "No offset if the amount of prepayment is more than total amount of open purchases"
+        total_open_purchase_amt = sum(p.balance_due for p in open_purchases)
+        total_prepayment_amt = sum(pr.balance for pr in prepayments)
+        
+        print(f"DEBUG: total_prepayment_amt: {total_prepayment_amt}, total_open_purchase_amt: {total_open_purchase_amt}")
+
+        if total_prepayment_amt > total_open_purchase_amt and total_open_purchase_amt > 0:
+            # Rule 5 triggered: Skip this vendor entirely
+            print(f"DEBUG: Rule 5 triggered for vendor {vendor}. Skipping.")
+            continue
+
+        for prepay in prepayments:
+            for purchase in open_purchases:
+                if prepay.balance <= 0.001:
+                    break # Move to next prepayment
+                if purchase.balance_due <= 0.001:
+                    continue # Move to next purchase
+                
+                # Determine offset amount
+                offset_amount = min(prepay.balance, purchase.balance_due)
+                print(f"DEBUG: Offsetting {offset_amount} between prepay (ID: {prepay.id}) and open purchase {purchase.id}")
+                
+                prepay_bal_before = round(prepay.balance, 2)
+                purchase_bal_before = round(purchase.balance_due, 2)
+
+                # Deduct from temporary memory loops
+                prepay.balance -= offset_amount
+                purchase.balance_due -= offset_amount
+                
+                is_partial = purchase.balance_due > 0.001
+                
+                # Find correct Account DB instances dynamically
+                trade_payable_acc = Account.objects.filter(account_id='200000').first()
+                prepayment_acc = Account.objects.filter(account_id='120000').first()
+
+                bd = getattr(prepay, 'date', None)
+                pd = getattr(purchase, 'date', None)
+
+                proposal = {
+                    'date': None,
+                    'bank_date': bd.strftime('%Y-%m-%d') if bd else None,
+                    'purchase_date': pd.strftime('%Y-%m-%d') if pd else None,
+                    'vendor': vendor.id,
+                    'debit_account_id': trade_payable_acc.id if trade_payable_acc else None,
+                    'credit_account_id': prepayment_acc.id if prepayment_acc else None,
+                    'debit': round(offset_amount, 2),
+                    'credit': round(offset_amount, 2),
+                    'partial_offset': is_partial,
+                    'purchase_id': purchase.id,
+                    'description': f"Bank ID: {prepay.id} (Orig: {prepay.original_amount:.2f}, Bal: {prepay_bal_before:.2f}, Offset: {offset_amount:.2f}, New bal: {prepay.balance:.2f}), after offset Purchase ID: {purchase.id} (Orig: {purchase.original_amount:.2f}, Bal: {purchase_bal_before:.2f}, Offset: {offset_amount:.2f}, New bal: {purchase.balance_due:.2f})"
+                }
+                
+                if getattr(prepay, 'source_type', '') == 'journal_voucher':
+                    proposal['journal_voucher_id'] = prepay.id
+                elif getattr(prepay, 'source_type', '') == 'bank':
+                    proposal['bank_id'] = prepay.id
+                    
+                proposals.append(proposal)
+                
+    print(f"DEBUG: Generated {len(proposals)} proposals")
+    return proposals
+
+@login_required(login_url="register:login")
+def automate_prepayment_offset(request):
+    print(f"DEBUG: automate_prepayment_offset called with method {request.method}")
+    page_obj = None
+    if request.method == 'POST':
+        formset = OffsetFormSet(request.POST)
+        if formset.is_valid():
+            instances_saved = 0
+            for form in formset:
+                # If user marked for deletion, skip saving
+                if form.cleaned_data.get('DELETE'):
+                    continue
+                
+                # Only save if there is data
+                if form.cleaned_data:
+                    # Manually instantiate Adjustment since AdjustmentOffsetForm is a forms.Form
+                    adjustment = Adjustment(
+                        date=form.cleaned_data.get('date'),
+                        vendor=form.cleaned_data.get('vendor'),
+                        debit_account_id=form.cleaned_data.get('debit_account_id'),
+                        credit_account_id=form.cleaned_data.get('credit_account_id'),
+                        debit=form.cleaned_data.get('debit'),
+                        credit=form.cleaned_data.get('credit'),
+                        description=form.cleaned_data.get('description'),
+                        user=request.user
+                    )
+                    adjustment.save()
+                    instances_saved += 1
+                    
+                    # Post to GL automatically
+                    je = JournalEntry.objects.create(
+                        date=adjustment.date or date.today(),
+                        description=f"Automated Prepayment Offset: {adjustment.description}"[:255], 
+                        reference_number=f"ADJ-{adjustment.id}",
+                        adjustment=adjustment
+                    )
+                    
+                    if adjustment.debit_account_id:
+                        JournalLine.objects.create(journal_entry=je, account=adjustment.debit_account_id, description=adjustment.description[:255], debit=adjustment.debit or 0.0)
+                    if adjustment.credit_account_id:
+                        JournalLine.objects.create(journal_entry=je, account=adjustment.credit_account_id, description=adjustment.description[:255], credit=adjustment.credit or 0.0)
+                    
+                    # --- Update Purchase Status ---
+                    purchase_id = form.cleaned_data.get('purchase_id')
+                    if purchase_id and not form.cleaned_data.get('partial_offset'):
+                        try:
+                            purchase = Purchase.objects.get(id=purchase_id)
+                            purchase.payment_status = 'Paid'
+                            purchase.save(update_fields=['payment_status'])
+                        except Purchase.DoesNotExist:
+                            pass
+
+                    # --- Update Prepayment Status similarly ---
+                    journal_voucher_id = form.cleaned_data.get('journal_voucher_id')
+                    if journal_voucher_id and not form.cleaned_data.get('partial_offset'):
+                        try:
+                            jv = JournalVoucher.objects.get(id=journal_voucher_id)
+                            jv.payment_status = 'Paid'
+                            jv.save(update_fields=['payment_status'])
+                        except JournalVoucher.DoesNotExist:
+                            pass
+                            
+                    bank_id = form.cleaned_data.get('bank_id')
+                    if bank_id and not form.cleaned_data.get('partial_offset'):
+                        try:
+                            bank_instance = Bank.objects.get(id=bank_id)
+                            purchase_id = form.cleaned_data.get('purchase_id')
+                            if purchase_id:
+                                existing_ids = bank_instance.matched_purchase_ids or ""
+                                id_list = [x.strip() for x in existing_ids.split(',') if x.strip()]
+                                if str(purchase_id) not in id_list:
+                                    id_list.append(str(purchase_id))
+                                bank_instance.matched_purchase_ids = ",".join(id_list)
+                                try: bank_instance.matched_purchase_id = int(id_list[0])
+                                except (ValueError, IndexError): pass
+                                bank_instance.save(update_fields=['matched_purchase_ids', 'matched_purchase_id'])
+                        except Bank.DoesNotExist:
+                            pass
+
+            messages.success(request, f"Successfully processed {instances_saved} prepayments offsets.")
+            return redirect('tools:offset_success')
+        else:
+            messages.error(request, "Please correct the errors below.")
+    else:
+        # Generate proposed offsets on GET
+        initial_data = generate_fifo_offset_proposals()
+        paginator = Paginator(initial_data, 10)
+        page_number = request.GET.get('page')
+        page_obj = paginator.get_page(page_number)
+        formset = OffsetFormSet(initial=page_obj.object_list)
+
+    return render(request, 'offset_prepayments.html', {'formset': formset, 'page_obj': page_obj})
+
+@login_required(login_url="register:login")
+def offset_success_view(request):
+    """Renders the success page after prepayment offset completes."""
+    return render(request, 'offset_success.html')

@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+
+{% block title %}Asset Dashboard{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Fixed Asset Register</h2>
+    
+    <div class="row mb-4">
+        <div class="col-md-4">
+            <div class="card bg-primary text-white">
+                <div class="card-body">
+                    <h5>Total Active Assets Cost</h5>
+                    <h3>${{ total_cost|floatformat:2 }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <div class="card bg-success text-white">
+                <div class="card-body">
+                    <h5>Total Net Book Value</h5>
+                    <h3>${{ total_nbv|floatformat:2 }}</h3>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-4">
+            <a href="{% url 'tools:run_depreciation' %}" class="btn btn-warning w-100 h-100 d-flex align-items-center justify-content-center">
+                <h4>Execute Monthly Depreciation</h4>
+            </a>
+        </div>
+    </div>
+
+    <table class="table table-bordered table-striped">
+        <thead class="table-dark">
+            <tr>
+                <th>Code</th>
+                <th>Type</th>
+                <th>Cost</th>
+                <th>Acc. Depr</th>
+                <th>Net Book Value</th>
+                <th>Status</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            <tr>
+                <td>{{ asset.asset_code }}</td>
+                <td>{{ asset.get_asset_type_display }}</td>
+                <td>${{ asset.purchase_cost }}</td>
+                <td>${{ asset.accumulated_depreciation|floatformat:2 }}</td>
+                <td>${{ asset.net_book_value|floatformat:2 }}</td>
+                <td>
+                    {% if asset.status == 'ACTIVE' %}
+                        <span class="badge bg-success">Active</span>
+                    {% else %}
+                        <span class="badge bg-secondary">Disposed</span>
+                    {% endif %}
+                </td>
+                <td>
+                    {% if asset.status == 'ACTIVE' %}
+                        <a href="{% url 'tools:dispose_asset' asset.id %}" class="btn btn-sm btn-danger">Dispose</a>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

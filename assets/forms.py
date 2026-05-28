@@ -105,3 +105,52 @@ class AssetDisposalForm(forms.ModelForm):
             'disposal_income_account',
             Submit('submit', 'Confirm Asset Disposal', css_class='btn btn-danger mt-3')
         )
+
+class AssetForm(forms.ModelForm):
+    purchase_date = forms.DateField(
+        label="Purchase Date",
+        required=False,
+        widget=forms.DateInput(attrs={'type': 'date', 'readonly': 'readonly', 'class': 'form-control bg-light'})
+    )
+
+    class Meta:
+        model = Asset
+        fields = '__all__'
+        widgets = {
+            'depreciation_start_date': forms.DateInput(attrs={'type': 'date'}),
+        }
+        
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        # Pre-populate purchase date on load if instance exists
+        if self.instance and self.instance.pk and self.instance.purchase:
+            self.fields['purchase_date'].initial = self.instance.purchase.date
+
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('asset_code', css_class='form-group col-md-4'),
+                Column('asset_type', css_class='form-group col-md-4'),
+                Column('status', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('purchase', css_class='form-group col-md-4'),
+                Column('purchase_date', css_class='form-group col-md-4'),
+                Column('purchase_cost', css_class='form-group col-md-4'),
+            ),
+            Row(
+                Column('depreciation_start_date', css_class='form-group col-md-6'),
+                Column('depreciation_method', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('useful_life_months', css_class='form-group col-md-6'),
+                Column('salvage_value', css_class='form-group col-md-6'),
+            ),
+            Row(
+                Column('asset_account', css_class='form-group col-md-4'),
+                Column('acc_dep_account', css_class='form-group col-md-4'),
+                Column('dep_expense_account', css_class='form-group col-md-4'),
+            ),
+        )

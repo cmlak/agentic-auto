@@ -1,0 +1,21 @@
+{% extends 'base_4_assets.html' %}
+
+{% block title %}Delete Assets{% endblock %}
+
+{% block content %}
+<div class="container mt-4 d-flex justify-content-center">
+    <div class="card border-danger shadow" style="max-width: 500px; width: 100%;">
+        <div class="card-header bg-danger text-white">
+            <h5 class="mb-0"><i class="bi bi-exclamation-triangle-fill"></i> Confirm Deletion</h5>
+        </div>
+        <div class="card-body">
+            <p class="mb-4 text-center">Are you sure you want to permanently delete the asset <strong>{{ object.asset_code }}</strong>?</p>
+            <form method="post" class="d-flex justify-content-between">
+                {% csrf_token %}
+                <a href="{% url 'assets:asset_list' %}" class="btn btn-light border w-50 me-2">Cancel</a>
+                <button type="submit" class="btn btn-danger w-50 ms-2">Yes, Delete</button>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

@@ -1,0 +1,76 @@
+{% extends 'base_4_assets.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Asset List{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Asset Registry</h2>
+        <a href="{% url 'assets:asset_create' %}" class="btn btn-success">Add New Asset</a>
+    </div>
+    
+    <div class="card mb-4">
+        <div class="card-body">
+            <form method="get" class="row align-items-end">
+                <div class="col-md-3">
+                    {{ form.asset_code|as_crispy_field }}
+                </div>
+                <div class="col-md-3">
+                    {{ form.asset_type|as_crispy_field }}
+                </div>
+                <div class="col-md-3">
+                    {{ form.status|as_crispy_field }}
+                </div>
+                <div class="col-md-3 mb-3">
+                    <button type="submit" class="btn btn-primary">Filter</button>
+                    <a href="{% url 'assets:asset_list' %}" class="btn btn-secondary">Clear</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <table class="table table-hover table-striped border">
+        <thead class="table-dark">
+            <tr>
+                <th>Asset Code</th>
+                <th>Type</th>
+                <th>Status</th>
+                <th>Purchase Cost</th>
+                <th>Net Book Value</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for asset in assets %}
+            <tr>
+                <td><a href="{% url 'assets:asset_update' asset.pk %}" class="fw-bold">{{ asset.asset_code }}</a></td>
+                <td>{{ asset.get_asset_type_display }}</td>
+                <td><span class="badge {% if asset.status == 'ACTIVE' %}bg-success{% else %}bg-secondary{% endif %}">{{ asset.get_status_display }}</span></td>
+                <td>${{ asset.purchase_cost }}</td>
+                <td>${{ asset.net_book_value }}</td>
+                <td>
+                    <a href="{% url 'assets:asset_update' asset.pk %}" class="btn btn-sm btn-outline-info">Edit</a>
+                    <a href="{% url 'assets:asset_delete' asset.pk %}" class="btn btn-sm btn-outline-danger">Delete</a>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6" class="text-center text-muted py-3">No assets found matching the criteria.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        // Initialize Select2 on the filter dropdowns for enhanced UI
+        $('#id_asset_code, #id_asset_type, #id_status').select2({
+            width: '100%'
+        });
+    });
+</script>
+{% endblock %}

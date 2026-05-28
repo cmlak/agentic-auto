@@ -1,0 +1,22 @@
+{% extends 'base_4_assets.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Update Asset{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="card shadow-sm border-0">
+        <div class="card-header bg-white border-bottom">
+            <h4 class="mb-0">{% if object %}Edit Asset: {{ object.asset_code }}{% else %}Add New Asset{% endif %}</h4>
+        </div>
+        <div class="card-body">
+            <form method="post">
+                {% csrf_token %}
+                {% crispy form %}
+                <button type="submit" class="btn btn-primary mt-4 px-4">Save Asset</button>
+                <a href="{% url 'assets:asset_list' %}" class="btn btn-light mt-4 ms-2">Cancel</a>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

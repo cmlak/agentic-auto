@@ -7,9 +7,14 @@ from decimal import Decimal
 from django.contrib.auth.decorators import login_required
 from .models import Asset, DepreciationEntry, AssetDisposal
 from .forms import AssetRegistrationForm, RunDepreciationForm, AssetDisposalForm, AssetDepreciationFormSet
-from account.models import JournalEntry, JournalLine
+from .forms import AssetForm
+from .filters import AssetFilter
+from account.models import JournalEntry, JournalLine, Account
 from tools.models import Purchase
 from datetime import date
+from django.views.generic import ListView, CreateView, UpdateView, DeleteView
+from django.urls import reverse_lazy
+from django.contrib.auth.mixins import LoginRequiredMixin
 
 @login_required(login_url="register:login")
 def asset_dashboard(request):
@@ -199,3 +204,127 @@ def dispose_asset(request, asset_id):
         form = AssetDisposalForm()
         
     return render(request, 'assets/dispose.html', {'form': form, 'asset': asset})
+
+
+class AssetListView(LoginRequiredMixin, ListView):
+    login_url = "register:login"
+    model = Asset
+    template_name = 'assets/asset_list.html'
+    context_object_name = 'assets'
+    paginate_by = 10
+
+    def get_queryset(self):
+        queryset = super().get_queryset().order_by('-id')
+        self.filterset = AssetFilter(self.request.GET, queryset=queryset)
+        return self.filterset.qs
+
+    def get_context_data(self, **kwargs):
+        context = super().get_context_data(**kwargs)
+        context['form'] = self.filterset.form
+        return context
+
+class AssetCreateView(LoginRequiredMixin, CreateView):
+    login_url = "register:login"
+    model = Asset
+    form_class = AssetForm
+    template_name = 'assets/asset_form.html'
+    success_url = reverse_lazy('assets:asset_list')
+
+class AssetUpdateView(LoginRequiredMixin, UpdateView):
+    login_url = "register:login"
+    model = Asset
+    form_class = AssetForm
+    template_name = 'assets/asset_form.html'
+    success_url = reverse_lazy('assets:asset_list')
+
+    def form_valid(self, form):
+        with transaction.atomic():
+            asset = form.save()
+
+            if asset.purchase:
+                purchase = asset.purchase
+                
+                # Update related Purchase fields based on changes in the Asset form
+                purchase.total_usd = float(asset.purchase_cost) + float(purchase.vat_usd or 0.0)
+                purchase.account_id = asset.asset_account.account_id
+                purchase.save()
+
+                # Atomically recalculate the Journal Entry for the acquisition
+                je, created = JournalEntry.objects.get_or_create(
+                    purchase=purchase,
+                    defaults={
+                        'date': purchase.date or date.today(),
+                        'description': f"Purchase: {purchase.company}",
+                        'reference_number': purchase.invoice_no,
+                    }
+                )
+
+                if not created:
+                    je.date = purchase.date or date.today()
+                    je.description = f"Updated Purchase via Asset: {purchase.company}"
+                    je.reference_number = purchase.invoice_no
+                    je.save(update_fields=['date', 'description', 'reference_number'])
+                    je.lines.all().delete()
+
+                # Re-create JE lines using consistent logic from tools app
+                total_amount = float(purchase.total_usd or 0.0)
+                vat_amount = float(purchase.vat_usd or 0.0)
+                unreg_amount = float(purchase.unreg_usd or 0.0)
+                
+                wht_amount = 0.0
+                if purchase.wht_account_id and unreg_amount > 0:
+                    wht_amount = round(total_amount - unreg_amount, 2)
+
+                main_net = round(total_amount - vat_amount - wht_amount, 2)
+
+                if asset.asset_account and main_net > 0:
+                    JournalLine.objects.create(journal_entry=je, account=asset.asset_account, description=purchase.description_en or "Asset Purchase", debit=main_net)
+
+                if vat_amount > 0 and purchase.vat_account_id:
+                    vat_acct, _ = Account.objects.get_or_create(account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
+                    JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
+
+                if total_amount > 0 and purchase.credit_account_id:
+                    cr_acct, _ = Account.objects.get_or_create(account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
+                    JournalLine.objects.create(journal_entry=je, account=cr_acct, description=f"Payable - {purchase.company}", credit=total_amount)
+
+                if wht_amount > 0 and purchase.wht_account_id:
+                    wht_pay_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
+                    JournalLine.objects.create(journal_entry=je, account=wht_pay_acct, description="WHT Payable to GDT", credit=wht_amount)
+                
+                messages.success(self.request, f"Asset '{asset.asset_code}' and its related acquisition Journal Entry have been updated successfully.")
+            else:
+                messages.success(self.request, f"Asset '{asset.asset_code}' was updated. No acquisition Journal Entry was modified as no purchase is linked.")
+
+        return redirect(self.get_success_url())
+
+class AssetDeleteView(LoginRequiredMixin, DeleteView):
+    login_url = "register:login"
+    model = Asset
+    template_name = 'assets/asset_confirm_delete.html'
+    success_url = reverse_lazy('assets:asset_list')
+
+    def form_valid(self, form):
+        asset = self.object
+        je_ids_to_delete = []
+
+        with transaction.atomic():
+            # 1. Collect Depreciation Journal Entries
+            for dep_entry in asset.depreciation_entries.exclude(journal_entry__isnull=True):
+                je_ids_to_delete.append(dep_entry.journal_entry_id)
+
+            # 2. Collect Disposal Journal Entry
+            disposal = AssetDisposal.objects.filter(asset=asset).first()
+            if disposal and disposal.journal_entry_id:
+                je_ids_to_delete.append(disposal.journal_entry_id)
+
+            # Delete associated Journal Entries (JournalLines will also be deleted via CASCADE)
+            if je_ids_to_delete:
+                JournalEntry.objects.filter(id__in=je_ids_to_delete).delete()
+
+            # The asset's related DepreciationEntry and AssetDisposal instances 
+            # are automatically deleted here due to on_delete=models.CASCADE
+            response = super().form_valid(form)
+            
+        messages.success(self.request, f"Asset '{asset.asset_code}' and its associated depreciation and journal entries have been deleted successfully.")
+        return response

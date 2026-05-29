@@ -1,0 +1,16 @@
+{% extends "base_4_assets.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}Update Asset Disposal{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Update Asset Disposal</h2>
+    <form method="post">
+        {% csrf_token %}
+        {% crispy form %}
+        <!-- The crispy form for AssetDisposal includes its own submit button from crispy Layout -->
+        <a href="{% url 'assets:asset_disposal_list' %}" class="btn btn-secondary mt-3">Cancel</a>
+    </form>
+</div>
+{% endblock %}

@@ -1,0 +1,18 @@
+{% extends "base_4_assets.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}{% if object %}Update{% else %}Create{% endif %} Depreciation Entry{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>{% if object %}Update{% else %}Create{% endif %} Depreciation Entry</h2>
+    <form method="post">
+        {% csrf_token %}
+        {% crispy form %}
+        <div class="mt-3">
+            <button type="submit" class="btn btn-success">Save</button>
+            <a href="{% url 'assets:depreciation_entry_list' %}" class="btn btn-secondary">Cancel</a>
+        </div>
+    </form>
+</div>
+{% endblock %}

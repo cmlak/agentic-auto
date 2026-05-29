@@ -1,8 +1,14 @@
 from import_export import resources, fields
-from import_export.widgets import ForeignKeyWidget
+from import_export.widgets import ForeignKeyWidget, Widget
 from .models import Purchase, Vendor, Adjustment
 from account.models import Account
 from sale.models import Customer
+
+class FloatWidget(Widget):
+    def render(self, value, obj=None):
+        if not value: return 0.0
+        try: return float(value)
+        except (ValueError, TypeError): return 0.0
 
 class PurchaseResource(resources.ModelResource):
 
@@ -18,6 +24,12 @@ class PurchaseResource(resources.ModelResource):
     )
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
+
+    unreg_usd = fields.Field(attribute='unreg_usd', column_name='unreg_usd', widget=FloatWidget())
+    exempt_usd = fields.Field(attribute='exempt_usd', column_name='exempt_usd', widget=FloatWidget())
+    vat_base_usd = fields.Field(attribute='vat_base_usd', column_name='vat_base_usd', widget=FloatWidget())
+    vat_usd = fields.Field(attribute='vat_usd', column_name='vat_usd', widget=FloatWidget())
+    total_usd = fields.Field(attribute='total_usd', column_name='total_usd', widget=FloatWidget())
 
     # Strictly filter the base queryset inside the resource
     def get_queryset(self):
@@ -70,6 +82,9 @@ class AdjustmentResource(resources.ModelResource):
         attribute='credit_account_id',
         widget=ForeignKeyWidget(Account, field='name')
     )
+
+    debit = fields.Field(attribute='debit', column_name='debit', widget=FloatWidget())
+    credit = fields.Field(attribute='credit', column_name='credit', widget=FloatWidget())
 
     class Meta:
         model = Adjustment

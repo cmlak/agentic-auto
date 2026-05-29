@@ -1,0 +1,68 @@
+{% extends "base_4_assets.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}Asset Disposals{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Asset Disposals</h2>
+    <form method="get" class="mb-4">
+        {% crispy form %}
+        <button type="submit" class="btn btn-primary">Filter</button>
+        <a href="{% url 'assets:asset_disposal_list' %}" class="btn btn-secondary">Clear</a>
+        <a href="{% url 'assets:export_asset_disposals' %}?{{ request.GET.urlencode }}" class="btn btn-info">Export</a>
+    </form>
+    
+    <table class="table table-bordered">
+        <thead>
+            <tr>
+                <th>Date</th>
+                <th>Asset</th>
+                <th>Proceeds</th>
+                <th>Net Book Value</th>
+                <th>Gain/Loss</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for disposal in disposals %}
+            <tr>
+                <td>{{ disposal.disposal_date }}</td>
+                <td>{{ disposal.asset.asset_code }}</td>
+                <td>{{ disposal.proceeds }}</td>
+                <td>{{ disposal.net_book_value_at_disposal }}</td>
+                <td>{{ disposal.gain_loss_amount }}</td>
+                <td>
+                    <a href="{% url 'assets:asset_disposal_update' disposal.id %}" class="btn btn-sm btn-primary">Edit</a>
+                    <a href="{% url 'assets:asset_disposal_delete' disposal.id %}" class="btn btn-sm btn-danger">Delete</a>
+                </td>
+            </tr>
+            {% empty %}
+            <tr>
+                <td colspan="6">No asset disposals found.</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    
+    {% if is_paginated %}
+    <div class="pagination mt-3">
+        <span class="page-links">
+            {% if page_obj.has_previous %}<a href="?{% for key, value in request.GET.items %}{% if key != 'page' %}{{ key }}={{ value }}&{% endif %}{% endfor %}page={{ page_obj.previous_page_number }}" class="btn btn-sm btn-outline-primary">Previous</a>{% endif %}
+            <span class="page-current mx-2">Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}.</span>
+            {% if page_obj.has_next %}<a href="?{% for key, value in request.GET.items %}{% if key != 'page' %}{{ key }}={{ value }}&{% endif %}{% endfor %}page={{ page_obj.next_page_number }}" class="btn btn-sm btn-outline-primary">Next</a>{% endif %}
+        </span>
+    </div>
+    {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+    $(document).ready(function() {
+        $('#id_asset_code').select2({
+            width: '100%'
+        });
+    });
+</script>
+{% endblock %}

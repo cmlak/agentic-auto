@@ -171,7 +171,7 @@
                         <a class="nav-link" href="{% url 'assets:asset_list' %}">Asset list</a>
                     </li>
                     <li class="nav-item">
-                        <a class="nav-link" href="{% url 'assets:register_asset' %}">Asset Register</a>
+                        <a class="nav-link" href="{% url 'assets:run_depreciation' %}">Generate Depreciation</a>
                     </li>
 
                     <li class="nav-item dropdown">
@@ -179,7 +179,8 @@
                           More
                         </a>
                         <div class="dropdown-menu" aria-labelledby="navbarDropdown">
-                            <a class="dropdown-item" href="{% url 'assets:run_depreciation' %}">Generate Depreciation</a>
+                            <a class="dropdown-item" href="{% url 'assets:depreciation_entry_list' %}">Depreciation List</a>
+                            <a class="dropdown-item" href="{% url 'assets:asset_disposal_list' %}">Asset Disposals</a>                        
                         </div>
                     </li>
                 </ul>

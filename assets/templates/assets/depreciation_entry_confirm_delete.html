@@ -1,0 +1,17 @@
+{% extends "base_4_assets.html" %}
+
+{% block title %}Delete Depreciation Entry{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Delete Depreciation Entry</h2>
+    <p>Are you sure you want to delete the depreciation entry for asset "<strong>{{ object.asset.asset_code }}</strong>" on {{ object.date }}?</p>
+    <p class="text-danger">This will also delete the associated Journal Entry.</p>
+    
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Confirm Delete</button>
+        <a href="{% url 'assets:depreciation_entry_list' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}

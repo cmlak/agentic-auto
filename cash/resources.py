@@ -1,7 +1,14 @@
 from import_export import resources, fields
-from import_export.widgets import ForeignKeyWidget
+from import_export.widgets import ForeignKeyWidget, Widget
 from .models import Bank, Cash
 from tools.models import Vendor, Purchase
+
+class FloatWidget(Widget):
+    def render(self, value, obj=None):
+        if not value: return 0.0
+        try: return float(value)
+        except (ValueError, TypeError): return 0.0
+
 try:
     from sale.models import Customer, Sale
 except ImportError:
@@ -30,6 +37,10 @@ class BankResource(resources.ModelResource):
     )
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
+
+    debit = fields.Field(attribute='debit', column_name='debit', widget=FloatWidget())
+    credit = fields.Field(attribute='credit', column_name='credit', widget=FloatWidget())
+    balance = fields.Field(attribute='balance', column_name='balance', widget=FloatWidget())
 
     def get_queryset(self):
         qs = super().get_queryset()
@@ -83,6 +94,10 @@ class CashResource(resources.ModelResource):
     )
     debit_account = fields.Field(column_name='Debit Account')
     credit_account = fields.Field(column_name='Credit Account')
+
+    debit = fields.Field(attribute='debit', column_name='debit', widget=FloatWidget())
+    credit = fields.Field(attribute='credit', column_name='credit', widget=FloatWidget())
+    balance = fields.Field(attribute='balance', column_name='balance', widget=FloatWidget())
 
     def get_queryset(self):
         qs = super().get_queryset()

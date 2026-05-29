@@ -1,6 +1,6 @@
 from django import forms
 from django.forms import formset_factory
-from assets.models import Asset, AssetDisposal
+from assets.models import Asset, AssetDisposal, DepreciationEntry
 from tools.models import Purchase
 from crispy_forms.helper import FormHelper
 from crispy_forms.layout import Layout, Row, Column, Submit, Field
@@ -50,6 +50,26 @@ class AssetRegistrationForm(forms.ModelForm):
                 Column('asset_account', css_class='form-group col-md-4'),
                 Column('acc_dep_account', css_class='form-group col-md-4'),
                 Column('dep_expense_account', css_class='form-group col-md-4'),
+            ),
+        )
+
+class DepreciationEntryForm(forms.ModelForm):
+    class Meta:
+        model = DepreciationEntry
+        fields = ['asset', 'date', 'amount']
+        widgets = {
+            'date': forms.DateInput(attrs={'type': 'date'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.helper = FormHelper()
+        self.helper.form_tag = False
+        self.helper.layout = Layout(
+            Row(
+                Column('asset', css_class='form-group col-md-4'),
+                Column('date', css_class='form-group col-md-4'),
+                Column('amount', css_class='form-group col-md-4'),
             ),
         )
 

@@ -1,0 +1,17 @@
+{% extends "base_4_assets.html" %}
+
+{% block title %}Delete Asset Disposal{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <h2>Delete Asset Disposal</h2>
+    <p>Are you sure you want to delete the disposal record for asset "<strong>{{ object.asset.asset_code }}</strong>"?</p>
+    <p class="text-danger">This will restore the asset's status to ACTIVE and delete the disposal Journal Entry.</p>
+    
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Confirm Delete</button>
+        <a href="{% url 'assets:asset_disposal_list' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}

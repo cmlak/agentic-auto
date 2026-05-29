@@ -1,0 +1,59 @@
+{% extends "base_4_assets.html" %}
+
+{% block title %}Depreciation Schedule - {{ asset.asset_code }}{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h2>Depreciation Schedule: {{ asset.asset_code }}</h2>
+        <div>
+            <a href="{% url 'assets:export_asset_depreciation_schedule' asset.pk %}" class="btn btn-info me-2">Export</a>
+            <a href="{% url 'assets:asset_list' %}" class="btn btn-secondary">Back to List</a>
+        </div>
+    </div>
+
+    <div class="card mb-4">
+        <div class="card-body">
+            <div class="row">
+                <div class="col-md-3"><strong>Asset Type:</strong> {{ asset.get_asset_type_display }}</div>
+                <div class="col-md-3"><strong>Purchase Cost:</strong> ${{ asset.purchase_cost }}</div>
+                <div class="col-md-3"><strong>Salvage Value:</strong> ${{ asset.salvage_value }}</div>
+                <div class="col-md-3"><strong>Useful Life:</strong> {{ asset.useful_life_months }} months</div>
+            </div>
+            <div class="row mt-2">
+                <div class="col-md-3"><strong>Start Date:</strong> {{ asset.depreciation_start_date }}</div>
+                <div class="col-md-3"><strong>Method:</strong> {{ asset.get_depreciation_method_display }}</div>
+            </div>
+        </div>
+    </div>
+
+    {% if schedule %}
+    <table class="table table-hover table-striped border">
+        <thead class="table-dark">
+            <tr>
+                <th>Period</th>
+                <th>Date</th>
+                <th class="text-end">Depreciation Expense</th>
+                <th class="text-end">Accumulated Depreciation</th>
+                <th class="text-end">Net Book Value</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in schedule %}
+            <tr>
+                <td>{{ row.period }}</td>
+                <td>{{ row.date|date:"Y-m-d" }}</td>
+                <td class="text-end">${{ row.depreciation_expense|floatformat:2 }}</td>
+                <td class="text-end">${{ row.accumulated_depreciation|floatformat:2 }}</td>
+                <td class="text-end">${{ row.net_book_value|floatformat:2 }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="alert alert-warning">
+        No schedule could be generated. This might be because the depreciation method is not currently supported or the useful life is 0.
+    </div>
+    {% endif %}
+</div>
+{% endblock %}

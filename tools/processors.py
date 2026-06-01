@@ -31,11 +31,20 @@ class PurchaseEntry(BaseModel):
     vendor_name: str = Field(..., description="Vendor name. If in Khmer or Chinese, translate to English.")
     description: str = Field(..., description="Detailed description of the items in the original language.")
     description_en: str = Field(..., description="Summarize the detailed description in English ONLY. Maximum 25 words.")
-    account_id: Optional[str] = Field(None, description="Main Debit Account ID strictly from the Chart of Accounts.")
+    # --- SPLIT DEBIT FIELDS FOR ACCRUALS ---
+    account_id: Optional[str] = Field(None, description="Main Debit Account ID strictly from the Chart of Accounts. For recurring bills, use this for the CURRENT month's expense.")
+    debit_account_id_2: Optional[str] = Field(None, description="Secondary Debit Account ID (e.g., 215090) used for clearing past accruals.")
+    debit_amount_2: float = Field(0.0, description="Amount allocated to the secondary debit account.")
+    debit_desc_2: str = Field("", description="Description of what the secondary debit covers (e.g., 'Jan-Feb Accruals & Setup').")
+    debit_account_id_3: Optional[str] = Field(None, description="Tertiary Debit Account ID (if needed).")
+    debit_amount_3: float = Field(0.0, description="Amount allocated to the tertiary debit account.")
+    debit_desc_3: str = Field("", description="Description of what the tertiary debit covers.")
+    # ---
+    
     vat_account_id: Optional[str] = Field(None, description="Debit Account ID for VAT Input. Leave null if no VAT.")
-    wht_debit_account_id: Optional[str] = Field(None, description="Debit Account ID for WHT Expense. Leave null if no WHT.")
-    credit_account_id: Optional[str] = Field(None, description="Main Credit Account ID strictly from the Chart of Accounts.")
+    wht_debit_account_id: Optional[str] = Field(None, description="Debit Account ID for WHT Expense. Leave null if no WHT.")    
     wht_account_id: Optional[str] = Field(None, description="Credit Account ID for WHT Payable. Leave null if no WHT.")
+    credit_account_id: str = Field("200000", description="CRITICAL: MUST ALWAYS be '200000' (Trade Payable). Do NOT credit Cash or Bank accounts.")
     account_reasoning: str = Field("", description="Brief reason for assigning these accounts.")
     unreg_usd: float = Field(0.0, description="Amount for ALL non-tax invoices (no VAT is charged).")
     exempt_usd: float = Field(0.0, description="Leave as 0.0. All non-tax amounts should go to unreg_usd instead.")
@@ -183,6 +192,8 @@ class GeminiInvoiceProcessor:
             5. TAX AMOUNTS: If NO VAT is charged, put the entire amount in unreg_usd.
             6. BALANCED ASSIGNMENT: Assign Account IDs strictly from the <CHART_OF_ACCOUNTS>.
             7. SEQUENCES & INVOICE NUMBERS: Extract EXACTLY as printed. If missing, output "NEEDS_SEQ".
+            8. ACCOUNTS PAYABLE: ALL invoices must credit Trade Payable. You MUST output '200000' for the credit_account_id.
+            9. MULTI-MONTH ACCRUALS (CRITICAL): If an invoice bills for past months AND the current month, map the past months' amounts to `debit_account_id_2` and `debit_amount_2` (e.g., 215090 Other Accrued Expenses). Map the current month's expense to the main `account_id`.
             </OUTPUT_INSTRUCTIONS>
             """
 

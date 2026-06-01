@@ -30,6 +30,8 @@ class PurchaseResource(resources.ModelResource):
     vat_base_usd = fields.Field(attribute='vat_base_usd', column_name='vat_base_usd', widget=FloatWidget())
     vat_usd = fields.Field(attribute='vat_usd', column_name='vat_usd', widget=FloatWidget())
     total_usd = fields.Field(attribute='total_usd', column_name='total_usd', widget=FloatWidget())
+    debit_amount_2 = fields.Field(attribute='debit_amount_2', column_name='debit_amount_2', widget=FloatWidget())
+    debit_amount_3 = fields.Field(attribute='debit_amount_3', column_name='debit_amount_3', widget=FloatWidget())
 
     # Strictly filter the base queryset inside the resource
     def get_queryset(self):
@@ -57,7 +59,10 @@ class PurchaseResource(resources.ModelResource):
             'vendor', 'vattin', 'description', 'description_en', 
             'unreg_usd', 'exempt_usd', 'vat_base_usd', 'vat_usd', 'total_usd', 
             'account_id', 'vat_account_id', 'wht_debit_account_id', 
-            'credit_account_id', 'wht_account_id', 'debit_account', 'credit_account', 'instruction', 'page', 'created_at',
+            'credit_account_id', 'wht_account_id', 
+            'debit_account_id_2', 'debit_amount_2', 'debit_desc_2',
+            'debit_account_id_3', 'debit_amount_3', 'debit_desc_3',
+            'debit_account', 'credit_account', 'instruction', 'page', 'created_at',
         )
         export_order = fields
 

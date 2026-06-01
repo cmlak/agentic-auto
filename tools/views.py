@@ -261,6 +261,7 @@ def invoice_ai_upload_view(request):
 # --- 2. HITL REVIEW & AUTOMATIC GL POSTING ---
 # ====================================================================
 
+@login_required(login_url="register:login")
 def review_invoices(request):
     """Step 2: Review AI data, Update Vendors, Save Source Doc, and Post Journal Entry."""
     extracted_data = request.session.get('extracted_invoices', [])
@@ -349,10 +350,15 @@ def review_invoices(request):
                             if str(purchase_instance.vattin).lower().strip() in garbage_values:
                                 purchase_instance.vattin = None
                             
-                            # --- FIX: Convert empty strings to None for IntegerFields ---
-                            for field in ['account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id']:
-                                val = getattr(purchase_instance, field)
-                                if val == '' or val == "":
+                            # --- FIX: Convert empty strings to None for IntegerFields/CharFields ---
+                            fields_to_clean = [
+                                'account_id', 'vat_account_id', 'wht_debit_account_id', 
+                                'credit_account_id', 'wht_account_id', 
+                                'debit_account_id_2', 'debit_account_id_3'
+                            ]
+                            for field in fields_to_clean:
+                                val = getattr(purchase_instance, field, None)
+                                if val == '' or val == "" or str(val).lower() == 'none':
                                     setattr(purchase_instance, field, None)
 
                             # --- VENDOR RESOLUTION ---
@@ -393,13 +399,17 @@ def review_invoices(request):
                             net_amount = round(total_amount - vat_amount, 2)
 
                             # --- USER EDITED ACCOUNTS ---
-                            # Grab the actual IDs the user settled on in the review screen
                             form_debit_acct = form.cleaned_data.get('account_id')
                             form_credit_acct = form.cleaned_data.get('credit_account_id')
 
                             # CREDIT: Trade Payable (Total Liability)
                             if total_amount > 0:
                                 cr_account_id = str(form_credit_acct) if form_credit_acct else '200000'
+                                
+                                # 💡 BACKEND SAFEGUARD: If AI or user accidentally passed a Cash/Bank account, force it to AP.
+                                if cr_account_id.startswith('100'):
+                                    cr_account_id = '200000'
+
                                 ap_account, _ = Account.objects.get_or_create(
                                     account_id=cr_account_id, 
                                     defaults={'name': 'Trade Payable - USD', 'account_type': 'Liability'}
@@ -422,6 +432,41 @@ def review_invoices(request):
 
                             main_net = net_amount
 
+                            # 💡 NEW: PROCESS SECONDARY DEBIT (Accrual Clearing)
+                            amt_2 = float(getattr(purchase_instance, 'debit_amount_2', 0.0) or 0.0)
+                            acct_2 = str(getattr(purchase_instance, 'debit_account_id_2', '') or '')
+                            desc_2 = str(getattr(purchase_instance, 'debit_desc_2', '') or '')
+                            
+                            if amt_2 > 0 and acct_2 and acct_2.lower() != 'none':
+                                acc2_obj, _ = Account.objects.get_or_create(
+                                    account_id=acct_2, 
+                                    defaults={'name': 'Accrual Clearing', 'account_type': 'Liability'}
+                                )
+                                JournalLine.objects.create(
+                                    journal_entry=je, account=acc2_obj, 
+                                    description=desc_2 or f"Clearing Accrual for {raw_name}", 
+                                    debit=amt_2
+                                )
+                                main_net = round(main_net - amt_2, 2)
+
+                            # 💡 NEW: PROCESS TERTIARY DEBIT (Accrual Clearing 2)
+                            amt_3 = float(getattr(purchase_instance, 'debit_amount_3', 0.0) or 0.0)
+                            acct_3 = str(getattr(purchase_instance, 'debit_account_id_3', '') or '')
+                            desc_3 = str(getattr(purchase_instance, 'debit_desc_3', '') or '')
+                            
+                            if amt_3 > 0 and acct_3 and acct_3.lower() != 'none':
+                                acc3_obj, _ = Account.objects.get_or_create(
+                                    account_id=acct_3, 
+                                    defaults={'name': 'Secondary Accrual Clearing', 'account_type': 'Liability'}
+                                )
+                                JournalLine.objects.create(
+                                    journal_entry=je, account=acc3_obj, 
+                                    description=desc_3 or "Secondary Accrual Clearing", 
+                                    debit=amt_3
+                                )
+                                main_net = round(main_net - amt_3, 2)
+
+                            # PROCESS MAIN DEBIT (Current Month Expense)
                             if main_net > 0:
                                 ai_account_id = str(form_debit_acct) if form_debit_acct else '725080'
                                 exp_account, _ = Account.objects.get_or_create(
@@ -945,7 +990,11 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
         # Wrap everything in an atomic transaction to prevent partial writes/duplicates
         with transaction.atomic():
             purchase = form.save(commit=False)
-            for field in ['account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id']:
+            fields_to_clean = [
+                'account_id', 'vat_account_id', 'wht_debit_account_id', 'credit_account_id', 'wht_account_id',
+                'debit_account_id_2', 'debit_account_id_3'
+            ]
+            for field in fields_to_clean:
                 val = getattr(purchase, field)
                 if val == '' or val == "":
                     setattr(purchase, field, None)
@@ -961,42 +1010,66 @@ class PurchaseUpdateView(LoginRequiredMixin, UpdateView):
                 purchase=purchase,
                 defaults={
                     'date': purchase.date or date.today(),
-                    'description': f"Purchase: {purchase.company}",
+                    'description': f"Purchase from {purchase.company}",
                     'reference_number': purchase.invoice_no,
                 }
             )
             if not created:
                 je.date = purchase.date or date.today()
-                je.description = f"Updated Purchase: {purchase.company}"
+                je.description = f"Updated Purchase from {purchase.company}"
                 je.reference_number = purchase.invoice_no
                 je.save(update_fields=['date', 'description', 'reference_number'])
                 je.lines.all().delete()
 
             total_amount = float(purchase.total_usd or 0.0)
             vat_amount = float(purchase.vat_usd or 0.0)
-            unreg_amount = float(purchase.unreg_usd or 0.0)
-            
-            wht_amount = 0.0
-            if purchase.wht_account_id and unreg_amount > 0:
-                wht_amount = round(total_amount - unreg_amount, 2)
 
-            main_net = (total_amount - vat_amount - wht_amount)
-            if purchase.account_id and main_net > 0:
-                acct, _ = Account.objects.get_or_create(account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
-                JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
-
-            if vat_amount > 0 and purchase.vat_account_id:
-                vat_acct, _ = Account.objects.get_or_create(account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
-                JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
-
-            if wht_amount > 0 and purchase.wht_debit_account_id:
-                wht_exp_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
-                JournalLine.objects.create(journal_entry=je, account=wht_exp_acct, description="WHT Expense Absorbed", debit=wht_amount)
-
+            # CREDIT: Main Payable
             if total_amount > 0 and purchase.credit_account_id:
                 cr_acct, _ = Account.objects.get_or_create(account_id=str(purchase.credit_account_id), defaults={'name': 'Trade Payable', 'account_type': 'Liability'})
                 JournalLine.objects.create(journal_entry=je, account=cr_acct, description=f"Payable - {purchase.company}", credit=total_amount)
 
+            # DEBIT: VAT
+            if vat_amount > 0 and purchase.vat_account_id:
+                vat_acct, _ = Account.objects.get_or_create(account_id=str(purchase.vat_account_id), defaults={'name': 'VAT input', 'account_type': 'Asset'})
+                JournalLine.objects.create(journal_entry=je, account=vat_acct, description="Input VAT", debit=vat_amount)
+
+            # Start with net expense and subtract accruals
+            main_net = round(total_amount - vat_amount, 2)
+
+            # DEBIT: Accrual 2
+            amt_2 = float(getattr(purchase, 'debit_amount_2', 0.0) or 0.0)
+            acct_2 = str(getattr(purchase, 'debit_account_id_2', '') or '')
+            desc_2 = str(getattr(purchase, 'debit_desc_2', '') or '')
+            if amt_2 > 0 and acct_2:
+                acc2_obj, _ = Account.objects.get_or_create(account_id=acct_2, defaults={'name': 'Accrual Clearing', 'account_type': 'Liability'})
+                JournalLine.objects.create(journal_entry=je, account=acc2_obj, description=desc_2 or "Accrual Clearing", debit=amt_2)
+                main_net = round(main_net - amt_2, 2)
+
+            # DEBIT: Accrual 3
+            amt_3 = float(getattr(purchase, 'debit_amount_3', 0.0) or 0.0)
+            acct_3 = str(getattr(purchase, 'debit_account_id_3', '') or '')
+            desc_3 = str(getattr(purchase, 'debit_desc_3', '') or '')
+            if amt_3 > 0 and acct_3:
+                acc3_obj, _ = Account.objects.get_or_create(account_id=acct_3, defaults={'name': 'Secondary Accrual Clearing', 'account_type': 'Liability'})
+                JournalLine.objects.create(journal_entry=je, account=acc3_obj, description=desc_3 or "Secondary Accrual", debit=amt_3)
+                main_net = round(main_net - amt_3, 2)
+
+            # DEBIT: Main Expense
+            if purchase.account_id and main_net > 0:
+                acct, _ = Account.objects.get_or_create(account_id=str(purchase.account_id), defaults={'name': 'Operating Expense', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=acct, description=purchase.description_en or "Expense", debit=main_net)
+
+            # WHT Logic (preserved from original)
+            unreg_amount = float(purchase.unreg_usd or 0.0)
+            wht_amount = 0.0
+            if purchase.wht_account_id and unreg_amount > 0:
+                wht_amount = round(total_amount - unreg_amount, 2)
+            
+            if wht_amount > 0 and purchase.wht_debit_account_id:
+                wht_exp_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_debit_account_id), defaults={'name': 'WHT Expense', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=wht_exp_acct, description="WHT Expense Absorbed", debit=wht_amount)
+            
             if wht_amount > 0 and purchase.wht_account_id:
                 wht_pay_acct, _ = Account.objects.get_or_create(account_id=str(purchase.wht_account_id), defaults={'name': 'WHT Payable', 'account_type': 'Liability'})
                 JournalLine.objects.create(journal_entry=je, account=wht_pay_acct, description="WHT Payable to GDT", credit=wht_amount)
@@ -2357,7 +2430,6 @@ class AdjustmentDeleteView(LoginRequiredMixin, DeleteView):
         messages.success(self.request, 'Adjustment and associated Journal Entries deleted successfully!')
         return super().form_valid(form)
 
-@login_required(login_url="register:login")
 def generate_fifo_offset_proposals():
     """Helper function to calculate FIFO offsets"""
     print("DEBUG: Starting generate_fifo_offset_proposals")

@@ -1,49 +1,55 @@
 import os
 import json
-from decimal import Decimal
-from typing import List, Literal
-from pydantic import BaseModel, Field
-from django.core.management.base import BaseCommand
 import openpyxl
+from decimal import Decimal
 from openpyxl.styles import Font, PatternFill
+from django.core.management.base import BaseCommand
+from pydantic import BaseModel, Field
+from typing import List, Literal
 from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- Pydantic Schemas for AI ---
-
+# ==========================================
+# 1. PYDANTIC SCHEMAS FOR AI
+# ==========================================
 class MatchedPair(BaseModel):
     agentic_ids: List[str] = Field(..., description="List of Agentic IDs (e.g., ['A-004', 'A-005'])")
     balancika_ids: List[str] = Field(..., description="List of Balancika IDs (e.g., ['B-005'])")
-    match_reason: str = Field(..., description="Explain the textual or split-invoice logic tying these together.")
+    variance_usd: float = Field(..., description="Calculate: (Sum of Agentic amounts) - (Sum of Balancika amounts). Must be exactly 0.0 if perfect match.")
+    # 💡 ENHANCEMENT: Forced detailed logging in the schema description
+    match_reason: str = Field(..., description="Explain the logic tying these together. REQUIRED: You MUST explicitly quote the Date, Amount, and Description from BOTH systems in this explanation. Also explain the exact reason for any variance_usd.")
 
 class OrphanRecord(BaseModel):
     system: Literal["Agentic", "Balancika"]
     record_id: str = Field(..., description="The ID of the unmatched record.")
-    omission_reason: str = Field(..., description="Explain why this record has no counterpart.")
+    # 💡 ENHANCEMENT: Forced detailed logging for orphans
+    omission_reason: str = Field(..., description="Explain why this record has no counterpart. REQUIRED: You MUST explicitly quote the Date, Amount, and Description of this orphaned record in your explanation.")
 
 class ReconciliationResult(BaseModel):
     reasoning: str = Field(..., description="Explain your methodology for matching these complex leftovers.")
     semantic_matches: List[MatchedPair] = []
     discrepancies: List[OrphanRecord] = []
 
-
+# ==========================================
+# 2. DJANGO MANAGEMENT COMMAND
+# ==========================================
 class Command(BaseCommand):
     help = 'Hybrid Python + AI Cross-check of Trade Payables'
 
     def handle(self, *args, **options):
         api_key = os.environ.get("GEMINI_API_KEY_2") 
         if not api_key:
-            self.stdout.write(self.style.ERROR("GEMINI_API_KEY environment variable not found."))
+            self.stdout.write(self.style.ERROR("GEMINI_API_KEY_2 environment variable not found."))
             return
 
         self.client = genai.Client(api_key=api_key)
-        self.AUDIT_MODEL = "gemini-3.1-pro-preview"
+        self.AUDIT_MODEL = "gemini-3.1-pro-preview" # or gemini-2.5-pro
         
         base_url = r'C:\bakertilly\BakerTilly\CCKT\Balancika\Jan cross check'
-        agentic_filename = 'agentic_jan_bs_dif_trade_payable_cross_check_sample_1.xlsx'
-        balancika_filename = 'balancika_jan_bs_dif_trade_payable_cross_check_sample.xlsx'
-        report_filename = 'AI_Hybrid_Trade_Payable_Discrepancy_Report.xlsx'
+        agentic_filename = 'agentic_CIP_march.xlsx'
+        balancika_filename = 'balancika_CIP_march.xlsx'
+        report_filename = 'CIP_Discrepancy_Report.xlsx'
         
         agentic_file = os.path.join(base_url, agentic_filename)
         balancika_file = os.path.join(base_url, balancika_filename)
@@ -61,7 +67,7 @@ class Command(BaseCommand):
         agentic_orphans = {k: v for k, v in agentic_records.items() if not v['matched']}
         balancika_orphans = {k: v for k, v in balancika_records.items() if not v['matched']}
         
-        self.stdout.write(f"Programmatic pass cleared {len(exact_matches)} pairs.")
+        self.stdout.write(self.style.SUCCESS(f"Programmatic pass cleared {len(exact_matches)} pairs."))
         self.stdout.write(f"Leftovers for AI Analysis: {len(agentic_orphans)} Agentic, {len(balancika_orphans)} Balancika.")
 
         # 2. SEMANTIC AI MATCHING (Text & Split Invoices)
@@ -99,8 +105,10 @@ class Command(BaseCommand):
             if debit == 0 and credit == 0: continue
             
             desc = str(row_dict.get('Description') or '').strip()
+            
             if system == 'Balancika' and not desc:
-                desc = str(row_dict.get('Vendor / Customer / Employee') or '').strip()
+                desc = str(row_dict.get('Vendor / Customer / Employee') or row_dict.get('Source') or '').strip()
+                
             if system == 'Agentic':
                 source = str(row_dict.get('Source') or '').strip()
                 if source and source.lower() != 'none':
@@ -139,25 +147,26 @@ class Command(BaseCommand):
 
     @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=2, min=3, max=15), reraise=True)
     def run_ai_reconciliation(self, agentic_orphans, balancika_orphans):
-        # We strip the 'matched' flag out to save tokens, it's irrelevant to the AI
         a_payload = json.dumps([{k: v for k, v in r.items() if k != 'matched'} for r in agentic_orphans.values()], indent=2)
         b_payload = json.dumps([{k: v for k, v in r.items() if k != 'matched'} for r in balancika_orphans.values()], indent=2)
 
         prompt = f"""
-        TASK: You are a forensic accountant. An algorithmic pass has already cleared all exact mathematical matches. 
-        You are looking at the LEFTOVERS. 
+        TASK: You are an elite Forensic Accountant. An algorithmic pass has cleared all exact mathematical matches. 
+        You must reconcile the complex LEFTOVERS. 
         
-        AGENTIC ORPHANS (Count: {len(agentic_orphans)}):
+        AGENTIC ORPHANS:
         {a_payload}
         
-        BALANCIKA ORPHANS (Count: {len(balancika_orphans)}):
+        BALANCIKA ORPHANS:
         {b_payload}
         
-        INSTRUCTIONS:
-        1. Find "Split Invoices": One Balancika record might equal the sum of two Agentic records, or vice versa.
-        2. Find "Textual Variations": Records with slight decimal differences but matching text.
-        3. ANY record you cannot definitively logically link MUST be output as an OrphanRecord.
-        4. CRITICAL: You must account for EVERY SINGLE ID listed above. Do not skip any.
+        FORENSIC INSTRUCTIONS:
+        1. SPLIT INVOICES: One Balancika record might equal the sum of multiple Agentic records (or vice versa).
+        2. HIDDEN VARIANCES: Look for records with matching text/dates but slight amount differences. A discrepancy (e.g., $7.50, $15.00) is usually caused by embedded Bank Transfer Fees, WHT (Withholding Tax), VAT, or Currency Exchange roundings.
+        3. STRICT MATH: For EVERY semantic match you make, you MUST calculate the `variance_usd`. If there is a variance, hypothesize what it represents.
+        4. DETAILED LOGGING (CRITICAL): Your `match_reason` and `omission_reason` MUST explicitly cite the Date, Debit/Credit Amount, and Description of the records involved. Do not write vague summaries. (Example of Good Output: "Agentic [2026-03-24: $50.00 for 'Steel'] matches Balancika [2026-03-24: $57.50 for 'Construction Steel'] with a $7.50 variance likely due to delivery fees.")
+        5. ORPHANS: If a variance is too large to logically explain, do not force a match. Output them as Discrepancies and cite their full date/amount/description details.
+        6. EXHAUSTIVE: Account for EVERY SINGLE ID listed above.
         """
 
         response = self.client.models.generate_content(
@@ -187,12 +196,28 @@ class Command(BaseCommand):
         discrepancy_rows = []
 
         all_matches = exact_matches.copy()
+        
         if ai_result:
             for sm in ai_result.semantic_matches:
+                a_sum = sum(Decimal(str(agentic_db[a]['credit'])) - Decimal(str(agentic_db[a]['debit'])) for a in sm.agentic_ids)
+                b_sum = sum(Decimal(str(balancika_db[b]['credit'])) - Decimal(str(balancika_db[b]['debit'])) for b in sm.balancika_ids)
+                
+                variance = a_sum - b_sum
+                
+                if variance != Decimal('0.00'):
+                    agentic_diff += a_sum
+                    balancika_diff += b_sum
+                    
+                    ids_involved = f"Agentic: {', '.join(sm.agentic_ids)} | Balancika: {', '.join(sm.balancika_ids)}"
+                    discrepancy_rows.append([
+                        'FUZZY MATCH VARIANCE', ids_involved, 'N/A', sm.match_reason, 
+                        'N/A', 'N/A', f"Internal Variance of ${variance}"
+                    ])
+
                 all_matches.append({
                     'agentic_ids': sm.agentic_ids,
                     'balancika_ids': sm.balancika_ids,
-                    'match_reason': f"[AI SEMANTIC] {sm.match_reason}"
+                    'match_reason': f"[AI SEMANTIC] {sm.match_reason} (Variance: ${variance})"
                 })
 
             for orphan in ai_result.discrepancies:
@@ -213,11 +238,11 @@ class Command(BaseCommand):
         if ai_result:
             self.stdout.write(self.style.SUCCESS(f"Total AI Semantic/Split Matches: {len(ai_result.semantic_matches)}"))
             
-        self.stdout.write(f"Net January Transaction Variance (Agentic): ${agentic_diff}")
-        self.stdout.write(f"Net January Transaction Variance (Balancika): ${balancika_diff}")
-        self.stdout.write(self.style.ERROR(f"Total January Transaction Discrepancy: ${net_difference}"))
+        self.stdout.write(f"Net Period Transaction Variance (Agentic): ${agentic_diff}")
+        self.stdout.write(f"Net Period Transaction Variance (Balancika): ${balancika_diff}")
+        self.stdout.write(self.style.ERROR(f"Total Period Transaction Discrepancy: ${net_difference}"))
         
-        self.stdout.write(self.style.WARNING("\nNote: This variance only reflects transactions during January. If your overall ledger difference is $252.50, check the December 31st Opening Balances to locate the remaining difference."))
+        self.stdout.write(self.style.WARNING("\nNote: This variance only reflects transactions during the parsed period. If there is an overall ledger difference, check the Opening Balances for the period."))
 
         # --- EXCEL EXPORT ---
         wb = openpyxl.Workbook()
@@ -228,12 +253,12 @@ class Command(BaseCommand):
         ws_disc["A1"].font = Font(bold=True, size=14)
         ws_disc.append(["Net transaction variance originating from Agentic", float(agentic_diff)])
         ws_disc.append(["Net transaction variance originating from Balancika", float(balancika_diff)])
-        ws_disc.append(["Total Isolated January Discrepancy", float(net_difference)])
+        ws_disc.append(["Total Isolated Period Discrepancy", float(net_difference)])
         ws_disc["A4"].font = Font(bold=True)
         ws_disc["B4"].font = Font(bold=True)
         ws_disc.append([]) 
         
-        headers = ['Source System', 'Record ID', 'Date', 'Description', 'Debit', 'Credit', 'AI Reason for Omission']
+        headers = ['Source System', 'Record ID', 'Date', 'Description', 'Debit', 'Credit', 'AI Reason for Omission/Variance']
         ws_disc.append(headers)
         
         header_fill = PatternFill("solid", fgColor="4F81BD")
@@ -245,7 +270,7 @@ class Command(BaseCommand):
         for row in discrepancy_rows:
             ws_disc.append(row)
             
-        for col, width in {'A': 15, 'B': 12, 'C': 12, 'D': 50, 'E': 10, 'F': 10, 'G': 60}.items():
+        for col, width in {'A': 20, 'B': 25, 'C': 12, 'D': 50, 'E': 10, 'F': 10, 'G': 100}.items():
             ws_disc.column_dimensions[col].width = width
 
         ws_match = wb.create_sheet(title="All Matched Pairs")
@@ -262,6 +287,7 @@ class Command(BaseCommand):
             
         ws_match.column_dimensions['A'].width = 20
         ws_match.column_dimensions['B'].width = 20
-        ws_match.column_dimensions['C'].width = 80
+        ws_match.column_dimensions['C'].width = 100
 
         wb.save(report_file)
+        self.stdout.write(self.style.SUCCESS(f"Reconciliation complete. Report saved to {report_file}"))

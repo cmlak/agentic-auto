@@ -60,6 +60,13 @@ class Purchase(models.Model):
     credit_account_id = models.IntegerField(blank=True, null=True, default=200000)
     wht_account_id = models.IntegerField(blank=True, null=True)
 
+    debit_account_id_2 = models.IntegerField(blank=True, null=True)
+    debit_amount_2 = models.FloatField(blank=True, null=True)
+    debit_desc_2 = models.CharField(max_length=255, blank=True, null=True)
+    debit_account_id_3 = models.IntegerField(blank=True, null=True)
+    debit_amount_3 = models.FloatField(blank=True, null=True)
+    debit_desc_3 = models.CharField(max_length=255, blank=True, null=True)
+
     description = models.TextField(blank=True, null=True)
     description_en = models.TextField(blank=True, null=True)
     instruction = models.TextField(blank=True, null=True) 
@@ -167,4 +174,3 @@ class AICostLog(models.Model):
 
     def __str__(self):
         return f"{self.date.strftime('%Y-%m-%d %H:%M')} - {self.file_name} (${self.total_cost})"
-

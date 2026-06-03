@@ -11,6 +11,8 @@ Before triggering any build or deployment to Cloud Run, superusers must verify t
     * *Action:* Ensure `COPY . .` exists in the Dockerfile so the actual Django project files are transferred into the container image.
 * **4. Fortify View Logic:** Never assume a form submission contains all expected fields. 
     * *Action:* In `views.py`, strictly use `request.POST.get('fieldname')` instead of `request.POST['fieldname']`. The former returns `None` safely; the latter throws a hard Python crash (500 Server Error) if the key is missing.
+* **5. Cloud Run Jobs Require Management Commands:** Cloud Run Jobs are designed to execute synchronously and terminate upon completion.
+    * *Action:* When setting up a scheduled task as a Cloud Run Job (e.g., scraping or backups), always create a new Django management command (e.g., `manage.py trigger_nbc_scraper`). If wrapping a Celery task, use `.apply()` instead of `.delay()` to ensure the code executes inline immediately within the container rather than dispatching it to a background worker.
 
 ---
 

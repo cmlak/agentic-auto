@@ -90,10 +90,11 @@ class GeminiInvoiceProcessor:
         return 0.0
 
     @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
-    def _generate_content_with_retry(self, document_part, prompt):
+    def _generate_content_with_retry(self, document_part=None, prompt=""):
+        contents = [document_part, prompt] if document_part else prompt
         return self.client.models.generate_content(
             model=self.AUDIT_MODEL,
-            contents=[document_part, prompt],
+            contents=contents,
             config=types.GenerateContentConfig(
                 response_mime_type="application/json",
                 response_schema=AccountingBatch,
@@ -256,6 +257,99 @@ class GeminiInvoiceProcessor:
             return [], page_cost, current_invoice_seq, str(e)
 
         return ledgers, page_cost, current_invoice_seq, None
+
+    # 💡 NEW: TEXT-BASED MULTI-RECORD ENRICHMENT STRATEGY (EXCEL CHUNKS)
+    def process_manual_batch(self, records: list, custom_prompt="", batch_name="", rules_context="", memo_context="", start_page=1):
+        ledgers = []
+        batch_cost = 0.0
+        coa_qs = Account.objects.all().order_by('account_id')
+        coa_context = "\n".join([f"{a.account_id} - {a.name} ({a.account_type})" for a in coa_qs]) if coa_qs.exists() else "No Chart of Accounts provided."
+
+        # Handle pandas Timestamps or unexpected objects by casting them to strings
+        records_json = json.dumps(records, indent=2, default=str)
+
+        prompt = f"""
+        TASK: You are an elite corporate forensic accountant. You are given a JSON data array representing manually compiled non-tax purchase invoices.
+        You must process and ENRICH these records by mapping GL accounts, translating definitions, and enforcing structural validations.
+        
+        <CHART_OF_ACCOUNTS>\n{coa_context}\n</CHART_OF_ACCOUNTS>
+        <ACCOUNTING_HIERARCHY_RULES>
+        1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
+        2. [INDUSTRY LEVEL] RULES: {rules_context}
+        3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
+        </ACCOUNTING_HIERARCHY_RULES>
+        
+        <OUTPUT_INSTRUCTIONS>
+        1. COMPLETENESS & STRICT SEQUENCE: Output exactly one PurchaseEntry per element inside the provided input array. You MUST process them in the EXACT same order they appear in the input array. Do NOT shuffle, randomize, or reorder the rows.
+        2. TRANSLATION: Translate item description fields (Khmer/Chinese) to English inside 'description_en'. Max 25 words.
+        3. ACCOUNTS PAYABLE: You MUST ALWAYS output '200000' for the credit_account_id. Do not touch asset accounts.
+        4. TAX SEGREGATION: Since these are explicitly pre-identified hand-written non-tax invoices, place gross amounts directly inside 'unreg_usd' and 'total_usd'. Set 'vat_usd' and 'vat_base_usd' to 0.0.
+        5. INVOICE SEQUENCE: Preserve provided invoice numbers. If field maps to blank, label it as 'NEEDS_SEQ'.
+        6. DETAILED LOGGING: Inside 'account_reasoning', you MUST explicitly call out, list, and quote the Date, Amount, and mapped fields for audit tracking verification.
+        7. ACCRUAL HANDLING: If descriptions detail multi-month service frameworks, implement split routing definitions via debit_account_id_2 and debit_amount_2 as outlined in the schema instructions.
+        8. VATTIN: If missing, leave as '' or 'N/A'. Do NOT output 'NEEDS_VATTIN'.
+        </OUTPUT_INSTRUCTIONS>
+        
+        <INPUT_RECORDS_DATA_ARRAY>
+        {records_json}
+        </INPUT_RECORDS_DATA_ARRAY>
+        """
+
+        try:
+            response = self._generate_content_with_retry(prompt=prompt)
+            batch_cost = self.calculate_cost(response.usage_metadata, self.AUDIT_MODEL)
+            with self.cost_lock: self.cost_stats["pro_cost"] += batch_cost
+                
+            audit = response.parsed
+            
+            if audit and audit.purchase_entries:
+                for idx, entry in enumerate(audit.purchase_entries):
+                    original_page = None
+                    if idx < len(records):
+                        original_page = records[idx].get('page')
+                    
+                    if original_page is not None and str(original_page).strip() != '' and str(original_page).lower() != 'nan':
+                        try:
+                            current_page = int(float(str(original_page).strip()))
+                        except ValueError:
+                            current_page = start_page + idx
+                    else:
+                        current_page = start_page + idx
+                        
+                    print(f"   ⏳ Extracted and processing record for sequence/page: {current_page}...", flush=True)
+                    
+                    entry_dict = entry.model_dump()
+                    
+                    if 'vendor_name' in entry_dict: 
+                        entry_dict['company'] = entry_dict.pop('vendor_name')
+                    
+                    reasoning = entry_dict.pop('account_reasoning', '')
+                    entry_dict['instruction'] = f"AI Reason: {reasoning}" if reasoning else ""
+                    
+                    vendor_data = self.resolve_and_assign_vendor(
+                        entry_dict.get('company', ''), entry_dict.get('vattin', ''), entry_dict.get('vat_usd', 0.0)
+                    )
+                    if not vendor_data: 
+                        vendor_data = {'db_id': None, 'is_new': False, 'temp_vid': None, 'temp_id': None}
+                    
+                    entry_dict['vendor_db_id'] = vendor_data.get('db_id')
+                    entry_dict['is_new_vendor'] = vendor_data.get('is_new', False)
+                    entry_dict['temp_vid'] = vendor_data.get('temp_vid')
+                    entry_dict['temp_id'] = vendor_data.get('temp_id')
+                    entry_dict['vendor_choice'] = vendor_data.get('temp_id') if vendor_data.get('is_new') else vendor_data.get('db_id')
+                    entry_dict['batch'] = batch_name
+                    
+                    # Forcefully enforce the sequence index so sorting in the review view is perfect
+                    entry_dict['page'] = current_page
+                    
+                    ledgers.append(entry_dict)
+                    print(f"      ✅ Record {current_page} mapped successfully.", flush=True)
+
+        except Exception as e:
+            print(f"❌ [MANUAL RAW COMPILATION ENGINE] Extraction iteration execution failure: {e}")
+            return [], batch_cost, str(e)
+
+        return ledgers, batch_cost, None
 
 # ====================================================================
 # --- PYDANTIC SCHEMAS FOR HISTORICAL DATA MIGRATION ---

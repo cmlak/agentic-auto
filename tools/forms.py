@@ -271,7 +271,78 @@ class PurchaseReviewForm(forms.ModelForm):
                             <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="this.closest('.purchase-form-wrapper').querySelectorAll('.tax-fields').forEach(e => e.classList.toggle('d-none'))">
                                 + Toggle Taxes (VAT/WHT)
                             </button>
+                            <button type="button" class="btn btn-sm btn-outline-success ms-2 fw-bold" onclick="clonePurchaseForm(this)">
+                                + Add Manual Split/Entry
+                            </button>
                         </div>
+                        <script>
+                        if (typeof clonePurchaseForm !== 'function') {
+                            function clonePurchaseForm(btn) {
+                                const currentForm = btn.closest('.purchase-form-wrapper');
+                                
+                                // TOGGLE OFF: Hide the cloned form and mark it for deletion in Django
+                                if (btn.classList.contains('is-cloned-active')) {
+                                    const clonedFormId = btn.getAttribute('data-cloned-target');
+                                    const clonedForm = document.getElementById(clonedFormId);
+                                    if (clonedForm) {
+                                        const deleteCheckbox = clonedForm.querySelector('input[name$="-DELETE"]');
+                                        if (deleteCheckbox) {
+                                            deleteCheckbox.checked = true;
+                                        }
+                                        clonedForm.style.display = 'none';
+                                    }
+                                    btn.classList.remove('is-cloned-active');
+                                    btn.classList.replace('btn-outline-danger', 'btn-outline-success');
+                                    btn.innerText = '+ Add Manual Split/Entry';
+                                    return;
+                                }
+
+                                const totalFormsInput = document.querySelector('input[name$="-TOTAL_FORMS"]');
+                                if (!totalFormsInput) {
+                                    console.error("TOTAL_FORMS input not found.");
+                                    return;
+                                }
+                                
+                                let currentTotal = parseInt(totalFormsInput.value);
+                                const newForm = currentForm.cloneNode(true);
+                                
+                                const newFormId = 'cloned-form-' + currentTotal;
+                                newForm.id = newFormId;
+                                
+                                const regex = new RegExp('form-\\\\d+-', 'g');
+                                const replaceStr = 'form-' + currentTotal + '-';
+                                
+                                newForm.querySelectorAll('input, select, textarea').forEach(input => {
+                                    if (input.name) input.name = input.name.replace(regex, replaceStr);
+                                    if (input.id) input.id = input.id.replace(regex, replaceStr);
+                                    
+                                    // Clear values for inputs that are not readonly/disabled
+                                    if (!input.readOnly && !input.disabled && input.type !== 'hidden') {
+                                        if (input.tagName === 'SELECT') { input.selectedIndex = 0; } 
+                                        else { input.value = ''; }
+                                    }
+                                });
+                                
+                                const formNumberInput = newForm.querySelector('input[name$="-form_number"]');
+                                if (formNumberInput) formNumberInput.value = currentTotal + 1;
+                                
+                                // Remove the clone button from the cloned form to avoid nested cloning confusion
+                                const clonedBtn = newForm.querySelector('button[onclick="clonePurchaseForm(this)"]');
+                                if (clonedBtn) {
+                                    clonedBtn.remove();
+                                }
+                                
+                                currentForm.parentNode.insertBefore(newForm, currentForm.nextSibling);
+                                totalFormsInput.value = currentTotal + 1;
+                                
+                                // TOGGLE ON: Update the button state to allow removal
+                                btn.classList.add('is-cloned-active');
+                                btn.classList.replace('btn-outline-success', 'btn-outline-danger');
+                                btn.innerText = '- Remove Manual Split/Entry';
+                                btn.setAttribute('data-cloned-target', newFormId);
+                            }
+                        }
+                        </script>
                     """), css_class='col-md-12'),
                 ),
                 
@@ -1054,3 +1125,17 @@ class AdjustmentOffsetForm(forms.Form):
 
 # Use standard formset_factory (can_delete=True automatically adds the DELETE checkbox)
 OffsetFormSet = formset_factory(AdjustmentOffsetForm, extra=0, can_delete=True)
+
+class ManualInvoiceUploadForm(forms.Form):
+    excel_file = forms.FileField(
+        label="Upload Compiled Invoices (Excel/CSV)",
+        widget=forms.FileInput(attrs={'class': 'form-control', 'accept': '.xlsx, .xls, .csv'})
+    )
+    batch_name = forms.CharField(
+        max_length=100, required=True,
+        widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., April Hand-Written Invoices'})
+    )
+    ai_prompt = forms.CharField(
+        required=False, label="Batch AI Instructions",
+        widget=forms.Textarea(attrs={'rows': 3, 'class': 'form-control', 'placeholder': 'Optional routing rules...'})
+    )

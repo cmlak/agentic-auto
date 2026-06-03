@@ -1,0 +1,84 @@
+{% extends "base_1_tools.html" %}
+{% load crispy_forms_tags %}
+
+{% block title %}Upload Hand-Written Compilation Batch{% endblock %}
+
+{% block content %}
+<div class="container mt-5">
+    <div class="row justify-content-center">
+        <div class="col-lg-8 col-md-10">
+            <div class="card shadow-sm border-0 rounded-3">
+                <div class="card-header bg-dark text-white p-4">
+                    <div class="d-flex align-items-center">
+                        <div class="me-3 fs-3">
+                            <i class="bi bi-file-earmark-excel-fill text-success"></i>
+                        </div>
+                        <div>
+                            <h4 class="mb-0 fw-bold">Upload Hand-Written Compilation</h4>
+                            <small class="text-white-50">Enrich manually transcribed ledger rows using the semantic AI mapping engine</small>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card-body p-4 bg-light bg-opacity-50">
+                    <div class="alert alert-info border-0 shadow-sm rounded-2 small" role="alert">
+                        <h6 class="fw-bold mb-1"><i class="bi bi-info-circle-fill me-2"></i>Compilation Spreadsheet Formatting Standard</h6>
+                        To guarantee frictionless processing executions, ensure your data file possesses at minimum the following columns: 
+                        <code class="fw-bold bg-white px-2 py-0.5 rounded text-danger border">date</code>, 
+                        <code class="fw-bold bg-white px-2 py-0.5 rounded text-danger border">invoice</code>, 
+                        <code class="fw-bold bg-white px-2 py-0.5 rounded text-danger border">company</code>, 
+                        <code class="fw-bold bg-white px-2 py-0.5 rounded text-danger border">description</code>, and 
+                        <code class="fw-bold bg-white px-2 py-0.5 rounded text-danger border">amount</code>.
+                    </div>
+
+                    <form method="post" enctype="multipart/form-data" class="needs-validation" novalidate>
+                        {% csrf_token %}
+                        
+                        <div class="mb-3">
+                            {{ form.batch_name|as_crispy_field }}
+                        </div>
+                        
+                        <div class="mb-3">
+                            {{ form.excel_file|as_crispy_field }}
+                        </div>
+
+                        <div class="mb-3">
+                            {{ form.ai_prompt|as_crispy_field }}
+                        </div>
+
+                        <div class="d-grid gap-2 mt-4">
+                            <button type="submit" class="btn btn-success btn-lg fs-6 fw-bold shadow-sm" id="submitBtn">
+                                <span class="spinner-border spinner-border-sm d-none me-2" role="status" aria-hidden="true" id="btnSpinner"></span>
+                                <i class="bi bi-cpu-fill me-1" id="btnIcon"></i> Initiate AI Enrichment Pass
+                            </button>
+                            <a href="{% url 'tools:invoice_upload' %}" class="btn btn-link text-muted btn-sm text-decoration-none">
+                                <i class="bi bi-arrow-left"></i> Return to standard document extractor
+                            </a>
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        const form = document.querySelector('form');
+        const submitBtn = document.getElementById('submitBtn');
+        const btnSpinner = document.getElementById('btnSpinner');
+        const btnIcon = document.getElementById('btnIcon');
+
+        if(form && submitBtn) {
+            form.addEventListener('submit', function(event) {
+                if (form.checkValidity()) {
+                    submitBtn.disabled = true;
+                    btnSpinner.classList.remove('d-none');
+                    if(btnIcon) btnIcon.classList.add('d-none');
+                    submitBtn.childNodes[2].textContent = " Parsing data elements... Please Wait.";
+                }
+            });
+        }
+    });
+</script>
+{% endblock %}

@@ -47,14 +47,7 @@ def scrape_exchange_rate_nbc():
 
         # Check if an exchange rate with the same date already exists
         if date and rate and not ExchangeRate.objects.filter(date=date).exists():
-            # Calculate the new ID (more efficient way)
-            try:
-                latest_exchange_rate = ExchangeRate.objects.order_by('-id')[0]
-                new_id = latest_exchange_rate.id + 1
-            except IndexError:  # Handle the case where no records exist
-                new_id = 1
-
-            ExchangeRate.objects.create(id=new_id, date=date, rate=rate)
+            ExchangeRate.objects.create(date=date, rate=rate)
             print(f"Exchange rate for {date} saved.") #Optional: print for debugging
         else:
             print("No new exchange rate found or already exists.") #Optional: print for debugging

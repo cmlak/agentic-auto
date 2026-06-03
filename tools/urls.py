@@ -63,4 +63,7 @@ urlpatterns = [
 
     path('offset-prepayments/', views.automate_prepayment_offset, name='offset_prepayments'),
     path('offset-prepayments/success/', views.offset_success_view, name='offset_success'),
+
+    path('invoices/upload-manual/', views.hand_written_invoice_view, name='hand_written_invoice'),
+
 ]

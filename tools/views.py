@@ -30,7 +30,7 @@ from pypdf import PdfReader, PdfWriter
 from .forms import BatchUploadForm, PurchaseFormSet, ManualPurchaseEntryForm, GLMigrationUploadForm,\
 GLHistoricalFormSet, OldEntryForm, JournalVoucherEntryForm, BalancikaExportForm,\
 MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, EngagementLetterUploadForm,\
-AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet
+AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet, ManualInvoiceUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
@@ -271,7 +271,9 @@ def review_invoices(request):
         return redirect('tools:invoice_upload')
         
     # --- FIX: Ensure the formset displays pages sequentially ---
-    extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
+    # Do not sort manual entries to preserve original Excel order
+    if not metadata.get('is_manual'):
+        extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
         
     # --- VENDOR CHOICES ---
     db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
@@ -540,6 +542,99 @@ def download_invoice_report(request):
     
     messages.error(request, "The report file has expired or could not be found.")
     return redirect('tools:invoice_upload')
+
+@login_required(login_url="register:login")
+def hand_written_invoice_view(request):
+    if request.method == 'POST':
+        form = ManualInvoiceUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            uploaded_file = form.cleaned_data['excel_file']
+            batch_name = form.cleaned_data['batch_name']
+            custom_prompt = form.cleaned_data.get('ai_prompt', '')
+            
+            # 1. Parse Excel / CSV into DataFrame
+            try:
+                if uploaded_file.name.endswith('.csv'):
+                    df = pd.read_csv(uploaded_file)
+                else:
+                    df = pd.read_excel(uploaded_file, engine='openpyxl')
+                
+                # Standardize columns to lower case for mapping
+                df.columns = df.columns.str.lower()
+                
+                # Filter out empty rows
+                df.dropna(subset=['amount', 'description'], how='all', inplace=True)
+                records = df.to_dict('records')
+                
+            except Exception as e:
+                messages.error(request, f"Failed to read file. Please ensure it is a valid Excel/CSV. Error: {e}")
+                return redirect('tools:hand_written_invoice')
+
+            # 2. Setup AI Processor Context
+            api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+            processor = GeminiInvoiceProcessor(api_key=api_key)
+            
+            rules_context = ""
+            rules = AccountMappingRule.objects.all().select_related('account')
+            if rules.exists():
+                rules_data = [{'Account ID': r.account.account_id, 'Keywords': r.trigger_keywords, 'Guideline': r.ai_guideline} for r in rules]
+                rules_context = pd.DataFrame(rules_data).to_csv(index=False)
+                
+            client_memo = ClientPromptMemo.objects.filter(category='GENERAL').first()
+            memo_context = client_memo.memo_text if client_memo else ""
+
+            # 3. Process records in chunks (e.g., 15 at a time) to prevent AI token/output truncation
+            CHUNK_SIZE = 15
+            all_ledgers = []
+            total_cost = 0.0
+            
+            for i in range(0, len(records), CHUNK_SIZE):
+                chunk = records[i:i+CHUNK_SIZE]
+                print(f"🧠 Processing manual records {i+1} to {min(i+CHUNK_SIZE, len(records))}...")
+                
+                chunk_ledgers, cost, err = processor.process_manual_batch(
+                    records=chunk, 
+                    custom_prompt=custom_prompt,
+                    batch_name=batch_name, 
+                    rules_context=rules_context, 
+                    memo_context=memo_context,
+                    start_page=i + 1
+                )
+                
+                if err:
+                    messages.warning(request, f"Error processing chunk {i+1}: {err}")
+                if chunk_ledgers:
+                    all_ledgers.extend(chunk_ledgers)
+                
+                total_cost += cost
+
+            # 4. Populate Session and pass to existing Review View
+            if all_ledgers:
+                try:
+                    AICostLog.objects.create(
+                        file_name=uploaded_file.name, total_pages=len(records), 
+                        flash_cost=0.0, pro_cost=total_cost, total_cost=total_cost
+                    )
+                except Exception: pass
+                
+                request.session['extracted_invoices'] = all_ledgers
+                request.session['ai_metadata'] = {
+                    'file_name': uploaded_file.name,
+                    'batch_name': batch_name,
+                    'total_pages': len(records),  # Using record count as "pages" proxy
+                    'costs': {'flash_cost': 0.0, 'pro_cost': total_cost},
+                    'is_manual': True
+                }
+                
+                messages.success(request, f"Successfully processed {len(all_ledgers)} manual entries.")
+                return redirect('tools:review_invoices')
+            else:
+                messages.error(request, "AI failed to extract any valid records from the file.")
+                
+    else:
+        form = ManualInvoiceUploadForm()
+
+    return render(request, 'hand_written_upload.html', {'form': form})
 
 @login_required(login_url="register:login")
 def ai_cost_dashboard(request):

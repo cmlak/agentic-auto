@@ -5,7 +5,7 @@ from django.conf import settings
 from django.conf.urls.static import static
 from django.shortcuts import redirect
 from register.views import IndexView
-from portal.views import client_dashboard, trigger_nightly_backup
+from portal.views import client_dashboard, trigger_nightly_backup, trigger_nbc_scraper_view
 
 
 urlpatterns = [
@@ -22,6 +22,8 @@ urlpatterns = [
     # Map the URL that Cloud Scheduler is currently looking for
     # path('api/trigger-backup/', trigger_nightly_backup, name='trigger_backup'),
     path('api/trigger-backup/', trigger_nightly_backup, name='trigger_nightly_backup'),
+    path('api/v1/cron/scrape-nbc/', trigger_nbc_scraper_view, name='cron_scrape_nbc'),
+
 ]
 
 if settings.DEBUG:

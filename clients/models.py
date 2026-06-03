@@ -11,3 +11,11 @@ class Client(TenantMixin):
 
 class Domain(DomainMixin):
     pass
+
+# ExchangeRate model
+class ExchangeRate(models.Model):
+    date = models.DateField(null=True, blank=True)
+    rate = models.PositiveIntegerField(default=0, null=True, blank=True)
+
+    def __str__(self):
+        return str(self.date) if self.date else "N/A"

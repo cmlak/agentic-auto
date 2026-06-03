@@ -11,7 +11,7 @@ urlpatterns = [
     path('assets/<int:asset_id>/dispose/', views.dispose_asset, name='dispose_asset'),
     
     path('assets/list/', views.AssetListView.as_view(), name='asset_list'),
-    path('assets/create/', views.AssetCreateView.as_view(), name='asset_create'),
+    # path('assets/create/', views.AssetCreateView.as_view(), name='asset_create'),
     path('assets/<int:pk>/update/', views.AssetUpdateView.as_view(), name='asset_update'),
     path('assets/<int:pk>/delete/', views.AssetDeleteView.as_view(), name='asset_delete'),
     path('assets/<int:pk>/schedule/', views.asset_depreciation_schedule, name='asset_depreciation_schedule'),

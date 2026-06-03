@@ -225,12 +225,12 @@ class AssetListView(LoginRequiredMixin, ListView):
         context['form'] = self.filterset.form
         return context
 
-class AssetCreateView(LoginRequiredMixin, CreateView):
-    login_url = "register:login"
-    model = Asset
-    form_class = AssetForm
-    template_name = 'assets/asset_form.html'
-    success_url = reverse_lazy('assets:asset_list')
+# class AssetCreateView(LoginRequiredMixin, CreateView):
+#     login_url = "register:login"
+#     model = Asset
+#     form_class = AssetForm
+#     template_name = 'assets/asset_form.html'
+#     success_url = reverse_lazy('assets:asset_list')
 
 class AssetUpdateView(LoginRequiredMixin, UpdateView):
     login_url = "register:login"

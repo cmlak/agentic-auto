@@ -18,4 +18,6 @@ python manage.py account_mapping_rules account_accountmappingrule.csv --schema "
 
 python manage.py migrate_schemas --tenant tools
 
+python manage.py migrate_schemas --shared
+
 python manage.py showmigrations tools

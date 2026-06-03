@@ -520,10 +520,10 @@ def account_ledger_detail_view(request, account_id):
         
         purchase_detail = getattr(line.journal_entry.purchase, 'company', "Details") if purchase_id and getattr(line.journal_entry, 'purchase', None) else "Details"
         bank_detail = (getattr(line.journal_entry.bank, 'counterparty', "") or getattr(line.journal_entry.bank, 'purpose', "Details")) if bank_id and getattr(line.journal_entry, 'bank', None) else "Details"
-        cash_detail = getattr(line.journal_entry.cash, 'description', "Details") if cash_id and getattr(line.journal_entry, 'cash', None) else "Details"
-        jv_detail = getattr(line.journal_entry.journal_voucher, 'description', "Details") if journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None) else "Details"
-        old_detail = getattr(line.journal_entry.old, 'description', "Details") if old_id and getattr(line.journal_entry, 'old', None) else "Details"
-        adjustment_detail = getattr(line.journal_entry.adjustment, 'description', "Details") if adjustment_id and getattr(line.journal_entry, 'adjustment', None) else "Details"
+        cash_detail = getattr(line.journal_entry.cash, 'voucher_no', "") or getattr(line.journal_entry.cash, 'invoice_no', "") or str(cash_id) if cash_id and getattr(line.journal_entry, 'cash', None) else "Details"
+        jv_detail = str(journal_voucher_id) if journal_voucher_id else "Details"
+        old_detail = str(old_id) if old_id else "Details"
+        adjustment_detail = str(adjustment_id) if adjustment_id else "Details"
         
         description = None
         
@@ -932,12 +932,15 @@ def export_account_ledger_detail(request, account_id):
     base_qs = JournalLine.objects.filter(
         account__account_id=account.account_id
     ).select_related('journal_entry').prefetch_related(
-        'journal_entry__purchase',
-        'journal_entry__bank',
-        'journal_entry__cash',
-        'journal_entry__journal_voucher',
+        'journal_entry__purchase__vendor',
+        'journal_entry__bank__vendor',
+        'journal_entry__bank__customer',
+        'journal_entry__cash__vendor',
+        'journal_entry__cash__customer',
+        'journal_entry__journal_voucher__vendor',
         'journal_entry__old',
-        'journal_entry__adjustment'
+        'journal_entry__adjustment__vendor',
+        'journal_entry__adjustment__customer'
     ).order_by('journal_entry__date', 'id')
 
     report_filter = ReportFilter(request.GET, queryset=base_qs)
@@ -983,25 +986,48 @@ def export_account_ledger_detail(request, account_id):
 
         description = description or line.description or line.journal_entry.description
         
+        vendor_name = ""
+        customer_name = ""
+        
         if purchase_id and getattr(line.journal_entry, 'purchase', None):
-            source_display = f"Purchase: {getattr(line.journal_entry.purchase, 'company', 'Details')}"
+            source_display = f"Purchase: {purchase_id}"
+            if getattr(line.journal_entry.purchase, 'vendor', None):
+                vendor_name = line.journal_entry.purchase.vendor.name
         elif sale_id and getattr(line.journal_entry, 'sale', None):
-            source_display = f"Sale: {getattr(line.journal_entry.sale, 'company', 'Details')}"
+            source_display = f"Sale: {sale_id}"
+            if getattr(line.journal_entry.sale, 'customer', None):
+                customer_name = line.journal_entry.sale.customer.name
         elif bank_id and getattr(line.journal_entry, 'bank', None):
-            source_display = f"Bank: {getattr(line.journal_entry.bank, 'counterparty', '') or getattr(line.journal_entry.bank, 'purpose', 'Details')}"
+            source_display = f"Bank: {bank_id}"
+            if getattr(line.journal_entry.bank, 'vendor', None):
+                vendor_name = line.journal_entry.bank.vendor.name
+            if getattr(line.journal_entry.bank, 'customer', None):
+                customer_name = line.journal_entry.bank.customer.name
         elif cash_id and getattr(line.journal_entry, 'cash', None):
-            source_display = f"Cash: {getattr(line.journal_entry.cash, 'description', 'Details')}"
+            source_display = f"Cash: {cash_id}"
+            if getattr(line.journal_entry.cash, 'vendor', None):
+                vendor_name = line.journal_entry.cash.vendor.name
+            if getattr(line.journal_entry.cash, 'customer', None):
+                customer_name = line.journal_entry.cash.customer.name
         elif journal_voucher_id and getattr(line.journal_entry, 'journal_voucher', None):
-            source_display = f"Journal Voucher: {getattr(line.journal_entry.journal_voucher, 'description', 'Details')}"
+            source_display = f"Journal Voucher: {journal_voucher_id}"
+            if getattr(line.journal_entry.journal_voucher, 'vendor', None):
+                vendor_name = line.journal_entry.journal_voucher.vendor.name
         elif old_id and getattr(line.journal_entry, 'old', None):
-            source_display = f"Historical: {getattr(line.journal_entry.old, 'description', 'Details')}"
+            source_display = f"Historical: {old_id}"
         elif adjustment_id and getattr(line.journal_entry, 'adjustment', None):
-            source_display = f"Adjustment: {getattr(line.journal_entry.adjustment, 'description', 'Details')}"
+            source_display = f"Adjustment: {adjustment_id}"
+            if getattr(line.journal_entry.adjustment, 'vendor', None):
+                vendor_name = line.journal_entry.adjustment.vendor.name
+            if getattr(line.journal_entry.adjustment, 'customer', None):
+                customer_name = line.journal_entry.adjustment.customer.name
 
         ledger_data.append({
             'date': line.journal_entry.date,
             'description': description,
             'source': source_display,
+            'vendor_name': vendor_name,
+            'customer_name': customer_name,
             'debit': line.debit,
             'credit': line.credit,
             'balance': running_balance

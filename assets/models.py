@@ -8,6 +8,10 @@ class Asset(models.Model):
         ('FURNITURE', 'Furniture & fittings 家具与设备'),
         ('VEHICLE', 'Motor and Vehicle 机动车辆'),
         ('EQUIPMENT', 'Machinery & Equipment 机械设备'),
+        ('OFFICE EQUIPMENT', 'Office Equipment 办公室设备'),
+        ('COMPUTER & IT', 'Computer & IT Equipment 电脑与IT设备'),
+        ('Building', 'Building 建筑物'),
+        ('Renovation', 'Renovation 装修'),
     ]
     DEPRECIATION_METHODS = [
         ('SL', 'Straight Line 直线法'),

@@ -74,9 +74,13 @@ class AccountLedgerDetailResource(resources.Resource):
     date = Field(attribute='date', column_name='Date')
     description = Field(attribute='description', column_name='Description')
     source = Field(attribute='source', column_name='Source')
+    vendor_name = Field(attribute='vendor_name', column_name='Vendor Name')
+    customer_name = Field(attribute='customer_name', column_name='Customer Name')
     debit = Field(attribute='debit', column_name='Debit', widget=FloatWidget())
     credit = Field(attribute='credit', column_name='Credit', widget=FloatWidget())
     balance = Field(attribute='balance', column_name='Running Balance', widget=FloatWidget())
 
     class Meta:
-        export_order = ('date', 'description', 'source', 'debit', 'credit', 'balance')
+        export_order = (
+            'date', 'description', 'source', 'vendor_name', 'customer_name', 'debit', 'credit', 'balance'
+        )

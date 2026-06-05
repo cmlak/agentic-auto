@@ -17,6 +17,14 @@ class BankBatchUploadForm(forms.Form):
         widget=forms.Select(attrs={'class': 'form-select'})
     )
     bank_pdf = forms.FileField(label="Upload Bank Statement (PDF)")
+    
+    # 💡 NEW: Dedicated field for the remittance slips
+    slips_pdf = forms.FileField(
+        label="Remittance Slips (Optional PDF)", 
+        required=False,
+        help_text="Upload Overseas Remittance Requests to allow AI to identify and separate hidden bank/cable fees."
+    )
+    
     batch_name = forms.CharField(
         label="Batch Name", max_length=255, required=True,
         help_text="e.g., ABA Bank - Feb 2026"
@@ -26,7 +34,6 @@ class BankBatchUploadForm(forms.Form):
         widget=forms.Textarea(attrs={'rows': 3}), required=False
     )
 
-    # --- ENHANCEMENT: Dual File Uploads ---
     custom_rules_file = forms.FileField(
         label="Bank Payment Explanation (Optional Excel/CSV)", 
         required=False,
@@ -37,7 +44,7 @@ class BankBatchUploadForm(forms.Form):
         required=False,
         help_text="Upload previous month's GL to allow AI to search for established payables."
     )
-
+    
 class BankReviewForm(forms.ModelForm):
     form_number = forms.CharField(label='No.', disabled=True, required=False)
     vendor_choice = forms.ChoiceField(label="Matched Vendor DB", required=False, widget=forms.Select(attrs={'class': 'form-select fw-bold'}))
@@ -52,6 +59,11 @@ class BankReviewForm(forms.ModelForm):
         label="Account (Cr)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
+    fee_account_id = forms.ChoiceField(
+        label="Fee Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
+    )
+    fee_amount = forms.CharField(label="Fee Amount", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-warning fw-bold'}))
     matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     matched_sale_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     
@@ -86,12 +98,17 @@ class BankReviewForm(forms.ModelForm):
         if account_choices:
             self.fields['debit_account_id'].choices = account_choices
             self.fields['credit_account_id'].choices = account_choices
+            self.fields['fee_account_id'].choices = account_choices
             
         # Bind initial values from the AI's prediction
         if self.initial.get('debit_account_id'): 
             self.fields['debit_account_id'].initial = self.initial.get('debit_account_id')
         if self.initial.get('credit_account_id'): 
             self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
+        if self.initial.get('fee_account_id'): 
+            self.fields['fee_account_id'].initial = self.initial.get('fee_account_id')
+        if self.initial.get('fee_amount'): 
+            self.fields['fee_amount'].initial = self.initial.get('fee_amount')
         if self.initial.get('instruction'): 
             self.fields['instruction'].initial = self.initial.get('instruction')
         if self.initial.get('debit_amount'): 
@@ -138,20 +155,13 @@ class BankReviewForm(forms.ModelForm):
             ),
             # --- THE SIDE-BY-SIDE ACCOUNTING GRID ---
             Row(
-                # DEBIT SIDE (Takes up 5 columns total)
-                # 'pe-2' adds padding-end (right margin) to keep it away from the amount
-                Column('debit_account_id', css_class='form-group col-md-3 pe-2'),
-                Column('debit_amount', css_class='form-group col-md-2'),
-                
-                # THE GAP (Takes up 2 empty columns in the middle)
-                # 'offset-md-2' creates a massive empty space between Debit Amount and Credit Account
-                
-                # CREDIT SIDE (Takes up 5 columns total)
-                Column('credit_account_id', css_class='form-group col-md-3 offset-md-2 pe-2'),
+                Column('debit_account_id', css_class='form-group col-md-2 pe-1'),
+                Column('debit_amount', css_class='form-group col-md-2 pe-2'),
+                Column('fee_account_id', css_class='form-group col-md-2 pe-1'),
+                Column('fee_amount', css_class='form-group col-md-2 pe-2'),
+                Column('credit_account_id', css_class='form-group col-md-2 pe-1'),
                 Column('credit_amount', css_class='form-group col-md-2'),
-                
-                # 'gx-3' ensures standard Bootstrap gutters are applied between all items
-                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end gx-3'
+                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end gx-2'
             ),
             Row(
                 Column('instruction', css_class='form-group col-md-8'),
@@ -180,6 +190,12 @@ class BankReviewForm(forms.ModelForm):
         
     def clean(self):
         cleaned_data = super().clean()
+        fee_raw = cleaned_data.get('fee_amount')
+        if fee_raw is not None and str(fee_raw).strip() != "":
+            try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: fee_amt = 0.0
+            cleaned_data['fee_amount'] = fee_amt
+
         # Sync the edited balanced amounts back to the directional fields for the DB
         d_amt_raw = cleaned_data.get('debit_amount')
         if d_amt_raw is not None and str(d_amt_raw).strip() != "":
@@ -211,6 +227,11 @@ class ManualBankEntryForm(forms.ModelForm):
         required=False,
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
+    fee_account_id = forms.ChoiceField(
+        label="Fee Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
+    )
+    fee_amount = forms.CharField(label="Fee Amount", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-warning fw-bold'}))
     matched_purchase_ids = forms.CharField(
         label="Matched Purchase IDs", required=False, 
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 10, 11, 12'})
@@ -232,6 +253,7 @@ class ManualBankEntryForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields['debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
+        self.fields['fee_account_id'].choices = account_choices
         if vendor_choices:
             self.fields['vendor_choice'].choices = vendor_choices
         if customer_choices:
@@ -270,12 +292,14 @@ class ManualBankEntryForm(forms.ModelForm):
                 Column('matched_jv_ids', css_class='form-group col-md-4'),
             ),
             Row(
-                Column('debit_account_id', css_class='form-group col-md-6'),
-                Column('credit_account_id', css_class='form-group col-md-6'),
+                Column('debit_account_id', css_class='form-group col-md-4'),
+                Column('fee_account_id', css_class='form-group col-md-4'),
+                Column('credit_account_id', css_class='form-group col-md-4'),
             ),
             Row(
-                Column('debit', css_class='form-group col-md-6'),
-                Column('credit', css_class='form-group col-md-6'),
+                Column('debit', css_class='form-group col-md-4'),
+                Column('fee_amount', css_class='form-group col-md-4'),
+                Column('credit', css_class='form-group col-md-4'),
                 css_class='bg-light p-3 rounded mt-3 border border-secondary'
             )
         )
@@ -284,7 +308,7 @@ class ManualBankEntryForm(forms.ModelForm):
         model = Bank
         fields = [
             'date', 'bank_ref_id', 'trans_type', 'counterparty', 'purpose', 'remark', 
-            'debit_account_id', 'credit_account_id', 'debit', 'credit', 
+            'debit_account_id', 'credit_account_id', 'fee_account_id', 'fee_amount', 'debit', 'credit', 
             'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]
         widgets = {
@@ -301,6 +325,12 @@ class ManualBankEntryForm(forms.ModelForm):
         debit = cleaned_data.get('debit') or 0.0
         credit = cleaned_data.get('credit') or 0.0
         
+        fee_raw = cleaned_data.get('fee_amount')
+        if fee_raw is not None and str(fee_raw).strip() != "":
+            try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: fee_amt = 0.0
+            cleaned_data['fee_amount'] = fee_amt
+
         if debit > 0 and credit > 0 and debit != credit:
             raise forms.ValidationError("Debit and Credit amounts must match.")
             
@@ -367,6 +397,11 @@ class CashReviewForm(forms.ModelForm):
         label="Account (Cr)", required=False, 
         widget=forms.Select(attrs={'class': 'form-select fw-bold text-danger'})
     )
+    fee_account_id = forms.ChoiceField(
+        label="Fee Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
+    )
+    fee_amount = forms.CharField(label="Fee Amount", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-warning fw-bold'}))
     matched_purchase_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     matched_sale_ids = forms.CharField(required=False, widget=forms.HiddenInput())
     
@@ -402,12 +437,17 @@ class CashReviewForm(forms.ModelForm):
         if account_choices:
             self.fields['debit_account_id'].choices = account_choices
             self.fields['credit_account_id'].choices = account_choices
+            self.fields['fee_account_id'].choices = account_choices
             
         # Bind initial values from the AI's prediction
         if self.initial.get('debit_account_id'): 
             self.fields['debit_account_id'].initial = self.initial.get('debit_account_id')
         if self.initial.get('credit_account_id'): 
             self.fields['credit_account_id'].initial = self.initial.get('credit_account_id')
+        if self.initial.get('fee_account_id'): 
+            self.fields['fee_account_id'].initial = self.initial.get('fee_account_id')
+        if self.initial.get('fee_amount'): 
+            self.fields['fee_amount'].initial = self.initial.get('fee_amount')
         if self.initial.get('instruction'): 
             self.fields['instruction'].initial = self.initial.get('instruction')
         if self.initial.get('debit_amount'): 
@@ -451,11 +491,13 @@ class CashReviewForm(forms.ModelForm):
                 Column('description', css_class='form-group col-md-6'),
             ),
             Row(
-                Column('debit_account_id', css_class='form-group col-md-3 pe-3'),
-                Column('debit_amount', css_class='form-group col-md-2'),
-                Column('credit_account_id', css_class='form-group col-md-3 offset-md-1 pe-3'),
+                Column('debit_account_id', css_class='form-group col-md-2 pe-1'),
+                Column('debit_amount', css_class='form-group col-md-2 pe-2'),
+                Column('fee_account_id', css_class='form-group col-md-2 pe-1'),
+                Column('fee_amount', css_class='form-group col-md-2 pe-2'),
+                Column('credit_account_id', css_class='form-group col-md-2 pe-1'),
                 Column('credit_amount', css_class='form-group col-md-2'),
-                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end'
+                css_class='bg-light p-3 rounded mt-2 border border-info align-items-end gx-2'
             ),
             Row(
                 Column('instruction', css_class='form-group col-md-8'),
@@ -486,6 +528,12 @@ class CashReviewForm(forms.ModelForm):
         
     def clean(self):
         cleaned_data = super().clean()
+        fee_raw = cleaned_data.get('fee_amount')
+        if fee_raw is not None and str(fee_raw).strip() != "":
+            try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: fee_amt = 0.0
+            cleaned_data['fee_amount'] = fee_amt
+
         d_amt_raw = cleaned_data.get('debit_amount')
         if d_amt_raw is not None and str(d_amt_raw).strip() != "":
             try: d_amt = float(str(d_amt_raw).replace(',', '').replace('$', '').strip())
@@ -516,6 +564,11 @@ class ManualCashEntryForm(forms.ModelForm):
         required=False,
         widget=forms.Select(attrs={'class': 'form-select text-danger fw-bold'})
     )
+    fee_account_id = forms.ChoiceField(
+        label="Fee Account (Dr)", required=False, 
+        widget=forms.Select(attrs={'class': 'form-select fw-bold text-warning'})
+    )
+    fee_amount = forms.CharField(label="Fee Amount", required=False, widget=forms.TextInput(attrs={'class': 'number-format text-end text-warning fw-bold'}))
     matched_purchase_ids = forms.CharField(
         label="Matched Purchase IDs", required=False, 
         widget=forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'e.g., 10, 11, 12'})
@@ -540,6 +593,7 @@ class ManualCashEntryForm(forms.ModelForm):
             self.fields['customer_choice'].choices = customer_choices
         self.fields['debit_account_id'].choices = account_choices
         self.fields['credit_account_id'].choices = account_choices
+        self.fields['fee_account_id'].choices = account_choices
 
         if self.instance and getattr(self.instance, 'pk', None):
             if self.instance.vendor_id:
@@ -568,12 +622,14 @@ class ManualCashEntryForm(forms.ModelForm):
                 Column('description', css_class='form-group col-md-12'),
             ),
             Row(
-                Column('debit_account_id', css_class='form-group col-md-6'),
-                Column('credit_account_id', css_class='form-group col-md-6'),
+                Column('debit_account_id', css_class='form-group col-md-4'),
+                Column('fee_account_id', css_class='form-group col-md-4'),
+                Column('credit_account_id', css_class='form-group col-md-4'),
             ),
             Row(
-                Column('debit', css_class='form-group col-md-6'),
-                Column('credit', css_class='form-group col-md-6'),
+                Column('debit', css_class='form-group col-md-4'),
+                Column('fee_amount', css_class='form-group col-md-4'),
+                Column('credit', css_class='form-group col-md-4'),
                 css_class='bg-light p-3 rounded mt-3 border border-secondary'
             )
         )
@@ -582,7 +638,7 @@ class ManualCashEntryForm(forms.ModelForm):
         model = Cash
         fields = [
             'date', 'voucher_no', 'invoice_no', 'description',
-            'debit_account_id', 'credit_account_id', 'debit', 'credit',
+            'debit_account_id', 'credit_account_id', 'fee_account_id', 'fee_amount', 'debit', 'credit',
             'matched_purchase_ids', 'matched_sale_ids', 'matched_jv_ids'
         ]
         widgets = {
@@ -597,6 +653,12 @@ class ManualCashEntryForm(forms.ModelForm):
         debit = cleaned_data.get('debit') or 0.0
         credit = cleaned_data.get('credit') or 0.0
         
+        fee_raw = cleaned_data.get('fee_amount')
+        if fee_raw is not None and str(fee_raw).strip() != "":
+            try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
+            except ValueError: fee_amt = 0.0
+            cleaned_data['fee_amount'] = fee_amt
+
         if debit > 0 and credit > 0 and debit != credit:
             raise forms.ValidationError("Debit and Credit amounts must match.")
             

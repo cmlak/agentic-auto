@@ -59,7 +59,7 @@ def bank_ai_upload_view(request):
             batch_name = form.cleaned_data['batch_name']
             selected_config = form.cleaned_data['processor_config']
             
-            # --- 1. PARSE BANK PAYMENT EXPLANATION FILE (SUPPLEMENTARY) ---
+            # --- 1. PARSE BANK PAYMENT EXPLANATION FILE (SUPPLEMENTARY EXCEL/CSV) ---
             supplementary_data_md = ""
             custom_rules_file = form.cleaned_data.get('custom_rules_file')
             if custom_rules_file:
@@ -104,6 +104,26 @@ def bank_ai_upload_view(request):
                 except Exception as e:
                     messages.warning(request, f"Warning: Could not parse Historical GL. {str(e)}")
 
+            # --- 3. EXTRACT TEXT FROM REMITTANCE SLIPS (FOR SPLITTING HIDDEN FEES) ---
+            slips_pdf = form.cleaned_data.get('slips_pdf')
+            slips_text = ""
+            if slips_pdf:
+                print("📄 Extracting text from supplementary bank slips...", flush=True)
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp_slip:
+                    for chunk in slips_pdf.chunks():
+                        tmp_slip.write(chunk)
+                    tmp_slip_path = tmp_slip.name
+                try:
+                    slip_reader = PdfReader(tmp_slip_path)
+                    for page in slip_reader.pages:
+                        slips_text += page.extract_text(extraction_strategy="layout") + "\n"
+                    print(f"✅ Extracted text from {len(slip_reader.pages)} slip pages.", flush=True)
+                except Exception as e:
+                    messages.warning(request, f"Warning: Could not parse slips PDF. {str(e)}")
+                finally:
+                    if os.path.exists(tmp_slip_path):
+                        os.remove(tmp_slip_path)
+
             ProcessorStrategyClass = BANK_PROCESSOR_MAP.get(selected_config)
             
             if not ProcessorStrategyClass:
@@ -120,18 +140,33 @@ def bank_ai_upload_view(request):
                 print(f"🚀 STARTING BANK AI PROCESSING", flush=True)
                 print("="*50, flush=True)
 
-                api_key = os.getenv("GEMINI_API_KEY_2") 
+                api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2")) 
                 processor = ProcessorStrategyClass(api_key=api_key)
                 
                 # =========================================================
                 # PHASE 1: EXTRACT TRANSACTIONS
                 # =========================================================
                 print("\n[1/4] EXTRACTING TRANSACTIONS AND VENDORS FROM PDF...", flush=True)
-                extracted_data, total_pages, costs = processor.process(
-                    pdf_path=tmp_pdf_path, 
-                    batch_name=batch_name,
-                    custom_prompt=bank_extraction_memo
-                )
+                
+                # We dynamically check if the processor accepts 'slips_text' to maintain backward compatibility
+                # with ABA processors that might not have their signatures updated yet.
+                import inspect
+                processor_sig = inspect.signature(processor.process)
+                
+                if 'slips_text' in processor_sig.parameters:
+                    extracted_data, total_pages, costs = processor.process(
+                        pdf_path=tmp_pdf_path, 
+                        batch_name=batch_name,
+                        custom_prompt=bank_extraction_memo,
+                        slips_text=slips_text
+                    )
+                else:
+                    extracted_data, total_pages, costs = processor.process(
+                        pdf_path=tmp_pdf_path, 
+                        batch_name=batch_name,
+                        custom_prompt=bank_extraction_memo
+                    )
+                
                 print(f"✅ Extracted {len(extracted_data)} transactions across {total_pages} pages.", flush=True)
                 
                 # =========================================================
@@ -147,13 +182,16 @@ def bank_ai_upload_view(request):
                 
                 # 2B. Open Sales
                 open_sales = []
-                if Sale:
+                try:
+                    from sale.models import Sale
                     open_sales = list(Sale.objects.filter(
                         payment_status__in=['Open', 'Prepayment']
                     ).values('id', 'date', 'invoice_no', 'company', 'total_usd', 'payment_status'))
+                except ImportError:
+                    pass
                 print(f"✅ Found {len(open_sales)} open sales invoices.", flush=True)
 
-                # 2C. Chart of Accounts (COA) - THE CRITICAL FIX
+                # 2C. Chart of Accounts (COA)
                 client_accounts = Account.objects.all().values_list('account_id', 'name')
                 coa_list_str = "\n".join([f"{acct[0]} - {acct[1]}" for acct in client_accounts])
                 print(f"✅ Loaded {len(client_accounts)} GL accounts for AI mapping.", flush=True)
@@ -202,7 +240,7 @@ def bank_ai_upload_view(request):
                             open_sales_data=sal_data_str,
                             historical_gl_data=hist_gl_md,
                             prompt_memo=tier_2_recon_rules,
-                            chart_of_accounts_data=coa_list_str  # <--- THE MAGIC KEY
+                            chart_of_accounts_data=coa_list_str
                         )
                         
                         recon_costs['flash_cost'] += step_costs.get('flash_cost', 0)
@@ -226,6 +264,11 @@ def bank_ai_upload_view(request):
                             else:
                                 item['matched_sale_ids'] = ""
                                 
+                            if hasattr(match, 'fee_account_id') and match.fee_account_id:
+                                item['fee_account_id'] = match.fee_account_id
+                            if hasattr(match, 'fee_amount') and match.fee_amount:
+                                item['fee_amount'] = match.fee_amount
+                                
                             item['instruction'] = f"AI Reconciled: {match.reasoning}"
                         else:
                             print(f"      ⚠️ No exact AI mapping. Applying default accounts.", flush=True)
@@ -245,13 +288,16 @@ def bank_ai_upload_view(request):
                 total_flash = costs.get('flash_cost', 0) + recon_costs.get('flash_cost', 0)
                 total_pro = costs.get('pro_cost', 0) + recon_costs.get('pro_cost', 0)
 
-                AICostLog.objects.create(
-                    file_name=uploaded_pdf.name, 
-                    total_pages=total_pages, 
-                    flash_cost=total_flash, 
-                    pro_cost=total_pro, 
-                    total_cost=total_flash + total_pro
-                )
+                try:
+                    AICostLog.objects.create(
+                        file_name=uploaded_pdf.name, 
+                        total_pages=total_pages, 
+                        flash_cost=total_flash, 
+                        pro_cost=total_pro, 
+                        total_cost=total_flash + total_pro
+                    )
+                except NameError:
+                    pass
                 
                 request.session['extracted_bank'] = extracted_data
                 request.session['bank_metadata'] = {
@@ -445,6 +491,7 @@ def bank_review_view(request):
                             cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                             amount = instance.debit if instance.debit > 0 else instance.credit
+                            fee_amt = getattr(instance, 'fee_amount', 0.0) or 0.0
                             
                             je_desc = f"Bank Transaction: {instance.counterparty or instance.purpose}"
                             if instance.instruction:
@@ -463,8 +510,20 @@ def bank_review_view(request):
                                 bank=instance
                             )
 
-                            _distribute_settlement_lines(je, amount, dr_acct, cr_acct, safe_je_desc)
-                            print(f"   💾 Saved Bank Transaction [Ref: {instance.bank_ref_id}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
+                            if is_money_out and fee_amt > 0:
+                                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=safe_je_desc[:255])
+                                
+                                principal_debit = amount - fee_amt
+                                if principal_debit > 0:
+                                    JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=safe_je_desc[:255])
+                                
+                                fee_acct_id = str(instance.fee_account_id or '725080')
+                                fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                                JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+                                print(f"   💾 Saved Split Bank Transaction [Ref: {instance.bank_ref_id}] -> Dr Principal: {dr_acct_id} | Dr Fee: {fee_acct_id} | Cr: {cr_acct_id}")
+                            else:
+                                _distribute_settlement_lines(je, amount, dr_acct, cr_acct, safe_je_desc)
+                                print(f"   💾 Saved Bank Transaction [Ref: {instance.bank_ref_id}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
             except Exception as e:
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
                 return render(request, 'bank_review.html', {'formset': formset, 'metadata': metadata})
@@ -705,6 +764,10 @@ def cash_upload_view(request):
                                 item['matched_sale_ids'] = ",".join(map(str, match.matched_sale_ids))
                             else:
                                 item['matched_sale_ids'] = ""
+                            if hasattr(match, 'fee_account_id') and match.fee_account_id:
+                                item['fee_account_id'] = match.fee_account_id
+                            if hasattr(match, 'fee_amount') and match.fee_amount:
+                                item['fee_amount'] = match.fee_amount
                             item['instruction'] = f"AI Reconciled: {match.reasoning}"
                         else:
                             print(f"      ⚠️ No exact AI mapping. Applying default accounts.", flush=True)
@@ -997,6 +1060,7 @@ def cash_review_view(request):
                             cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                             amount = instance.debit if instance.debit > 0 else instance.credit
+                            fee_amt = getattr(instance, 'fee_amount', 0.0) or 0.0
                             
                             je_desc = f"Cash Transaction: {instance.description or 'Cash Book Entry'}"
                             if instance.instruction:
@@ -1015,10 +1079,22 @@ def cash_review_view(request):
                                 cash=instance
                             )
 
-                            _distribute_settlement_lines(
-                                je, amount, dr_acct, cr_acct, safe_je_desc
-                            )
-                            print(f"   💾 Saved Cash Transaction [Voucher: {instance.voucher_no}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
+                            if is_money_out and fee_amt > 0:
+                                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=safe_je_desc[:255])
+                                
+                                principal_debit = amount - fee_amt
+                                if principal_debit > 0:
+                                    JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=safe_je_desc[:255])
+                                
+                                fee_acct_id = str(instance.fee_account_id or '725080')
+                                fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                                JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+                                print(f"   💾 Saved Split Cash Transaction [Voucher: {instance.voucher_no}] -> Dr Principal: {dr_acct_id} | Dr Fee: {fee_acct_id} | Cr: {cr_acct_id}")
+                            else:
+                                _distribute_settlement_lines(
+                                    je, amount, dr_acct, cr_acct, safe_je_desc
+                                )
+                                print(f"   💾 Saved Cash Transaction [Voucher: {instance.voucher_no}] -> Dr: {dr_acct_id} | Cr: {cr_acct_id}")
             except Exception as e:
                 messages.error(request, f"Database transaction failed. Nothing was saved. Error: {str(e)}")
                 return render(request, 'cash_review.html', {'formset': formset, 'metadata': metadata, 'page_obj': page_obj})
@@ -1200,6 +1276,7 @@ def manual_bank_entry_view(request):
                     cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = bank.debit if bank.debit > 0 else bank.credit
+                fee_amt = getattr(bank, 'fee_amount', 0.0) or 0.0
                 
                 je_desc = f"Manual Bank Txn: {bank.counterparty or bank.purpose}"
                 if matched_p_ids:
@@ -1212,9 +1289,21 @@ def manual_bank_entry_view(request):
 
                 je = JournalEntry.objects.create(date=bank.date, description=je_desc, reference_number=bank.bank_ref_id, bank=bank)
                 
-                _distribute_settlement_lines(
-                    je, amount, dr_acct, cr_acct, je_desc
-                )
+                is_money_out = bank.credit > 0
+                if is_money_out and fee_amt > 0:
+                    JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                    
+                    principal_debit = amount - fee_amt
+                    if principal_debit > 0:
+                        JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=je_desc[:255])
+                    
+                    fee_acct_id = str(bank.fee_account_id or '725080')
+                    fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                    JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+                else:
+                    _distribute_settlement_lines(
+                        je, amount, dr_acct, cr_acct, je_desc
+                    )
                 
             messages.success(request, f"Manual Bank transaction {bank.bank_ref_id} posted securely!")
             return redirect('cash:bank_list')
@@ -1311,6 +1400,7 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = bank.debit if bank.debit > 0 else bank.credit
+            fee_amt = getattr(bank, 'fee_amount', 0.0) or 0.0
             
             je_desc = f"Updated Bank Txn: {bank.counterparty or bank.purpose}"
             if matched_p_ids:
@@ -1336,9 +1426,21 @@ class BankUpdateView(LoginRequiredMixin, UpdateView):
                 je.save(update_fields=['date', 'description', 'reference_number'])
                 je.lines.all().delete()
             
-            _distribute_settlement_lines(
-                je, amount, dr_acct, cr_acct, je_desc
-            )
+            is_money_out = bank.credit > 0
+            if is_money_out and fee_amt > 0:
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+                principal_debit = amount - fee_amt
+                if principal_debit > 0:
+                    JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=je_desc[:255])
+                
+                fee_acct_id = str(bank.fee_account_id or '725080')
+                fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+            else:
+                _distribute_settlement_lines(
+                    je, amount, dr_acct, cr_acct, je_desc
+                )
             
         messages.success(self.request, "Bank transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:bank_detail', kwargs={'pk': self.object.pk}))
@@ -1475,6 +1577,7 @@ def manual_cash_entry_view(request):
                     cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
                 amount = cash.debit if cash.debit > 0 else cash.credit
+                fee_amt = getattr(cash, 'fee_amount', 0.0) or 0.0
                 
                 je_desc = f"Manual Cash Txn: {cash.description}"
                 if matched_p_ids:
@@ -1487,9 +1590,21 @@ def manual_cash_entry_view(request):
 
                 je = JournalEntry.objects.create(date=cash.date, description=je_desc, reference_number=cash.voucher_no, cash=cash)
                 
-                _distribute_settlement_lines(
-                    je, amount, dr_acct, cr_acct, je_desc
-                )
+                is_money_out = cash.credit > 0
+                if is_money_out and fee_amt > 0:
+                    JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                    
+                    principal_debit = amount - fee_amt
+                    if principal_debit > 0:
+                        JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=je_desc[:255])
+                    
+                    fee_acct_id = str(cash.fee_account_id or '725080')
+                    fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                    JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+                else:
+                    _distribute_settlement_lines(
+                        je, amount, dr_acct, cr_acct, je_desc
+                    )
                 
             messages.success(request, f"Manual Cash transaction posted securely!")
             return redirect('cash:cash_list')
@@ -1635,6 +1750,7 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 cr_acct, _ = Account.objects.get_or_create(account_id=cr_acct_id, defaults={'name': 'Uncategorized Account', 'account_type': 'Liability'})
 
             amount = cash.debit if cash.debit > 0 else cash.credit
+            fee_amt = getattr(cash, 'fee_amount', 0.0) or 0.0
             
             je_desc = f"Updated Cash Txn: {cash.description}"
             if matched_p_ids:
@@ -1660,9 +1776,21 @@ class CashUpdateView(LoginRequiredMixin, UpdateView):
                 je.save(update_fields=['date', 'description', 'reference_number'])
                 je.lines.all().delete()
             
-            _distribute_settlement_lines(
-                je, amount, dr_acct, cr_acct, je_desc
-            )
+            is_money_out = cash.credit > 0
+            if is_money_out and fee_amt > 0:
+                JournalLine.objects.create(journal_entry=je, account=cr_acct, credit=amount, description=je_desc[:255])
+                
+                principal_debit = amount - fee_amt
+                if principal_debit > 0:
+                    JournalLine.objects.create(journal_entry=je, account=dr_acct, debit=principal_debit, description=je_desc[:255])
+                
+                fee_acct_id = str(cash.fee_account_id or '725080')
+                fee_acct, _ = Account.objects.get_or_create(account_id=fee_acct_id, defaults={'name': 'Bank Fees', 'account_type': 'Expense'})
+                JournalLine.objects.create(journal_entry=je, account=fee_acct, debit=fee_amt, description="Bank Charges")
+            else:
+                _distribute_settlement_lines(
+                    je, amount, dr_acct, cr_acct, je_desc
+                )
             
         messages.success(self.request, "Cash transaction updated securely!")
         return HttpResponseRedirect(reverse('cash:cash_detail', kwargs={'pk': self.object.pk}))

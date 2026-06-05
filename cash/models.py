@@ -42,6 +42,8 @@ class Bank(models.Model):
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
+    fee_account_id = models.CharField(max_length=20, blank=True, null=True)
+    fee_amount = models.FloatField(default=0.0)
     
     created_at = models.DateTimeField(auto_now_add=True, blank=True, null=True)
 
@@ -221,6 +223,8 @@ class Cash(models.Model):
     instruction = models.TextField(blank=True, null=True) # Stores AI Reasoning
     debit_account_id = models.CharField(max_length=20, blank=True, null=True)
     credit_account_id = models.CharField(max_length=20, blank=True, null=True)
+    fee_account_id = models.CharField(max_length=20, blank=True, null=True)
+    fee_amount = models.FloatField(default=0.0)
     
     # Additional Context
     note = models.TextField(blank=True, null=True)

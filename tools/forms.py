@@ -265,84 +265,16 @@ class PurchaseReviewForm(forms.ModelForm):
                 Row(
                     Column(HTML("""
                         <div class="mt-2 mb-2">
-                            <button type="button" class="btn btn-sm btn-outline-primary me-2 fw-bold" onclick="this.closest('.purchase-form-wrapper').querySelectorAll('.accrual-fields').forEach(e => e.classList.toggle('d-none'))">
+                            <button type="button" class="btn btn-sm btn-outline-primary me-2 fw-bold toggle-accruals-btn">
                                 + Toggle Accruals
                             </button>
-                            <button type="button" class="btn btn-sm btn-outline-info fw-bold" onclick="this.closest('.purchase-form-wrapper').querySelectorAll('.tax-fields').forEach(e => e.classList.toggle('d-none'))">
+                            <button type="button" class="btn btn-sm btn-outline-info fw-bold toggle-taxes-btn">
                                 + Toggle Taxes (VAT/WHT)
                             </button>
-                            <button type="button" class="btn btn-sm btn-outline-success ms-2 fw-bold" onclick="clonePurchaseForm(this)">
+                            <button type="button" class="btn btn-sm btn-outline-success ms-2 fw-bold clone-form-btn">
                                 + Add Manual Split/Entry
                             </button>
                         </div>
-                        <script>
-                        if (typeof clonePurchaseForm !== 'function') {
-                            function clonePurchaseForm(btn) {
-                                const currentForm = btn.closest('.purchase-form-wrapper');
-                                
-                                // TOGGLE OFF: Hide the cloned form and mark it for deletion in Django
-                                if (btn.classList.contains('is-cloned-active')) {
-                                    const clonedFormId = btn.getAttribute('data-cloned-target');
-                                    const clonedForm = document.getElementById(clonedFormId);
-                                    if (clonedForm) {
-                                        const deleteCheckbox = clonedForm.querySelector('input[name$="-DELETE"]');
-                                        if (deleteCheckbox) {
-                                            deleteCheckbox.checked = true;
-                                        }
-                                        clonedForm.style.display = 'none';
-                                    }
-                                    btn.classList.remove('is-cloned-active');
-                                    btn.classList.replace('btn-outline-danger', 'btn-outline-success');
-                                    btn.innerText = '+ Add Manual Split/Entry';
-                                    return;
-                                }
-
-                                const totalFormsInput = document.querySelector('input[name$="-TOTAL_FORMS"]');
-                                if (!totalFormsInput) {
-                                    console.error("TOTAL_FORMS input not found.");
-                                    return;
-                                }
-                                
-                                let currentTotal = parseInt(totalFormsInput.value);
-                                const newForm = currentForm.cloneNode(true);
-                                
-                                const newFormId = 'cloned-form-' + currentTotal;
-                                newForm.id = newFormId;
-                                
-                                const regex = new RegExp('form-\\\\d+-', 'g');
-                                const replaceStr = 'form-' + currentTotal + '-';
-                                
-                                newForm.querySelectorAll('input, select, textarea').forEach(input => {
-                                    if (input.name) input.name = input.name.replace(regex, replaceStr);
-                                    if (input.id) input.id = input.id.replace(regex, replaceStr);
-                                    
-                                    // Clear values for inputs that are not readonly/disabled
-                                    if (!input.readOnly && !input.disabled && input.type !== 'hidden') {
-                                        if (input.tagName === 'SELECT') { input.selectedIndex = 0; } 
-                                        else { input.value = ''; }
-                                    }
-                                });
-                                
-                                const formNumberInput = newForm.querySelector('input[name$="-form_number"]');
-                                if (formNumberInput) formNumberInput.value = currentTotal + 1;
-                                
-                                // Remove the clone button from the cloned form to avoid nested cloning confusion
-                                const clonedBtn = newForm.querySelector('button[onclick="clonePurchaseForm(this)"]');
-                                if (clonedBtn) {
-                                    clonedBtn.remove();
-                                }
-                                
-                                currentForm.parentNode.insertBefore(newForm, currentForm.nextSibling);
-                                totalFormsInput.value = currentTotal + 1;
-                                
-                                // TOGGLE ON: Update the button state to allow removal
-                                btn.classList.add('is-cloned-active');
-                                btn.classList.replace('btn-outline-success', 'btn-outline-danger');
-                                btn.innerText = '- Remove Manual Split/Entry';
-                                btn.setAttribute('data-cloned-target', newFormId);
-                            }
-                        }
-                        </script>
                     """), css_class='col-md-12'),
                 ),
                 
@@ -862,11 +794,6 @@ class FXForm(forms.Form):
         label="Ending Bal (KHR)", 
         widget=forms.NumberInput(attrs={'class': 'form-control'})
     )
-    exchange_rate = forms.FloatField(
-        required=False,
-        label="FX Rate", 
-        widget=forms.NumberInput(attrs={'class': 'form-control'})
-    )
     payment_status = forms.ChoiceField(
         required=False,
         choices=JournalVoucher.PAYMENT_STATUS_CHOICES, 
@@ -876,23 +803,19 @@ class FXForm(forms.Form):
 
     def clean(self):
         cleaned_data = super().clean()
-        fx_rate = cleaned_data.get('exchange_rate')
+        
+        has_input = cleaned_data.get('openning_balance') is not None or cleaned_data.get('ending_balance') is not None
 
-        # Only validate the row if the user actually inputted an exchange rate
-        if fx_rate and not cleaned_data.get('DELETE', False):
+        # Only validate the row if the user actually inputted a balance
+        if has_input and not cleaned_data.get('DELETE', False):
             if not cleaned_data.get('account_id'):
                 self.add_error('account_id', 'FX Account is required.')
             if not cleaned_data.get('bank_account_id'):
                 self.add_error('bank_account_id', 'Bank Account is required.')
             if not cleaned_data.get('description'):
                 self.add_error('description', 'Description is required.')
-            if cleaned_data.get('openning_balance') is None:
-                self.add_error('openning_balance', 'Opening Balance is required.')
-            if cleaned_data.get('ending_balance') is None:
-                self.add_error('ending_balance', 'Ending Balance is required.')
 
         # Safe-guard None values to prevent Python TypeError crashes in the view
-        if cleaned_data.get('exchange_rate') is None: cleaned_data['exchange_rate'] = 0.0
         if cleaned_data.get('openning_balance') is None: cleaned_data['openning_balance'] = 0.0
         if cleaned_data.get('ending_balance') is None: cleaned_data['ending_balance'] = 0.0
 
@@ -917,10 +840,9 @@ class FXForm(forms.Form):
             Row(
                 Column('account_id', css_class='form-group col-md-2'),
                 Column('bank_account_id', css_class='form-group col-md-2'),
-                Column('description', css_class='form-group col-md-2'),
-                Column('openning_balance', css_class='form-group col-md-1'),
+                Column('description', css_class='form-group col-md-4'),
+                Column('openning_balance', css_class='form-group col-md-2'),
                 Column('ending_balance', css_class='form-group col-md-1'),
-                Column('exchange_rate', css_class='form-group col-md-1'),
                 Column('payment_status', css_class='form-group col-md-2'),
                 Column('DELETE', css_class='form-group col-md-1 text-center mt-4'),
                 css_class='align-items-center mb-2 pb-2 border-bottom'

@@ -10,7 +10,7 @@ import time
 import openpyxl
 from openpyxl.styles import Alignment
 import difflib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
@@ -520,7 +520,7 @@ def review_invoices(request):
             form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
         )
         
-    return render(request, 'invoice_review.html', {'formset': formset, 'metadata': metadata})
+    return render(request, 'tools/invoice_review.html', {'formset': formset, 'metadata': metadata})
 
 # ====================================================================
 # --- 3. DOWNLOAD & DASHBOARD VIEWS ---
@@ -1936,6 +1936,24 @@ def upload_engagement_letters_view(request):
 
     return render(request, 'tools/engagement_letter_extract.html', {'form': form})
 
+def get_closest_exchange_rate(target_date):
+    """
+    Looks up the exchange rate for the exact target date.
+    If not found, steps backward day-by-day to find the most recent rate.
+    Assumes ExchangeRate is imported from clients.models.
+    """
+    from clients.models import ExchangeRate
+    
+    current_search_date = target_date
+    # Limit search backward to prevent infinite loops (e.g., max 10 days)
+    for _ in range(10):
+        rate_record = ExchangeRate.objects.filter(date=current_search_date).first()
+        if rate_record and rate_record.rate > 0:
+            return rate_record.rate
+        current_search_date -= timedelta(days=1)
+        
+    return None # Fallback if absolutely no rates exist in the database
+
 @login_required
 def monthly_closing_view(request):
     # ---------------------------------------------------------
@@ -1964,7 +1982,7 @@ def monthly_closing_view(request):
         print(f"\n{'='*60}\n🚀 STARTING UNIFIED MONTHLY CLOSING PROCESS\n{'='*60}")
 
         if form.is_valid() and accrual_formset.is_valid() and fx_formset.is_valid():
-            date = form.cleaned_data['date']
+            selected_date = form.cleaned_data['date']
             
             api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
             if not api_key:
@@ -1977,7 +1995,7 @@ def monthly_closing_view(request):
             vendor_staff, _ = Vendor.objects.get_or_create(name='Staff', defaults={'vendor_id': 'V-STAFF'})
 
             transaction_lines = [] 
-            period_label = date.strftime("%b'%y")
+            period_label = selected_date.strftime("%b'%y")
             total_ai_cost = 0.0
 
             # =========================================================
@@ -1985,31 +2003,42 @@ def monthly_closing_view(request):
             # =========================================================
             if form.cleaned_data.get('tax_declaration_pdf'):
                 pdf_bytes = form.cleaned_data['tax_declaration_pdf'].read()
-                salary_payable_usd = form.cleaned_data.get('salary_payable') or 0.0
-                staff_meals_usd = form.cleaned_data.get('staff_meals') or 0.0
+                salary_payable_usd = float(form.cleaned_data.get('salary_payable') or 0.0)
+                staff_meals_usd = float(form.cleaned_data.get('staff_meals') or 0.0)
                 
                 print(f"\n[ MODULE 1 & 2 ] Processing Tax Declaration PDF...")
                 print(f"   [DEBUG] Salary Payable input: {salary_payable_usd} | Staff Meals input: {staff_meals_usd}")
                 
+                # 💡 ENHANCEMENT: Fetch the exact exchange rate for the 25th of the month
+                target_tax_date = date(selected_date.year, selected_date.month, 25)
+                tax_exchange_rate = get_closest_exchange_rate(target_tax_date)
+                
+                if not tax_exchange_rate:
+                    messages.error(request, f"Cannot process Taxes: No Exchange Rate found in DB for {target_tax_date} or preceding days.")
+                    return redirect('tools:monthly_closing')
+                    
+                print(f"   [DEBUG] DB Exchange Rate for Taxes (Target {target_tax_date}): {tax_exchange_rate}")
+
                 processor = UnifiedTaxProcessor(api_key=api_key)
-                data = processor.extract_tax_data(pdf_bytes)
+                # 💡 FORCE the processor to use our DB rate instead of guessing from the PDF
+                data = processor.extract_tax_data(pdf_bytes, forced_exchange_rate=tax_exchange_rate)
 
                 if not data.get('error'):
                     total_ai_cost += processor.cost_stats['flash_cost']
                     
-                    exchange_rate = data.get('exchange_rate', 0.0)
+                    exchange_rate = data.get('exchange_rate', tax_exchange_rate)
                     tos_instr = data.get('tos_instruction') or f"TOS Extracted (Rate: {exchange_rate})"
                     wht_instr = data.get('wht_instruction') or f"WHT Extracted (Rate: {exchange_rate})"
                     fbt_instr = data.get('fbt_instruction') or f"FBT Extracted (Rate: {exchange_rate})"
                     general_instr = data.get('general_instruction') or f"Salary/Meals Extracted (Rate: {exchange_rate})"
 
                     if staff_meals_usd == 0.0:
-                        staff_meals_usd = data.get('staff_meals_usd', 0.0)
+                        staff_meals_usd = float(data.get('staff_meals_usd', 0.0))
 
-                    # 1. Process Salary & TOS (If Salary Payable was provided)
+                    # 1. Process Salary & TOS
                     if salary_payable_usd > 0:
-                        tax_res_usd = data.get('tos_resident_usd', 0.0)
-                        tax_non_res_usd = data.get('tos_non_resident_usd', 0.0)
+                        tax_res_usd = float(data.get('tos_resident_usd', 0.0))
+                        tax_non_res_usd = float(data.get('tos_non_resident_usd', 0.0))
                         total_tos = round(tax_res_usd + tax_non_res_usd, 2)
 
                         transaction_lines.extend([
@@ -2027,7 +2056,7 @@ def monthly_closing_view(request):
                         ])
 
                     # 2. Process Withholding Taxes
-                    total_wht = round(data.get('wht_10_usd', 0.0) + data.get('wht_15_usd', 0.0), 2)
+                    total_wht = round(float(data.get('wht_10_usd', 0.0)) + float(data.get('wht_15_usd', 0.0)), 2)
                     if total_wht > 0:
                         desc = f"Being accrued for Withholding tax expenses in {period_label}"
                         transaction_lines.extend([
@@ -2036,7 +2065,7 @@ def monthly_closing_view(request):
                         ])
 
                     # 3. Process Fringe Benefit Tax
-                    fbt = round(data.get('fbt_usd', 0.0), 2)
+                    fbt = round(float(data.get('fbt_usd', 0.0)), 2)
                     if fbt > 0:
                         desc = f"Being accrued for Fringe Benefit tax expenses in {period_label}"
                         transaction_lines.extend([
@@ -2056,7 +2085,7 @@ def monthly_closing_view(request):
             print(f"   [DEBUG] Total Accrual forms submitted: {len(accrual_formset)}")
             for a_form in accrual_formset:
                 if a_form.cleaned_data and not a_form.cleaned_data.get('DELETE', False) and a_form.cleaned_data.get('debit', 0) > 0:
-                    debit_amt = round(a_form.cleaned_data['debit'], 2)
+                    debit_amt = round(float(a_form.cleaned_data['debit']), 2)
                     desc = a_form.cleaned_data['description']
                     p_status = a_form.cleaned_data.get('payment_status') or 'Open'
                     
@@ -2073,58 +2102,60 @@ def monthly_closing_view(request):
                         {"vendor": vendor_instance, "account_id": "215090", "instruction": "Manual Accrual", "desc": desc, "debit": 0.0, "credit": debit_amt, "payment_status": p_status}
                     ])
                     print(f"      ✅ [DEBUG] Accrual added for '{desc}' (${debit_amt})")
-                else:
-                    has_data = bool(a_form.cleaned_data)
-                    is_del = a_form.cleaned_data.get('DELETE', False) if has_data else False
-                    deb = a_form.cleaned_data.get('debit', 0) if has_data else 0
-                    if has_data and not is_del and deb == 0:
-                        print(f"      ⏭️ [DEBUG] Skipped Accrual row: Debit is 0")
-                    elif has_data and is_del:
-                        print(f"      ⏭️ [DEBUG] Skipped Accrual row: Marked for DELETE")
 
             # =========================================================
-            # SCENARIO C: FX Gain/Loss
+            # SCENARIO C: FX Gain/Loss (AUTOMATED RATE FETCH)
             # =========================================================
             print("\n[ MODULE 4 ] Processing FX Gain/Loss...")
-            print(f"   [DEBUG] Total FX forms submitted: {len(fx_formset)}")
+            
+            # 💡 ENHANCEMENT: Dynamically calculate the last day of the selected month
+            last_day = calendar.monthrange(selected_date.year, selected_date.month)[1]
+            month_end_date = date(selected_date.year, selected_date.month, last_day)
+            
+            # Fetch the DB rate for month-end
+            month_end_rate = get_closest_exchange_rate(month_end_date)
+            
             for f_form in fx_formset:
-                if f_form.cleaned_data and not f_form.cleaned_data.get('DELETE', False) and f_form.cleaned_data.get('exchange_rate', 0) > 0:
-                    open_bal_usd = f_form.cleaned_data['openning_balance']
-                    end_bal_khr = f_form.cleaned_data['ending_balance']
-                    fx_rate = f_form.cleaned_data['exchange_rate']
-                    desc = f_form.cleaned_data['description']
-                    p_status = f_form.cleaned_data.get('payment_status') or 'Paid'
+                if f_form.cleaned_data and not f_form.cleaned_data.get('DELETE', False):
+                    # Only proceed if we have a valid ending KHR balance to evaluate
+                    end_bal_khr = float(f_form.cleaned_data.get('ending_balance') or 0.0)
                     
-                    fx_account_id = f_form.cleaned_data['account_id'] 
-                    bank_account_id = f_form.cleaned_data['bank_account_id']
+                    if end_bal_khr != 0.0:
+                        if not month_end_rate:
+                            messages.error(request, f"Cannot process FX: No Exchange Rate found in DB for month-end {month_end_date}.")
+                            # Safe fallback: break out of the FX loop but let other modules save
+                            break 
+                            
+                        open_bal_usd = float(f_form.cleaned_data['openning_balance'] or 0.0)
+                        desc = f_form.cleaned_data['description']
+                        p_status = f_form.cleaned_data.get('payment_status') or 'Paid'
+                        
+                        fx_account_id = f_form.cleaned_data['account_id'] 
+                        bank_account_id = f_form.cleaned_data['bank_account_id']
 
-                    month_end_usd = round(end_bal_khr / fx_rate, 2)
-                    fx_diff = round(month_end_usd - open_bal_usd, 2)
-                    instruction_txt = f"FX Calculation: (End Bal KHR {end_bal_khr} / Rate {fx_rate}) - Open Bal USD {open_bal_usd} = {fx_diff}"
-                    
-                    # Note: We pass None to "vendor" because FX adjustments are internal bank revaluations.
-                    if fx_diff < 0:
-                        loss_amt = abs(fx_diff)
-                        transaction_lines.extend([
-                            {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0, "payment_status": p_status},
-                            {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt, "payment_status": p_status}
-                        ])
-                        print(f"      ✅ [DEBUG] FX Loss added for '{desc}' (${loss_amt})")
-                    elif fx_diff > 0:
-                        gain_amt = fx_diff
-                        transaction_lines.extend([
-                            {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0, "payment_status": p_status},
-                            {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt, "payment_status": p_status}
-                        ])
-                        print(f"      ✅ [DEBUG] FX Gain added for '{desc}' (${gain_amt})")
-                else:
-                    has_data = bool(f_form.cleaned_data)
-                    is_del = f_form.cleaned_data.get('DELETE', False) if has_data else False
-                    rate = f_form.cleaned_data.get('exchange_rate', 0) if has_data else 0
-                    if has_data and not is_del and rate == 0:
-                        print(f"      ⏭️ [DEBUG] Skipped FX row: Exchange Rate is 0")
-                    elif has_data and is_del:
-                        print(f"      ⏭️ [DEBUG] Skipped FX row: Marked for DELETE")
+                        # 💡 ENHANCEMENT: Automatic Math using the DB Rate
+                        month_end_usd = round(end_bal_khr / month_end_rate, 2)
+                        fx_diff = round(month_end_usd - open_bal_usd, 2)
+                        
+                        instruction_txt = f"Automated FX: (End Bal KHR {end_bal_khr} / DB Rate {month_end_rate}) - Open Bal USD {open_bal_usd} = {fx_diff}"
+                        
+                        # Note: We pass None to "vendor" because FX adjustments are internal bank revaluations.
+                        if fx_diff < 0:
+                            loss_amt = abs(fx_diff)
+                            transaction_lines.extend([
+                                {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": loss_amt, "credit": 0.0, "payment_status": p_status},
+                                {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Loss)", "debit": 0.0, "credit": loss_amt, "payment_status": p_status}
+                            ])
+                            print(f"      ✅ [DEBUG] Auto FX Loss added for '{desc}' (${loss_amt}) at rate {month_end_rate}")
+                        elif fx_diff > 0:
+                            gain_amt = fx_diff
+                            transaction_lines.extend([
+                                {"vendor": None, "account_id": bank_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": gain_amt, "credit": 0.0, "payment_status": p_status},
+                                {"vendor": None, "account_id": fx_account_id, "instruction": instruction_txt, "desc": f"{desc} (FX Gain)", "debit": 0.0, "credit": gain_amt, "payment_status": p_status}
+                            ])
+                            print(f"      ✅ [DEBUG] Auto FX Gain added for '{desc}' (${gain_amt}) at rate {month_end_rate}")
+                        else:
+                            print(f"      ⏭️ [DEBUG] Skipped FX row: Net variance is strictly $0.00")
 
             # =========================================================
             # ATOMIC DATABASE SAVE 
@@ -2135,16 +2166,15 @@ def monthly_closing_view(request):
 
             if transaction_lines:
                 try:
-                    from django.db import transaction
                     with transaction.atomic():
                         for line in transaction_lines:
                             jv = JournalVoucher.objects.create(
-                                user=request.user, date=date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
+                                user=request.user, date=selected_date, vendor=line['vendor'], account_id=line['account_id'], instruction=line['instruction'], 
                                 description=line['desc'], debit=line['debit'], credit=line['credit'], 
                                 payment_status=line.get('payment_status') or 'Open'
                             )
                             je = JournalEntry.objects.create(
-                                date=date, description=f"Monthly Closing Automation - {period_label}"[:255], 
+                                date=selected_date, description=f"Monthly Closing Automation - {period_label}"[:255], 
                                 reference_number=f"JV-{jv.id}", journal_voucher=jv
                             )
                             account, _ = Account.objects.get_or_create(

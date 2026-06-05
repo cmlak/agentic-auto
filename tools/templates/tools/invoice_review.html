@@ -1,152 +1,135 @@
-{% extends 'base_1_tools.html' %}
-{% load static %}
+{% extends 'base_3_account.html' %}
 {% load crispy_forms_tags %}
 
-{% block title %}Review Invoices{% endblock %}
+{% block title %}Review AI Extracted Invoices{% endblock %}
 
 {% block content %}
-<div class="container-fluid mt-4 mb-5 px-3">
-    <div class="row mb-3">
-        <div class="col">
-            <h2>Review Extracted Data (Compliance View)</h2>
-            <p class="text-muted">
-                AI has extracted the data. Non-Tax invoices default to <strong>V001 - General Vendor</strong>. 
-                New Tax vendors are flagged with <strong>✨ NEW</strong> in the dropdown.
-                <br>
-                <strong>File:</strong> {{ metadata.file_name }} | <strong>Pages Processed:</strong> {{ metadata.total_pages }}
-            </p>
+<div class="container mt-4">
+    <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+            <h3 class="mb-0">Review & Post Invoices</h3>
         </div>
-    </div>
-
-    <form id="review-form" method="post">
-        {% csrf_token %}
-        {{ formset.management_form }}
-
-        <div id="invoice-formset-body" class="shadow-sm border rounded p-4 bg-white mb-3">
-            {% for form in formset %}
-                {% crispy form %}
-            {% endfor %}
+        <div class="card-body bg-light border-bottom">
+            <div class="row align-items-center">
+                <div class="col-md-4"><strong>File:</strong> {{ metadata.file_name }}</div>
+                <div class="col-md-4"><strong>Batch:</strong> {{ metadata.batch_name }}</div>
+                <div class="col-md-2"><strong>Total Records:</strong> {{ metadata.total_pages }}</div>
+                <div class="col-md-2 text-end"><strong>AI Cost:</strong> ${{ metadata.costs.pro_cost|floatformat:5 }}</div>
+            </div>
         </div>
+        <div class="card-body">
+            {% if formset.non_form_errors %}
+                <div class="alert alert-danger">
+                    {{ formset.non_form_errors }}
+                </div>
+            {% endif %}
 
-        <div class="d-flex justify-content-end mb-4">
-            <button type="button" id="add-row-btn" class="btn btn-outline-secondary btn-sm shadow-sm">
-                ➕ Add Missing Invoice
-            </button>
+            <form method="post">
+                {% csrf_token %}
+                {{ formset.management_form }}
+
+                {% for form in formset %}
+                    <div class="purchase-form-wrapper">
+                        {% crispy form %}
+                    </div>
+                {% endfor %}
+
+                <div class="mt-5 d-flex justify-content-end">
+                    <a href="{% url 'tools:invoice_upload' %}" class="btn btn-secondary btn-lg me-3">Cancel & Discard</a>
+                    <button type="submit" class="btn btn-success btn-lg">
+                        <i class="fas fa-check-circle me-2"></i>Save All & Post to GL
+                    </button>
+                </div>
+            </form>
         </div>
-
-        <div class="d-flex justify-content-end mt-4">
-            <a href="{% url 'tools:invoice_upload' %}" class="btn btn-outline-danger me-3 btn-lg shadow-sm">Cancel & Discard</a>
-            <button type="submit" class="btn btn-success btn-lg shadow-sm px-5">💾 Confirm & Save All</button>
-        </div>
-    </form>
-
-    <div id="empty-form-template" style="display: none;">
-        {% crispy formset.empty_form %}
     </div>
 </div>
-
-<style>
-    /* Clean up crispy forms labels and margins */
-    label { font-weight: 600; color: #495057; font-size: 0.9rem; margin-bottom: 0.2rem; }
-    .form-group { margin-bottom: 1rem !important; }
-    input, select, textarea { font-size: 0.85rem; padding: 0.4rem; }
-    
-    /* Smooth transition for auto-expanding textareas */
-    .auto-expand {
-        overflow: hidden;
-        resize: none;
-        transition: height 0.2s ease;
-    }
-</style>
-
-<script>
-document.addEventListener("DOMContentLoaded", function() {
-
-    // --- FUNCTION TO INITIALIZE UI ELEMENTS (Hover, Expand, Format) ---
-    // We put this in a function so we can re-run it when new rows are added
-    function initUIElements(container) {
-        
-        // 1. HOVER TOOLTIPS FOR FULL TEXT
-        container.querySelectorAll('input[type="text"], textarea').forEach(el => {
-            el.addEventListener('mouseenter', function() {
-                if (this.value) { this.title = this.value; }
-            });
-        });
-
-        // 2. AUTO-EXPAND TEXTAREAS
-        const adjustHeight = (el) => {
-            el.style.height = 'auto';
-            el.style.height = (el.scrollHeight) + 'px';
-        };
-        container.querySelectorAll('.auto-expand').forEach(el => {
-            el.addEventListener('input', () => adjustHeight(el));
-            setTimeout(() => adjustHeight(el), 100); // Initial adjustment
-        });
-
-        // 3. NUMBER FORMATTING (100,000.00)
-        const formatCurrency = (val) => {
-            if (!val || val === '') return '0.00';
-            let num = parseFloat(val.toString().replace(/,/g, ''));
-            if (isNaN(num)) return val;
-            return num.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        };
-
-        container.querySelectorAll('.number-format').forEach(el => {
-            el.value = formatCurrency(el.value); // Initial format
-
-            el.addEventListener('focus', function() {
-                this.value = this.value.replace(/,/g, ''); // Strip on focus
-            });
-
-            el.addEventListener('blur', function() {
-                this.value = formatCurrency(this.value); // Reformat on blur
-            });
-        });
-    }
-
-    // Initialize the UI elements for the forms already loaded on the page
-    initUIElements(document.getElementById("invoice-formset-body"));
-
-
-    // --- 4. DYNAMIC ROW ADDITION ---
-    const addRowBtn = document.getElementById("add-row-btn");
-    const formsetBody = document.getElementById("invoice-formset-body");
-    const emptyFormTemplate = document.getElementById("empty-form-template").innerHTML;
-    const totalFormsInput = document.getElementById("id_form-TOTAL_FORMS");
-
-    if (addRowBtn && formsetBody && emptyFormTemplate && totalFormsInput) {
-        addRowBtn.addEventListener("click", function(e) {
-            e.preventDefault();
-            const currentFormCount = parseInt(totalFormsInput.value);
-            
-            // Replace Django's __prefix__ with the new ID number
-            const newRowHtml = emptyFormTemplate.replace(/__prefix__/g, currentFormCount);
-            
-            // Create a temporary div to convert HTML string to actual DOM elements
-            const tempDiv = document.createElement('div');
-            tempDiv.innerHTML = newRowHtml;
-            
-            // Find the form_number input and set it manually to "New" or the exact number
-            const numberInput = tempDiv.querySelector('input[name="form-' + currentFormCount + '-form_number"]');
-            if (numberInput) { numberInput.value = "New"; }
-            
-            // Append to the container
-            formsetBody.appendChild(tempDiv.firstElementChild);
-            totalFormsInput.value = currentFormCount + 1;
-
-            // VERY IMPORTANT: Initialize formatting and auto-expand for the NEW row!
-            initUIElements(formsetBody.lastElementChild);
-        });
-    }
-
-    // --- 5. PRE-SUBMIT CLEANUP ---
-    // Remove commas before Django validates the floats
-    document.getElementById('review-form').addEventListener('submit', function() {
-        document.querySelectorAll('.number-format').forEach(el => {
-            el.value = el.value.replace(/,/g, '');
-        });
-    });
-
-});
-</script>
 {% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Event delegation to handle clicks for both existing and cloned buttons
+    document.body.addEventListener('click', function(e) {
+        if (e.target.matches('.toggle-accruals-btn')) {
+            const wrapper = e.target.closest('.purchase-form-wrapper');
+            if (wrapper) wrapper.querySelectorAll('.accrual-fields').forEach(el => el.classList.toggle('d-none'));
+        }
+        
+        if (e.target.matches('.toggle-taxes-btn')) {
+            const wrapper = e.target.closest('.purchase-form-wrapper');
+            if (wrapper) wrapper.querySelectorAll('.tax-fields').forEach(el => el.classList.toggle('d-none'));
+        }
+        
+        if (e.target.matches('.clone-form-btn')) {
+            clonePurchaseForm(e.target);
+        }
+    });
+});
+
+if (typeof clonePurchaseForm !== 'function') {
+    function clonePurchaseForm(btn) {
+        const currentForm = btn.closest('.purchase-form-wrapper');
+        
+        // TOGGLE OFF: Hide the cloned form and mark it for deletion in Django
+        if (btn.classList.contains('is-cloned-active')) {
+            const clonedFormId = btn.getAttribute('data-cloned-target');
+            const clonedForm = document.getElementById(clonedFormId);
+            if (clonedForm) {
+                const deleteCheckbox = clonedForm.querySelector('input[name$="-DELETE"]');
+                if (deleteCheckbox) {
+                    deleteCheckbox.checked = true;
+                }
+                clonedForm.style.display = 'none';
+            }
+            btn.classList.remove('is-cloned-active');
+            btn.classList.replace('btn-outline-danger', 'btn-outline-success');
+            btn.innerText = '+ Add Manual Split/Entry';
+            return;
+        }
+
+        const totalFormsInput = document.querySelector('input[name$="-TOTAL_FORMS"]');
+        if (!totalFormsInput) {
+            console.error("TOTAL_FORMS input not found.");
+            return;
+        }
+        
+        let currentTotal = parseInt(totalFormsInput.value);
+        const newForm = currentForm.cloneNode(true);
+        
+        const newFormId = 'cloned-form-' + currentTotal;
+        newForm.id = newFormId;
+        
+        const regex = new RegExp('form-\\d+-', 'g');
+        const replaceStr = 'form-' + currentTotal + '-';
+        
+        newForm.querySelectorAll('input, select, textarea').forEach(input => {
+            if (input.name) input.name = input.name.replace(regex, replaceStr);
+            if (input.id) input.id = input.id.replace(regex, replaceStr);
+            
+            // Clear values for inputs that are not readonly/disabled
+            if (!input.readOnly && !input.disabled && input.type !== 'hidden') {
+                if (input.tagName === 'SELECT') { input.selectedIndex = 0; } 
+                else { input.value = ''; }
+            }
+        });
+        
+        const formNumberInput = newForm.querySelector('input[name$="-form_number"]');
+        if (formNumberInput) formNumberInput.value = currentTotal + 1;
+        
+        const clonedBtn = newForm.querySelector('.clone-form-btn');
+        if (clonedBtn) {
+            clonedBtn.remove();
+        }
+        
+        currentForm.parentNode.insertBefore(newForm, currentForm.nextSibling);
+        totalFormsInput.value = currentTotal + 1;
+        
+        btn.classList.add('is-cloned-active');
+        btn.classList.replace('btn-outline-success', 'btn-outline-danger');
+        btn.innerText = '- Remove Manual Split/Entry';
+        btn.setAttribute('data-cloned-target', newFormId);
+    }
+}
+</script>
+{% endblock extra_js %}

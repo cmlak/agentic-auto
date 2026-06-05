@@ -229,3 +229,7 @@ CELERY_BROKER_POOL_LIMIT = 10
 # 4. Execution Visibility Logging
 CELERY_TASK_TRACK_STARTED = True
 CELERY_TASK_LOG_FMT = '[%(asctime)s: %(levelname)s/%(processName)s] %(message)s'
+
+# Increase the maximum number of fields allowed in a GET/POST request.
+# Useful for large Django formsets (e.g., bulk AI invoice processing).
+DATA_UPLOAD_MAX_NUMBER_FIELDS = 5000  # Default is 1000

@@ -115,7 +115,6 @@
                                 <th width="20%">Description</th>
                                 <th width="12%">Open Bal (USD)</th>
                                 <th width="13%">End Bal (KHR)</th>
-                                <th width="10%">FX Rate</th>
                                 <th width="5%" class="text-center">Del</th>
                             </tr>
                         </thead>
@@ -127,7 +126,6 @@
                                 <td>{{ f_form.description }}</td>
                                 <td>{{ f_form.openning_balance }}</td>
                                 <td>{{ f_form.ending_balance }}</td>
-                                <td>{{ f_form.exchange_rate }}</td>
                                 <td class="text-center">
                                     {% if fx_formset.can_delete %}{{ f_form.DELETE }}{% endif %}
                                 </td>

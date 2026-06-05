@@ -839,7 +839,7 @@ class UnifiedTaxProcessor:
             return ((usage.prompt_token_count / 1e6) * 0.075) + ((usage.candidates_token_count / 1e6) * 0.30)
         return 0.0
 
-    def extract_tax_data(self, pdf_bytes: bytes) -> dict:
+    def extract_tax_data(self, pdf_bytes: bytes, forced_exchange_rate: float = None) -> dict:
         document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
         prompt = """
         You are an expert tax accountant. Read the attached Notification of Tax Declaration.
@@ -851,6 +851,10 @@ class UnifiedTaxProcessor:
         5. Staff Meals: Extract Staff meals if available on the document.
         6. Explanations: Provide distinct, specific explanations for TOS, WHT, FBT, and a General note for Salary/Meals. Include the exchange rate and the exact nature of the tax (e.g. 'WHT 10% for Rental').
         """
+        
+        if forced_exchange_rate:
+            prompt += f"\n7. EXPLICIT EXCHANGE RATE: You MUST use the exact exchange rate of {forced_exchange_rate} for all KHR to USD conversions and explanations. Ignore any exchange rate found on the document."
+
         config = types.GenerateContentConfig(
             response_mime_type="application/json", 
             response_schema=UnifiedTaxData, 
@@ -867,7 +871,11 @@ class UnifiedTaxProcessor:
             cost = self._calculate_cost(response.usage_metadata)
             self.cost_stats["flash_cost"] += cost
             
-            return json.loads(response.text)
+            parsed_data = json.loads(response.text)
+            if forced_exchange_rate:
+                parsed_data['exchange_rate'] = forced_exchange_rate
+                
+            return parsed_data
         except Exception as e:
             print(f"Unified Tax AI Error: {str(e)}")
             return {"error": True}

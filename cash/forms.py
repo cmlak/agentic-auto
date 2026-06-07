@@ -195,6 +195,8 @@ class BankReviewForm(forms.ModelForm):
             try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
             except ValueError: fee_amt = 0.0
             cleaned_data['fee_amount'] = fee_amt
+        else:
+            cleaned_data['fee_amount'] = 0.0
 
         # Sync the edited balanced amounts back to the directional fields for the DB
         d_amt_raw = cleaned_data.get('debit_amount')
@@ -330,6 +332,8 @@ class ManualBankEntryForm(forms.ModelForm):
             try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
             except ValueError: fee_amt = 0.0
             cleaned_data['fee_amount'] = fee_amt
+        else:
+            cleaned_data['fee_amount'] = 0.0
 
         if debit > 0 and credit > 0 and debit != credit:
             raise forms.ValidationError("Debit and Credit amounts must match.")
@@ -533,6 +537,8 @@ class CashReviewForm(forms.ModelForm):
             try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
             except ValueError: fee_amt = 0.0
             cleaned_data['fee_amount'] = fee_amt
+        else:
+            cleaned_data['fee_amount'] = 0.0
 
         d_amt_raw = cleaned_data.get('debit_amount')
         if d_amt_raw is not None and str(d_amt_raw).strip() != "":
@@ -658,6 +664,8 @@ class ManualCashEntryForm(forms.ModelForm):
             try: fee_amt = float(str(fee_raw).replace(',', '').replace('$', '').strip())
             except ValueError: fee_amt = 0.0
             cleaned_data['fee_amount'] = fee_amt
+        else:
+            cleaned_data['fee_amount'] = 0.0
 
         if debit > 0 and credit > 0 and debit != credit:
             raise forms.ValidationError("Debit and Credit amounts must match.")

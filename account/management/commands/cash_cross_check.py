@@ -3,10 +3,9 @@ import pandas as pd
 import numpy as np
 from django.core.management.base import BaseCommand
 
-
 def cross_check_cash_records(client_filename, system_filename, output_filename="unprocessed_transactions.xlsx", stdout=None, style=None):
     # --- HARDCODED BASE URL ---
-    base_url = r"C:\bakertilly\BakerTilly\CCKT\02. Client's Info\April 2026\Check"
+    base_url = r"C:\bakertilly\BakerTilly\CCKT\02. Client's Info\05. May 2026\Check"
     
     # Safely construct the full file paths
     client_path = os.path.join(base_url, client_filename)
@@ -20,7 +19,6 @@ def cross_check_cash_records(client_filename, system_filename, output_filename="
         print(msg_loading)
     
     try:
-        # Switch from read_csv to read_excel
         client_df = pd.read_excel(client_path)
         system_df = pd.read_excel(system_path)
     except FileNotFoundError as e:
@@ -42,6 +40,14 @@ def cross_check_cash_records(client_filename, system_filename, output_filename="
     client_df.columns = client_df.columns.str.strip()
     system_df.columns = system_df.columns.str.strip()
     
+    # --- 💡 FIX: Safely ensure both Debit and Credit columns exist ---
+    for df in [client_df, system_df]:
+        if 'Debit' not in df.columns:
+            df['Debit'] = 0.0
+        if 'Credit' not in df.columns:
+            df['Credit'] = 0.0
+    # ----------------------------------------------------------------
+            
     # 1. Extract standard Amounts (Handling both Debit and Credit columns safely)
     client_df['Amount'] = client_df[['Debit', 'Credit']].max(axis=1).fillna(0)
     system_df['Amount'] = system_df[['Debit', 'Credit']].max(axis=1).fillna(0)
@@ -93,10 +99,15 @@ def cross_check_cash_records(client_filename, system_filename, output_filename="
         print(msg_complete)
     
     if not missing_transactions.empty:
+        # Check if 'Page' exists, otherwise provide a fallback to prevent display errors
+        display_cols = ['Date', 'Description', 'Amount']
+        if 'Page' in missing_transactions.columns:
+            display_cols.insert(1, 'Page')
+            
         if stdout:
-            stdout.write(str(missing_transactions[['Date', 'Page', 'Description', 'Amount']]))
+            stdout.write(str(missing_transactions[display_cols]))
         else:
-            print(missing_transactions[['Date', 'Page', 'Description', 'Amount']])
+            print(missing_transactions[display_cols])
         
         # Save to Excel using openpyxl
         missing_transactions.to_excel(output_path, index=False, engine='openpyxl')
@@ -112,13 +123,14 @@ def cross_check_cash_records(client_filename, system_filename, output_filename="
         else:
             print(msg_success)
 
+
 class Command(BaseCommand):
     help = 'Cross checks cash records between client and system files.'
 
     def handle(self, *args, **options):
         cross_check_cash_records(
-            client_filename='Cash_client.xlsx', 
-            system_filename='Cash_system.xlsx',
+            client_filename='Cash_client_may_2026_1.xlsx', 
+            system_filename='Cash_system_may_2026.xlsx',
             output_filename='Unprocessed_Transactions_Report.xlsx',
             stdout=self.stdout,
             style=self.style

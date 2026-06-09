@@ -14,7 +14,7 @@ class Domain(DomainMixin):
 
 # ExchangeRate model
 class ExchangeRate(models.Model):
-    date = models.DateField(null=True, blank=True)
+    date = models.DateField(null=True, blank=True, unique=True)
     rate = models.PositiveIntegerField(default=0, null=True, blank=True)
 
     def __str__(self):

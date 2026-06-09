@@ -7,13 +7,14 @@ from django.db.models import Sum
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse
 from django.core.paginator import Paginator
-from .models import Account, AccountMappingRule, JournalEntry, JournalLine
+from .models import Account, AccountMappingRule, JournalEntry, JournalLine, DashboardSnapshot
 from .filters import ReportFilter, BalanceSheetFilter
 from django.db.models.functions import ExtractMonth, ExtractYear
 import datetime
 from tablib import Dataset 
 from .resources import AccountResource, TrialBalanceResource, ProfitAndLossResource, BalanceSheetResource, GeneralLedgerSummaryResource, AccountLedgerDetailResource
 from .forms import AccountImportForm
+from django.shortcuts import render
 
 def classify_account(acct_type, acct_name):
     """Centralized logic to classify accounts cleanly and consistently."""
@@ -1038,3 +1039,12 @@ def export_account_ledger_detail(request, account_id):
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     response['Content-Disposition'] = f'attachment; filename="GL_Detail_{account.account_id}_{datetime.date.today()}.xlsx"'
     return response
+
+@login_required
+def main_dashboard_view(request):
+    # Fetch the most recent pre-calculated snapshot for this tenant
+    latest_snapshot = DashboardSnapshot.objects.first()
+    
+    return render(request, 'account/dashboard.html', {
+        'snapshot': latest_snapshot
+    })

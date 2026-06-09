@@ -150,3 +150,28 @@ class ClientPromptMemo(models.Model):
 
     def __str__(self):
         return f"Memo ({self.category})"
+
+# account/models.py
+
+class DashboardSnapshot(models.Model):
+    """
+    Stores pre-calculated financial KPIs to prevent heavy runtime aggregations.
+    Updated via scheduled background jobs.
+    """
+    calculated_at = models.DateTimeField(auto_now_add=True)
+    period_label = models.CharField(max_length=50, help_text="e.g., May 2026 or YTD")
+    
+    # Financial Ratios & Metrics
+    total_cash_usd = models.FloatField(default=0.0)
+    total_ar_usd = models.FloatField(default=0.0)
+    total_ap_usd = models.FloatField(default=0.0)
+    net_profit_usd = models.FloatField(default=0.0)
+    
+    # JSON field for flexible charting data (e.g., 6-month trailing revenue)
+    chart_data_payload = models.JSONField(default=dict, blank=True, null=True)
+
+    class Meta:
+        ordering = ['-calculated_at']
+
+    def __str__(self):
+        return f"Snapshot - {self.period_label} ({self.calculated_at.strftime('%Y-%m-%d %H:%M')})"

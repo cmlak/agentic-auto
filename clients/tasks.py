@@ -61,8 +61,11 @@ def scrape_exchange_rate_nbc():
                     rate = int(float(rate_str))
 
         if date and rate:
-            if not ExchangeRate.objects.filter(date=date).exists():
-                ExchangeRate.objects.create(date=date, rate=rate)
+            obj, created = ExchangeRate.objects.update_or_create(
+                date=date,
+                defaults={'rate': rate}
+            )
+            if created:
                 print(f"Exchange rate for {date} saved.") 
             else:
                 print(f"Exchange rate for {date} already exists in database.")
@@ -71,4 +74,3 @@ def scrape_exchange_rate_nbc():
 
     except Exception as e:
         print(f"Error fetching/parsing exchange rate: {e}")
-

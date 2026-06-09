@@ -7,6 +7,7 @@ from clients.tasks import scrape_exchange_rate_nbc
 import os
 from django.views.decorators.csrf import csrf_exempt
 from django.db import connection
+from account.services import generate_tenant_dashboard_snapshot
 
 
 @login_required(login_url='/admin/login/') # Redirects to admin login if not authenticated
@@ -53,3 +54,20 @@ def trigger_nbc_scraper_view(request):
     scrape_exchange_rate_nbc.delay() 
     
     return HttpResponse("NBC Scraper task successfully handed off to Celery worker!", status=200)
+
+@csrf_exempt
+def trigger_global_dashboard_updates(request):
+    """
+    Secure endpoint triggered by GCP Cloud Scheduler.
+    Loops through all tenant schemas and generates fresh Dashboard KPIs.
+    """
+    if request.method == 'POST':
+        tenants = Client.objects.exclude(schema_name='public')
+        
+        for tenant in tenants:
+            with schema_context(tenant.schema_name):
+                generate_tenant_dashboard_snapshot()
+                
+        return JsonResponse({"status": "success", "message": f"Updated dashboards for {tenants.count()} tenants."})
+        
+    return JsonResponse({"error": "Method not allowed"}, status=405)

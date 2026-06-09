@@ -55,19 +55,3 @@ def trigger_nbc_scraper_view(request):
     
     return HttpResponse("NBC Scraper task successfully handed off to Celery worker!", status=200)
 
-@csrf_exempt
-def trigger_global_dashboard_updates(request):
-    """
-    Secure endpoint triggered by GCP Cloud Scheduler.
-    Loops through all tenant schemas and generates fresh Dashboard KPIs.
-    """
-    if request.method == 'POST':
-        tenants = Client.objects.exclude(schema_name='public')
-        
-        for tenant in tenants:
-            with schema_context(tenant.schema_name):
-                generate_tenant_dashboard_snapshot()
-                
-        return JsonResponse({"status": "success", "message": f"Updated dashboards for {tenants.count()} tenants."})
-        
-    return JsonResponse({"error": "Method not allowed"}, status=405)

@@ -166,6 +166,7 @@ class DashboardSnapshot(models.Model):
     total_ar_usd = models.FloatField(default=0.0)
     total_ap_usd = models.FloatField(default=0.0)
     net_profit_usd = models.FloatField(default=0.0)
+    exchange_rate = models.IntegerField(null=True, blank=True, help_text="KHR to USD exchange rate")
     
     # JSON field for flexible charting data (e.g., 6-month trailing revenue)
     chart_data_payload = models.JSONField(default=dict, blank=True, null=True)

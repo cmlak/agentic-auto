@@ -20,4 +20,7 @@ urlpatterns = [
     path('reports/balance-sheet/export/', views.export_balance_sheet, name='export_balance_sheet'),
     path('reports/general-ledger/export/', views.export_general_ledger_summary, name='export_general_ledger_summary'),
     path('reports/general-ledger/<str:account_id>/export/', views.export_account_ledger_detail, name='export_account_ledger_detail'),
+
+    # Dashboard
+    path('dashboard/', views.main_dashboard_view, name='dashboard'),
 ]

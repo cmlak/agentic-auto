@@ -1,6 +1,7 @@
 # account/services.py (Create this file)
 from django.db.models import Sum
 from .models import JournalLine, Account, DashboardSnapshot
+from clients.models import ExchangeRate
 from django.utils import timezone
 import datetime
 
@@ -34,13 +35,18 @@ def generate_tenant_dashboard_snapshot():
         "data": [rev_cr, exp_dr, total_cash, total_ap]
     }
 
+    # 5. Retrieve the most recent exchange rate (falling back to 4050 if none exist)
+    latest_rate_obj = ExchangeRate.objects.order_by('-date').first()
+    current_exchange_rate = latest_rate_obj.rate if latest_rate_obj else 4050
+
     # Save to the isolated tenant schema
     snapshot = DashboardSnapshot.objects.create(
         period_label=period,
         total_cash_usd=total_cash,
         total_ap_usd=total_ap,
         net_profit_usd=net_profit,
-        chart_data_payload=chart_payload
+        chart_data_payload=chart_payload,
+        exchange_rate=current_exchange_rate
     )
     
     return snapshot

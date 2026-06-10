@@ -9,7 +9,6 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Step 1: Install system dependencies and Chrome browser requirements
-# Removed libgconf-2-4 (obsolete) and added modern libgbm1 and related libs
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     gcc \
@@ -39,11 +38,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libcairo2 \
     && rm -rf /var/lib/apt/lists/*
 
-# Step 2: Install Google Chrome Stable
-RUN curl -fSsL https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor | tee /usr/share/keyrings/google-chrome.gpg >> /dev/null \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome.gpg] http://dl.google.com/linux/chrome/apt/ stable main" >> /etc/apt/sources.list.d/google.list \
+# Step 2: Install Google Chrome (Direct Download Method)
+# This bypasses the repository 404 issue
+RUN wget -q https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
     && apt-get update \
-    && apt-get install -y --no-install-recommends google-chrome-stable \
+    && apt-get install -y ./google-chrome-stable_current_amd64.deb \
+    && rm google-chrome-stable_current_amd64.deb \
     && rm -rf /var/lib/apt/lists/*
 
 # Step 3: Add official PostgreSQL apt repository and install v18
@@ -56,14 +56,13 @@ RUN mkdir -p /etc/apt/keyrings \
 
 # Step 4: Install Python dependencies
 COPY requirements.txt .
-# Ensure selenium and undetected-chromedriver are in your requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Step 5: Copy your Django project code
 COPY . .
 
-# Step 6: Run collectstatic with dummy variables
+# Step 6: Run collectstatic
 RUN SECRET_KEY="dummy-key-for-build" DATABASE_URL=sqlite:///:memory: python manage.py collectstatic --noinput
 
-# Step 7: Default command (used by the Service, overridden by the Job)
+# Step 7: Default command
 CMD exec gunicorn --bind :$PORT --workers 1 --threads 8 --timeout 0 agentic_platform.wsgi:application

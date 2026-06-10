@@ -1,19 +1,20 @@
 import time
-import os
 from datetime import datetime
 from django.db import connection, transaction, IntegrityError
 from celery import shared_task
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 from clients.models import ExchangeRate 
 
 @shared_task
 def scrape_exchange_rate_nbc():
     """
     Scrapes the NBC website using a headless Chrome browser.
-    Includes robust waits and debug logging to resolve parsing issues.
+    Uses WebDriverWait to ensure data is loaded before parsing.
     """
-    # 1. Ensure DB connection is routed correctly
     try:
         connection.set_schema_to_public()
     except Exception:
@@ -21,13 +22,11 @@ def scrape_exchange_rate_nbc():
 
     url = "https://www.nbc.gov.kh/english/economic_research/exchange_rate.php"
     
-    # 2. Configure Chrome Options for Cloud Run environment
     options = uc.ChromeOptions()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
-    # Set window size to ensure desktop layout is triggered
     options.add_argument('--window-size=1920,1080')
 
     driver = None
@@ -38,15 +37,21 @@ def scrape_exchange_rate_nbc():
         print(f"Navigating to {url}...")
         driver.get(url)
         
-        # 3. INCREASED WAIT: Give JS and network calls time to render the table
-        print("Waiting 15 seconds for page to render fully...")
-        time.sleep(15) 
-        
+        # 1. SMART WAIT: Wait up to 20 seconds for the table containing "Exchange Rate on" to appear
+        print("Waiting for exchange rate table to render...")
+        wait = WebDriverWait(driver, 20)
+        try:
+            # We wait for any <td> that contains the specific text
+            wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Exchange Rate on :')]")))
+            print("Target table detected successfully.")
+        except Exception:
+            print("Timeout: The exchange rate table did not appear within 20 seconds.")
+
         # Capture the rendered HTML
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
 
-        # 4. Parse logic
+        # 2. Parse logic
         table_rows = soup.find_all("tr")
         date = None
         rate = None
@@ -60,7 +65,7 @@ def scrape_exchange_rate_nbc():
                     try:
                         date = datetime.strptime(date_str, "%Y-%m-%d").date()
                     except ValueError:
-                        print(f"Date parsing failed for string: {date_str}")
+                        print(f"Date parsing error: {date_str}")
             
             if "Official Exchange Rate :" in row_text:
                 font_tag = row.find("font", color="#FF3300")
@@ -69,51 +74,38 @@ def scrape_exchange_rate_nbc():
                     try:
                         rate = int(float(rate_str))
                     except (ValueError, TypeError):
-                        print(f"Rate parsing failed for string: {rate_str}")
+                        print(f"Rate parsing error: {rate_str}")
 
-        # 5. Database Save Logic
+        # 3. Database Save
         if date and rate:
-            print(f"SUCCESS: Found Rate {rate} for Date {date}")
+            print(f"FOUND DATA -> Date: {date}, Rate: {rate}")
             try:
                 with transaction.atomic():
                     obj, created = ExchangeRate.objects.update_or_create(
                         date=date,
                         defaults={'rate': rate}
                     )
-                    if created:
-                        print(f"Exchange rate for {date} saved to database.") 
-                    else:
-                        print(f"Exchange rate for {date} already exists.")
-            except IntegrityError as e:
-                # Handle potential sequence mismatch
-                if 'id' in str(e).lower():
-                    print("Primary key sequence mismatch. Resetting...")
-                    with connection.cursor() as cursor:
-                        cursor.execute("""
-                            SELECT setval(
-                                pg_get_serial_sequence('clients_exchangerate', 'id'), 
-                                coalesce(max(id), 1), 
-                                max(id) IS NOT null
-                            ) FROM clients_exchangerate;
-                        """)
-                    ExchangeRate.objects.update_or_create(date=date, defaults={'rate': rate})
-                    print(f"Saved successfully after sequence reset.")
-                else:
-                    raise e
+                    print(f"Status: {'Saved' if created else 'Already exists'}")
+            except IntegrityError:
+                print("Sequence mismatch detected. Resetting ID sequence...")
+                with connection.cursor() as cursor:
+                    cursor.execute(f"SELECT setval(pg_get_serial_sequence('clients_exchangerate', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM clients_exchangerate;")
+                ExchangeRate.objects.update_or_create(date=date, defaults={'rate': rate})
+                print("Saved after sequence reset.")
         else:
-            # DEBUG LOGGING: If parsing fails, print a snippet of the page text
-            print("ERROR: Could not find date or rate in the rendered page.")
-            snippet = soup.get_text()[:1000].replace('\n', ' ')
-            print(f"Rendered Page Snippet: {snippet}")
+            # DEBUG SNIPPET: Very important to see what is actually there
+            print("ERROR: Parsing failed. Printing page snippet for debugging:")
+            clean_text = soup.get_text()[:800].replace('\n', ' ')
+            print(f"PAGE TEXT: {clean_text}")
 
     except Exception as e:
-        print(f"Headless Chrome Scraper Exception: {e}")
+        print(f"Headless Scraper CRASHED: {e}")
     
     finally:
-        # CRITICAL: Clean up browser to stop billing duration
         if driver:
-            print("Closing Chrome browser instance...")
+            print("Terminating Chrome session.")
             driver.quit()
+
 
 
 @shared_task

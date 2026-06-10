@@ -23,3 +23,7 @@ python manage.py migrate_schemas --shared
 python manage.py showmigrations tools
 
 gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:latest
+
+gcloud run jobs execute nightly-nbc-scraper-runner \
+  --region asia-southeast1 \
+  --project document-project-464509

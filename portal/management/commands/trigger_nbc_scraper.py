@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand
-from clients.tasks import scrape_exchange_rate_nbc
+from clients.tasks import scrape_exchange_rate_nbc_1
 
 class Command(BaseCommand):
     help = "Triggers the NBC exchange rate scraper synchronously"
@@ -8,6 +8,6 @@ class Command(BaseCommand):
         self.stdout.write("Initializing synchronous NBC exchange rate scraping sequence...")
         
         # .apply() executes the code inline immediately instead of queuing it to Redis
-        task = scrape_exchange_rate_nbc.apply()
+        task = scrape_exchange_rate_nbc_1.apply()
         
         self.stdout.write(f"Scraper process completed. Status: {task.status}")

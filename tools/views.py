@@ -1395,12 +1395,7 @@ def export_balancika_view(request):
             else:
                 purchases = list(Purchase.objects.filter(purchase_filters).order_by('id'))
                 
-                bank_fee_triggers = ['interbank fund', 'checkbook', 'commission']
-                q_objects = Q()
-                for trigger in bank_fee_triggers:
-                    q_objects |= Q(purpose__icontains=trigger) | Q(trans_type__icontains=trigger) | Q(remark__icontains=trigger) | Q(raw_remark__icontains=trigger)
-                
-                bank_charges = list(Bank.objects.filter(bank_filters & q_objects).order_by('id'))
+                bank_charges = list(Bank.objects.filter(bank_filters & Q(vendor__name__icontains='bank')).order_by('id'))
 
             combined_records = purchases + bank_charges
             # Order first by type (Purchases then Bank charges), then by ID

@@ -1,16 +1,18 @@
-import cloudscraper # Use cloudscraper instead of direct requests
-from bs4 import BeautifulSoup
+import time
 from datetime import datetime
 from django.db import connection, transaction, IntegrityError
 from celery import shared_task
+from bs4 import BeautifulSoup
+import undetected_chromedriver as uc
 from clients.models import ExchangeRate 
 
 @shared_task
 def scrape_exchange_rate_nbc():
     """
-    Scrapes the National Bank of Cambodia website using cloudscraper
-    to bypass 403 Forbidden blocks.
+    Scrapes the NBC website using a headless Chrome browser.
+    Uses a 'finally' block to ensure driver.quit() always executes.
     """
+    # 1. Ensure DB connection is routed correctly
     try:
         connection.set_schema_to_public()
     except Exception:
@@ -18,33 +20,30 @@ def scrape_exchange_rate_nbc():
 
     url = "https://www.nbc.gov.kh/english/economic_research/exchange_rate.php"
     
-    # Initialize the cloudscraper to bypass anti-bot challenges
-    scraper = cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'windows',
-            'desktop': True
-        }
-    )
+    # 2. Configure Chrome Options
+    options = uc.ChromeOptions()
+    options.add_argument('--headless')
+    options.add_argument('--no-sandbox')
+    options.add_argument('--disable-dev-shm-usage')
+    options.add_argument('--disable-gpu')
+    options.add_argument('--window-size=1920,1080')
 
-    # Expanded headers to mimic a real user session
-    headers = {
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Referer': 'https://www.nbc.gov.kh/',
-        'DNT': '1',
-        'Connection': 'keep-alive',
-        'Upgrade-Insecure-Requests': '1',
-    }
-
+    driver = None
     try:
-        # Using scraper.get instead of requests.get
-        response = scraper.get(url, headers=headers, timeout=30)
-        response.raise_for_status()
+        print("Launching headless Chrome...")
+        driver = uc.Chrome(options=options)
+        
+        print(f"Navigating to {url}...")
+        driver.get(url)
+        
+        # Anti-bot delay
+        time.sleep(5)
+        
+        html = driver.page_source
+        soup = BeautifulSoup(html, "html.parser")
 
-        soup = BeautifulSoup(response.content, "html.parser")
+        # 3. Parse logic
         table_rows = soup.find_all("tr")
-
         date = None
         rate = None
 
@@ -60,22 +59,22 @@ def scrape_exchange_rate_nbc():
                     rate_str = font_tag.text.strip().replace(",", "")
                     rate = int(float(rate_str))
 
+        # 4. Save to Database
         if date and rate:
+            print(f"Scraped Data -> Date: {date}, Rate: {rate}")
             try:
-                # Wrap in atomic so Postgres doesn't abort the entire connection on an IntegrityError
                 with transaction.atomic():
                     obj, created = ExchangeRate.objects.update_or_create(
                         date=date,
                         defaults={'rate': rate}
                     )
                     if created:
-                        print(f"Exchange rate for {date} saved.") 
+                        print(f"Exchange rate for {date} saved successfully.") 
                     else:
-                        print(f"Exchange rate for {date} already exists in database.")
+                        print(f"Exchange rate for {date} already exists.")
             except IntegrityError as e:
-                # If the auto-increment sequence is out of sync, catch the duplicate PK IntegrityError
-                if 'clients_exchangerate_pkey' in str(e) or 'id' in str(e):
-                    print("Primary key sequence out of sync detected. Resetting sequence automatically...")
+                if 'id' in str(e).lower():
+                    print("Resetting primary key sequence...")
                     with connection.cursor() as cursor:
                         cursor.execute("""
                             SELECT setval(
@@ -85,16 +84,17 @@ def scrape_exchange_rate_nbc():
                             ) 
                             FROM clients_exchangerate;
                         """)
-                    # Retry creation after fixing the sequence
-                    obj, created = ExchangeRate.objects.update_or_create(
-                        date=date,
-                        defaults={'rate': rate}
-                    )
-                    print(f"Exchange rate for {date} saved after sequence reset.")
-                else:
-                    raise e
+                    # Retry
+                    ExchangeRate.objects.update_or_create(date=date, defaults={'rate': rate})
+                    print(f"Saved after reset.")
         else:
-            print("Could not find date or rate in the page content.")
+            print("Warning: Could not find date or rate in the rendered page.")
 
     except Exception as e:
-        print(f"Error fetching/parsing exchange rate: {e}")
+        print(f"Scraper Error: {e}")
+    
+    finally:
+        # CRITICAL: This block always runs regardless of success or error
+        if driver:
+            print("Terminating Chrome process to free resources...")
+            driver.quit()

@@ -15,6 +15,7 @@ from tablib import Dataset
 from .resources import AccountResource, TrialBalanceResource, ProfitAndLossResource, BalanceSheetResource, GeneralLedgerSummaryResource, AccountLedgerDetailResource
 from .forms import AccountImportForm
 from django.shortcuts import render
+from .services import generate_tenant_dashboard_snapshot
 
 def classify_account(acct_type, acct_name):
     """Centralized logic to classify accounts cleanly and consistently."""
@@ -1042,8 +1043,18 @@ def export_account_ledger_detail(request, account_id):
 
 @login_required
 def main_dashboard_view(request):
-    # Fetch the most recent pre-calculated snapshot for this tenant
+    from django.utils import timezone
+    import datetime
+    
+    # Fetch the most recent snapshot
     latest_snapshot = DashboardSnapshot.objects.first()
+    
+    # Time-gate: Only generate a new snapshot if the latest is older than 15 minutes
+    if not latest_snapshot or (timezone.now() - latest_snapshot.calculated_at) > datetime.timedelta(minutes=15):
+        latest_snapshot = generate_tenant_dashboard_snapshot()
+        
+        # Housekeeping: Keep the table clean by deleting snapshots older than 7 days
+        DashboardSnapshot.objects.filter(calculated_at__lt=timezone.now() - datetime.timedelta(days=7)).delete()
     
     return render(request, 'account/dashboard.html', {
         'snapshot': latest_snapshot

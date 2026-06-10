@@ -48,46 +48,104 @@ def generate_tenant_dashboard_snapshot():
     months_labels = []
     rev_data = []
     exp_data = []
+    payroll_data = []
+    tax_data = []
+    general_data = []
+    other_exp_data = []
     
+    print("\n--- DEBUG: STARTING 6-MONTH CHART AGGREGATION ---")
     for i in range(5, -1, -1):
         target_month = now - relativedelta(months=i)
         months_labels.append(target_month.strftime("%b"))
         
         # Calculate revenue for that specific month
-        m_rev = JournalLine.objects.filter(
-            account__account_type='Revenue', 
+        m_rev_qs = JournalLine.objects.filter(
+            account__account_type__iexact='Revenue', 
             journal_entry__date__year=target_month.year,
             journal_entry__date__month=target_month.month
-        ).aggregate(Sum('credit'))['credit__sum'] or 0
+        )
+        m_rev_agg = m_rev_qs.aggregate(Sum('credit'))
+        m_rev = m_rev_agg['credit__sum'] or 0
         
         # Calculate expenses for that specific month
-        m_exp = JournalLine.objects.filter(
-            account__account_type='Expense', 
+        m_exp_qs = JournalLine.objects.filter(
+            account__account_type__iexact='Expense', 
             journal_entry__date__year=target_month.year,
             journal_entry__date__month=target_month.month
-        ).aggregate(Sum('debit'))['debit__sum'] or 0
+        )
+        m_exp_agg = m_exp_qs.aggregate(Sum('debit'))
+        m_exp = m_exp_agg['debit__sum'] or 0
+        
+        p_exp = m_exp_qs.filter(account__account_id__startswith='705').aggregate(Sum('debit'))['debit__sum'] or 0
+        t_exp = m_exp_qs.filter(account__account_id__startswith='7254').aggregate(Sum('debit'))['debit__sum'] or 0
+        g_exp = m_exp_qs.filter(account__account_id__startswith='7250').aggregate(Sum('debit'))['debit__sum'] or 0
+        o_exp = float(m_exp) - (float(p_exp) + float(t_exp) + float(g_exp))
+        if o_exp < 0: o_exp = 0.0
+        
+        print(f"DEBUG [{target_month.strftime('%Y-%m')}]: Revenue Query = {m_rev_qs.query}")
+        print(f"DEBUG [{target_month.strftime('%Y-%m')}]: Revenue Agg = {m_rev_agg} -> {m_rev}")
+        print(f"DEBUG [{target_month.strftime('%Y-%m')}]: Expense Query = {m_exp_qs.query}")
+        print(f"DEBUG [{target_month.strftime('%Y-%m')}]: Expense Agg = {m_exp_agg} -> {m_exp}")
         
         rev_data.append(float(m_rev))
         exp_data.append(float(m_exp))
+        payroll_data.append(float(p_exp))
+        tax_data.append(float(t_exp))
+        general_data.append(float(g_exp))
+        other_exp_data.append(float(o_exp))
+    print("--- DEBUG: END 6-MONTH CHART AGGREGATION ---\n")
 
     # Chart 2: Current Month Expense Breakdown (Doughnut Chart)
     # Grouping by first two digits (e.g., 70=Payroll, 72=OPEX/Taxes) or by name
-    payroll_exp = float(JournalLine.objects.filter(account__account_id__startswith='705', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
-    tax_exp = float(JournalLine.objects.filter(account__account_id__startswith='7254', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
-    general_exp = float(JournalLine.objects.filter(account__account_id__startswith='7250', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
+    print("--- DEBUG: STARTING MONTHLY EXPENSE BREAKDOWN ---")
+    
+    current_year = now.year
+    monthly_doughnut_data = {}
+    
+    for m in range(1, 13):
+        m_name = datetime.date(current_year, m, 1).strftime("%b")
+        
+        payroll_qs = JournalLine.objects.filter(account__account_id__startswith='705', journal_entry__date__month=m, journal_entry__date__year=current_year)
+        payroll_exp = float(payroll_qs.aggregate(Sum('debit'))['debit__sum'] or 0)
+        
+        tax_qs = JournalLine.objects.filter(account__account_id__startswith='7254', journal_entry__date__month=m, journal_entry__date__year=current_year)
+        tax_exp = float(tax_qs.aggregate(Sum('debit'))['debit__sum'] or 0)
+        
+        general_qs = JournalLine.objects.filter(account__account_id__startswith='7250', journal_entry__date__month=m, journal_entry__date__year=current_year)
+        general_exp = float(general_qs.aggregate(Sum('debit'))['debit__sum'] or 0)
+        
+        monthly_doughnut_data[m_name] = [payroll_exp, tax_exp, general_exp]
+
+    default_month_name = now.strftime("%b")
+    current_m_exp = sum(monthly_doughnut_data[default_month_name])
+    
+    # Fallback to the latest active month if the current month is empty
+    latest_expense = JournalLine.objects.filter(account__account_type__iexact='Expense').order_by('-journal_entry__date').first()
+    
+    if latest_expense and current_m_exp == 0 and latest_expense.journal_entry.date.year == current_year:
+        default_month_name = latest_expense.journal_entry.date.strftime("%b")
+        print(f"DEBUG: Current month has 0 expenses. Falling back to {default_month_name} for Doughnut chart.")
+
+    print("--- DEBUG: END MONTHLY EXPENSE BREAKDOWN ---\n")
 
     # Combine into a single JSON-serializable dictionary
     chart_payload = {
         "bar_chart": {
             "labels": months_labels,
             "revenue": rev_data,
-            "expenses": exp_data
+            "expenses": exp_data,
+            "payroll": payroll_data,
+            "tax": tax_data,
+            "general": general_data,
+            "other": other_exp_data
         },
         "doughnut_chart": {
             "labels": ["Payroll & Benefits", "Tax Accruals", "General OPEX"],
-            "data": [payroll_exp, tax_exp, general_exp]
+            "monthly_data": monthly_doughnut_data,
+            "default_month": default_month_name
         }
     }
+    print(f"DEBUG: Final Chart Payload -> {chart_payload}")
 
     # Save to the isolated tenant schema
     snapshot = DashboardSnapshot.objects.create(

@@ -212,6 +212,11 @@ def generate_tenant_dashboard_snapshot():
             raw_summary = response.text.strip()
             # Convert Markdown bold (**text**) to HTML (<strong>text</strong>)
             ai_summary_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', raw_summary)
+            
+            # Highlight negative figures in red (e.g. -$100, $-100, -15%, ($100))
+            negative_pattern = r'(?<![A-Za-z0-9])(-\$?\d+(?:,\d{3})*(?:\.\d+)?%?|\$-\d+(?:,\d{3})*(?:\.\d+)?%?|\(\$\d+(?:,\d{3})*(?:\.\d+)?\))'
+            ai_summary_text = re.sub(negative_pattern, r'<span class="text-danger">\1</span>', ai_summary_text)
+            
             print("DEBUG [AI]: Summary successfully generated.")
         else:
             print("DEBUG [AI]: Warning - Gemini returned an empty response.")

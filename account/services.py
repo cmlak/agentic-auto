@@ -167,7 +167,7 @@ def generate_tenant_dashboard_snapshot():
         "General OPEX": monthly_doughnut_data[default_month_name][2]
     }
 
-    ai_summary_text = "Financial data compiled successfully. Executive summary analysis pending next generation cycle."
+    ai_summary_text = "AI Executive Summary is currently unavailable. The background task may have encountered an API error or is pending its next scheduled run."
     
     print("\n--- DEBUG: STARTING AI EXECUTIVE SUMMARY GENERATION ---")
     try:
@@ -184,7 +184,10 @@ def generate_tenant_dashboard_snapshot():
             "Start directly with the analysis. Max 3-4 sentences. Use markdown bold for numbers."
         )
         
-        user_content = f"""
+        # Combine system instruction and user content into a single prompt
+        # This is the standard and most reliable method used across your project.
+        prompt_content = f"""{system_instruction}
+
         Analyze this financial snapshot:
         - Reporting Period: {period}
         - Cash on Hand: ${total_cash:,.2f}
@@ -196,9 +199,8 @@ def generate_tenant_dashboard_snapshot():
         print("DEBUG [AI]: Sending prompt to Gemini-2.5-Pro...")
         response = client.models.generate_content(
             model='gemini-2.5-pro',
-            contents=user_content,
+            contents=prompt_content,
             config=types.GenerateContentConfig(
-                system_instruction=system_instruction,
                 temperature=0.2, # Low temperature ensures consistent, professional terminology
             )
         )

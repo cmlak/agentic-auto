@@ -170,6 +170,9 @@ class DashboardSnapshot(models.Model):
     
     # JSON field for flexible charting data (e.g., 6-month trailing revenue)
     chart_data_payload = models.JSONField(default=dict, blank=True, null=True)
+    
+    # AI Generated Content
+    ai_executive_summary = models.TextField(blank=True, null=True, help_text="AI generated summary of the snapshot")
 
     class Meta:
         ordering = ['-calculated_at']

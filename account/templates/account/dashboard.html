@@ -198,7 +198,7 @@
                             stacked: true,
                             grid: { borderDash: [4, 4], color: '#eaeaea' },
                             ticks: {
-                                callback: function(value) { return '$' + value.toLocaleString(); }
+                                callback: function(value) { return '$' + value.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2}); }
                             },
                             border: { display: false }
                         },

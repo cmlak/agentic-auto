@@ -3,6 +3,7 @@ from django.db.models import Sum
 from .models import JournalLine, Account, DashboardSnapshot
 from clients.models import ExchangeRate
 from django.utils import timezone
+from dateutil.relativedelta import relativedelta
 import datetime
 
 def generate_tenant_dashboard_snapshot():
@@ -38,6 +39,55 @@ def generate_tenant_dashboard_snapshot():
     # 5. Retrieve the most recent exchange rate (falling back to 4050 if none exist)
     latest_rate_obj = ExchangeRate.objects.order_by('-date').first()
     current_exchange_rate = latest_rate_obj.rate if latest_rate_obj else 4050
+
+    # ---------------------------------------------------------
+    # NEW: BUILD CHART.JS DATA PAYLOADS
+    # ---------------------------------------------------------
+    
+    # Chart 1: Trailing 6-Month Revenue vs Expenses (Bar Chart)
+    months_labels = []
+    rev_data = []
+    exp_data = []
+    
+    for i in range(5, -1, -1):
+        target_month = now - relativedelta(months=i)
+        months_labels.append(target_month.strftime("%b"))
+        
+        # Calculate revenue for that specific month
+        m_rev = JournalLine.objects.filter(
+            account__account_type='Revenue', 
+            journal_entry__date__year=target_month.year,
+            journal_entry__date__month=target_month.month
+        ).aggregate(Sum('credit'))['credit__sum'] or 0
+        
+        # Calculate expenses for that specific month
+        m_exp = JournalLine.objects.filter(
+            account__account_type='Expense', 
+            journal_entry__date__year=target_month.year,
+            journal_entry__date__month=target_month.month
+        ).aggregate(Sum('debit'))['debit__sum'] or 0
+        
+        rev_data.append(float(m_rev))
+        exp_data.append(float(m_exp))
+
+    # Chart 2: Current Month Expense Breakdown (Doughnut Chart)
+    # Grouping by first two digits (e.g., 70=Payroll, 72=OPEX/Taxes) or by name
+    payroll_exp = float(JournalLine.objects.filter(account__account_id__startswith='705', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
+    tax_exp = float(JournalLine.objects.filter(account__account_id__startswith='7254', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
+    general_exp = float(JournalLine.objects.filter(account__account_id__startswith='7250', journal_entry__date__month=now.month, journal_entry__date__year=now.year).aggregate(Sum('debit'))['debit__sum'] or 0)
+
+    # Combine into a single JSON-serializable dictionary
+    chart_payload = {
+        "bar_chart": {
+            "labels": months_labels,
+            "revenue": rev_data,
+            "expenses": exp_data
+        },
+        "doughnut_chart": {
+            "labels": ["Payroll & Benefits", "Tax Accruals", "General OPEX"],
+            "data": [payroll_exp, tax_exp, general_exp]
+        }
+    }
 
     # Save to the isolated tenant schema
     snapshot = DashboardSnapshot.objects.create(

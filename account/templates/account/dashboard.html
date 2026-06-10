@@ -3,21 +3,30 @@
 {% block title %}AAA | Main Board{% endblock %}
 
 {% block content %}
-<div class="container-fluid mt-4">
-    <div class="alert alert-dark border-0 shadow-sm d-flex justify-content-between align-items-center py-2 mb-4">
-        <span class="fw-bold text-success"><i class="bi bi-graph-up-arrow me-2"></i>AAA Platform Live</span>
-        <small class="text-muted">Exchange Rate: {{ snapshot.exchange_rate|default:"4,050" }} KHR/USD | Last Synced: {{ snapshot.calculated_at|timesince }} ago</small>
+<div class="container-fluid mt-4 mb-5 pb-5">
+    
+    <div class="alert alert-dark border-0 shadow-sm d-flex justify-content-between align-items-center py-2 mb-4 rounded-3">
+        <span class="fw-bold text-success">
+            <i class="bi bi-activity me-2"></i>AAA Platform Live
+        </span>
+        <div class="d-flex align-items-center">
+            <span class="badge bg-secondary me-3 px-3 py-2 fs-6">USD/KHR: 4,050</span>
+            <small class="text-muted"><i class="bi bi-clock-history me-1"></i>Last Synced: {{ snapshot.calculated_at|timesince }} ago</small>
+        </div>
     </div>
 
     <div class="row mb-4">
         <div class="col-12">
             <div class="card bg-primary text-white shadow border-0 rounded-4">
                 <div class="card-body p-4">
-                    <h5 class="fw-bold mb-3"><i class="bi bi-robot me-2"></i>Executive Summary from AAA Recon Agent</h5>
-                    <p class="mb-0 fs-5">
-                        "Cash reserves remain stable. Current YTD Net Profit stands at <strong>${{ snapshot.net_profit_usd|floatformat:2 }}</strong>. 
+                    <div class="d-flex align-items-center mb-3">
+                        <i class="bi bi-robot fs-3 me-3 text-warning"></i>
+                        <h5 class="fw-bold mb-0">Executive Summary from AAA Recon Agent</h5>
+                    </div>
+                    <p class="mb-0 fs-5 lh-base">
+                        "Cash reserves remain stable. Current YTD Net Profit stands at <strong class="text-warning">${{ snapshot.net_profit_usd|floatformat:2 }}</strong>. 
                         Attention required: Outstanding Trade Payables have reached <strong>${{ snapshot.total_ap_usd|floatformat:2 }}</strong>. 
-                        Recommend executing payment runs before month-end closing."
+                        Recommend executing payment runs before month-end closing to optimize working capital."
                     </p>
                 </div>
             </div>
@@ -26,38 +35,199 @@
 
     <div class="row g-4 mb-4">
         <div class="col-md-4">
-            <div class="card shadow-sm border-0 rounded-4 h-100">
-                <div class="card-body p-4">
+            <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-success border-4">
+                <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2">Cash on Hand</h6>
-                    <h2 class="fw-bold mb-0">${{ snapshot.total_cash_usd|floatformat:2 }}</h2>
+                    <h2 class="fw-bold text-dark mb-0">${{ snapshot.total_cash_usd|floatformat:2 }}</h2>
                 </div>
             </div>
         </div>
         <div class="col-md-4">
-            <div class="card shadow-sm border-0 rounded-4 h-100">
-                <div class="card-body p-4">
+            <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-danger border-4">
+                <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2">Trade Payables (AP)</h6>
                     <h2 class="fw-bold text-danger mb-0">${{ snapshot.total_ap_usd|floatformat:2 }}</h2>
                 </div>
             </div>
         </div>
         <div class="col-md-4">
-            <div class="card shadow-sm border-0 rounded-4 h-100">
-                <div class="card-body p-4">
+            <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-primary border-4">
+                <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2">YTD Net Profit</h6>
-                    <h2 class="fw-bold text-success mb-0">${{ snapshot.net_profit_usd|floatformat:2 }}</h2>
+                    <h2 class="fw-bold text-primary mb-0">${{ snapshot.net_profit_usd|floatformat:2 }}</h2>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="row">
-        <div class="col-12">
-            <div class="card shadow-sm border-0 rounded-4 p-4 text-center text-muted bg-light">
-                <i class="bi bi-bar-chart-fill fs-1 mb-2"></i>
-                <p class="mb-0">Interactive Charting Arena (Phase 2 Integration pending...)</p>
+    <div class="row g-4">
+        
+        <div class="col-lg-8">
+            <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-header bg-white border-0 pt-4 pb-0">
+                    <h5 class="fw-bold text-secondary mb-0"><i class="bi bi-bar-chart-line-fill me-2 text-primary"></i>6-Month Financial Performance</h5>
+                </div>
+                <div class="card-body position-relative" style="min-height: 350px;">
+                    <canvas id="performanceChart"></canvas>
+                </div>
             </div>
         </div>
+
+        <div class="col-lg-4">
+            <div class="card shadow-sm border-0 rounded-4 h-100">
+                <div class="card-header bg-white border-0 pt-4 pb-0">
+                    <h5 class="fw-bold text-secondary mb-0"><i class="bi bi-pie-chart-fill me-2 text-warning"></i>Current Month Expenses</h5>
+                </div>
+                <div class="card-body d-flex justify-content-center align-items-center position-relative" style="min-height: 350px;">
+                    <canvas id="expenseBreakdownChart"></canvas>
+                </div>
+            </div>
+        </div>
+
     </div>
 </div>
+
+{{ snapshot.chart_data_payload|json_script:"dashboard-chart-data" }}
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        // 1. Retrieve and parse the JSON data securely injected by Django
+        const chartDataNode = document.getElementById('dashboard-chart-data');
+        if (!chartDataNode) {
+            console.warn("Chart data payload not found. Ensure the background job has run.");
+            return;
+        }
+        
+        const chartData = JSON.parse(chartDataNode.textContent);
+        
+        // Prevent crashing if the dictionary is missing keys
+        const barData = chartData.bar_chart || { labels: [], revenue: [], expenses: [] };
+        const doughnutData = chartData.doughnut_chart || { labels: [], data: [] };
+
+        // 2. Define standard UI color palette
+        const colorPrimary = 'rgba(13, 110, 253, 0.85)';   // Bootstrap Primary
+        const colorDanger = 'rgba(220, 53, 69, 0.85)';     // Bootstrap Danger
+        const colorWarning = 'rgba(255, 193, 7, 0.85)';    // Bootstrap Warning
+        const colorSuccess = 'rgba(25, 135, 84, 0.85)';    // Bootstrap Success
+        const colorInfo = 'rgba(13, 202, 240, 0.85)';      // Bootstrap Info
+
+        // ----------------------------------------------------
+        // INITIALIZE CHART 1: Bar Chart (Rev vs Exp)
+        // ----------------------------------------------------
+        const ctxBar = document.getElementById('performanceChart');
+        if (ctxBar) {
+            // Destroy existing chart instance to prevent the "Canvas is already in use" overlap glitch
+            let existingBar = Chart.getChart(ctxBar);
+            if (existingBar) {
+                existingBar.destroy();
+            }
+            
+            new Chart(ctxBar.getContext('2d'), {
+                type: 'bar',
+                data: {
+                    labels: barData.labels,
+                    datasets: [
+                        {
+                            label: 'Revenue (USD)',
+                            data: barData.revenue,
+                            backgroundColor: colorSuccess,
+                            borderRadius: 4,
+                            barPercentage: 0.6,
+                            categoryPercentage: 0.8
+                        },
+                        {
+                            label: 'Expenses (USD)',
+                            data: barData.expenses,
+                            backgroundColor: colorDanger,
+                            borderRadius: 4,
+                            barPercentage: 0.6,
+                            categoryPercentage: 0.8
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { 
+                            position: 'top', 
+                            align: 'end',
+                            labels: { usePointStyle: true, boxWidth: 8 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return context.dataset.label + ': $' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            grid: { borderDash: [4, 4], color: '#eaeaea' },
+                            ticks: {
+                                callback: function(value) { return '$' + value.toLocaleString(); }
+                            },
+                            border: { display: false }
+                        },
+                        x: { 
+                            grid: { display: false },
+                            border: { display: false }
+                        }
+                    }
+                }
+            });
+        }
+
+        // ----------------------------------------------------
+        // INITIALIZE CHART 2: Doughnut Chart (Expense Breakdown)
+        // ----------------------------------------------------
+        const ctxDoughnut = document.getElementById('expenseBreakdownChart');
+        if (ctxDoughnut) {
+            // Destroy existing chart instance to prevent hover glitches
+            let existingDoughnut = Chart.getChart(ctxDoughnut);
+            if (existingDoughnut) {
+                existingDoughnut.destroy();
+            }
+            
+            new Chart(ctxDoughnut.getContext('2d'), {
+                type: 'doughnut',
+                data: {
+                    labels: doughnutData.labels,
+                    datasets: [{
+                        data: doughnutData.data,
+                        // Assigning colors that map to Payroll, Tax, OPEX
+                        backgroundColor: [colorPrimary, colorWarning, colorDanger, colorInfo, colorSuccess],
+                        borderWidth: 0,
+                        hoverOffset: 6
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    cutout: '75%', // Makes the doughnut ring thinner for a modern look
+                    plugins: {
+                        legend: { 
+                            position: 'bottom',
+                            labels: { usePointStyle: true, padding: 20 }
+                        },
+                        tooltip: {
+                            callbacks: {
+                                label: function(context) {
+                                    return ' ' + context.label + ': $' + context.raw.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+                                }
+                            }
+                        }
+                    },
+                    layout: {
+                        padding: { bottom: 15 }
+                    }
+                }
+            });
+        }
+    });
+</script>
 {% endblock %}

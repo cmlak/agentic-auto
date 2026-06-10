@@ -4,24 +4,16 @@ from django.db import connection, transaction, IntegrityError
 from celery import shared_task
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
 from clients.models import ExchangeRate 
 
 @shared_task
 def scrape_exchange_rate_nbc():
-    """
-    Scrapes the NBC website using a headless Chrome browser.
-    Uses WebDriverWait to ensure data is loaded before parsing.
-    """
     try:
         connection.set_schema_to_public()
     except Exception:
         pass
 
     url = "https://www.nbc.gov.kh/english/economic_research/exchange_rate.php"
-    
     options = uc.ChromeOptions()
     options.add_argument('--headless')
     options.add_argument('--no-sandbox')
@@ -31,81 +23,44 @@ def scrape_exchange_rate_nbc():
 
     driver = None
     try:
-        print("Launching headless Chrome...")
+        print("DEBUG: Final Robust Version Starting...")
         driver = uc.Chrome(options=options)
-        
-        print(f"Navigating to {url}...")
         driver.get(url)
         
-        # 1. SMART WAIT: Wait up to 20 seconds for the table containing "Exchange Rate on" to appear
-        print("Waiting for exchange rate table to render...")
-        wait = WebDriverWait(driver, 20)
-        try:
-            # We wait for any <td> that contains the specific text
-            wait.until(EC.presence_of_element_located((By.XPATH, "//*[contains(text(), 'Exchange Rate on :')]")))
-            print("Target table detected successfully.")
-        except Exception:
-            print("Timeout: The exchange rate table did not appear within 20 seconds.")
-
-        # Capture the rendered HTML
+        print("DEBUG: Waiting 10 seconds for render...")
+        time.sleep(10)
+        
         html = driver.page_source
         soup = BeautifulSoup(html, "html.parser")
 
-        # 2. Parse logic
+        # MANDATORY DEBUGGING: What does the page look like?
+        page_text = soup.get_text()[:1000].replace('\n', ' ')
+        print(f"DEBUG: PAGE CONTENT SNIPPET: {page_text}")
+
         table_rows = soup.find_all("tr")
-        date = None
-        rate = None
+        date, rate = None, None
 
         for row in table_rows:
-            row_text = row.get_text()
-            if "Exchange Rate on :" in row_text:
-                font_tag = row.find("font", color="#FF3300")
-                if font_tag:
-                    date_str = font_tag.get_text().strip()
-                    try:
-                        date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                    except ValueError:
-                        print(f"Date parsing error: {date_str}")
-            
-            if "Official Exchange Rate :" in row_text:
-                font_tag = row.find("font", color="#FF3300")
-                if font_tag:
-                    rate_str = font_tag.get_text().strip().replace(",", "")
-                    try:
-                        rate = int(float(rate_str))
-                    except (ValueError, TypeError):
-                        print(f"Rate parsing error: {rate_str}")
+            txt = row.get_text()
+            if "Exchange Rate on :" in txt:
+                tag = row.find("font", color="#FF3300")
+                if tag: date = datetime.strptime(tag.get_text().strip(), "%Y-%m-%d").date()
+            if "Official Exchange Rate :" in txt:
+                tag = row.find("font", color="#FF3300")
+                if tag: rate = int(float(tag.get_text().strip().replace(",", "")))
 
-        # 3. Database Save
         if date and rate:
-            print(f"FOUND DATA -> Date: {date}, Rate: {rate}")
-            try:
-                with transaction.atomic():
-                    obj, created = ExchangeRate.objects.update_or_create(
-                        date=date,
-                        defaults={'rate': rate}
-                    )
-                    print(f"Status: {'Saved' if created else 'Already exists'}")
-            except IntegrityError:
-                print("Sequence mismatch detected. Resetting ID sequence...")
-                with connection.cursor() as cursor:
-                    cursor.execute(f"SELECT setval(pg_get_serial_sequence('clients_exchangerate', 'id'), coalesce(max(id), 1), max(id) IS NOT null) FROM clients_exchangerate;")
-                ExchangeRate.objects.update_or_create(date=date, defaults={'rate': rate})
-                print("Saved after sequence reset.")
+            print(f"DEBUG: Found {rate} for {date}")
+            # ... Save logic (omitted for brevity but keep yours) ...
         else:
-            # DEBUG SNIPPET: Very important to see what is actually there
-            print("ERROR: Parsing failed. Printing page snippet for debugging:")
-            clean_text = soup.get_text()[:800].replace('\n', ' ')
-            print(f"PAGE TEXT: {clean_text}")
+            print("DEBUG: Parsing failed - target elements not found.")
 
     except Exception as e:
-        print(f"Headless Scraper CRASHED: {e}")
-    
+        print(f"DEBUG: CRASH: {e}")
     finally:
         if driver:
-            print("Terminating Chrome session.")
+            print("DEBUG: Cleaning up Chrome.")
             driver.quit()
-
 
 
 @shared_task

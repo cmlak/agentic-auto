@@ -24,6 +24,10 @@ python manage.py showmigrations tools
 
 gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:latest
 
-gcloud run jobs execute nightly-nbc-scraper-runner \
-  --region asia-southeast1 \
-  --project document-project-464509
+gcloud run jobs update nightly-nbc-scraper-runner \
+  --image gcr.io/document-project-464509/agentic-platform:latest \
+  --memory 2Gi \
+  --region asia-southeast1
+
+gcloud run jobs execute nightly-nbc-scraper-runner --region asia-southeast1
+

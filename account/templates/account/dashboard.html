@@ -23,10 +23,8 @@
                         <i class="bi bi-robot fs-3 me-3 text-warning"></i>
                         <h5 class="fw-bold mb-0">Executive Summary from AAA Recon Agent</h5>
                     </div>
-                    <p class="mb-0 fs-5 lh-base">
-                        "Cash reserves remain stable. Current YTD Net Profit stands at <strong class="text-warning">${{ snapshot.net_profit_usd|floatformat:2 }}</strong>. 
-                        Attention required: Outstanding Trade Payables have reached <strong>${{ snapshot.total_ap_usd|floatformat:2 }}</strong>. 
-                        Recommend executing payment runs before month-end closing to optimize working capital."
+                    <p class="mb-0 fs-5 lh-base style-text-render" style="white-space: pre-line;">
+                        {{ snapshot.ai_executive_summary|safe }}
                     </p>
                 </div>
             </div>

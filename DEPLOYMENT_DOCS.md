@@ -64,3 +64,31 @@ If automated pipeline migrations fail, deploy a standalone job to build the data
   `--command "python" \`
   `--args "manage.py,migrate" \`
   `--execute-now`
+
+V. Resilient Scraper Architecture
+To bypass advanced firewalls (like Amazon CloudFront) and regional blocks, the scraper must use this specific configuration.
+
+1. Regional Requirements
+The National Bank of Cambodia (NBC) blocks Singapore data centers (asia-southeast1).
+
+Requirement: All scraper Cloud Run Jobs must be deployed in us-central1.
+2. Headless Browser Stack
+Simple requests are blocked. We use undetected-chromedriver to mimic a human browser session.
+
+Code Standard:
+options = uc.ChromeOptions()
+options.add_argument('--headless')
+options.add_argument('--no-sandbox')
+driver = uc.Chrome(options=options)
+try:
+    driver.get(url)
+    time.sleep(15) # Essential for CloudFront rendering
+finally:
+    driver.quit() # Critical to stop billing duration
+Generated code may be subject to license restrictions not shown here. Use code with care. Learn more 
+
+3. Dedicated Trigger (Cloud Scheduler)
+Cloud Run Jobs require a POST request to the Google API, not the .run.app URL.
+
+Target URI: https://run.googleapis.com/v2/projects/[PROJECT]/locations/us-central1/jobs/[JOB_NAME]:run
+Auth: Use OAuth Token with the cloud-platform scope.

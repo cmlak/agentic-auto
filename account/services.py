@@ -5,6 +5,11 @@ from clients.models import ExchangeRate
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 import datetime
+from google import genai
+from google.genai import types
+from django.conf import settings
+import os
+import json
 
 def generate_tenant_dashboard_snapshot():
     """
@@ -13,6 +18,10 @@ def generate_tenant_dashboard_snapshot():
     """
     now = timezone.now()
     period = now.strftime("%b %Y")
+
+    # ---------------------------------------------------------
+    # Part 1: Show key financial markers
+    # ---------------------------------------------------------
 
     # 1. Calculate Total Cash (Asset accounts starting with '100')
     cash_dr = JournalLine.objects.filter(account__account_id__startswith='100').aggregate(Sum('debit'))['debit__sum'] or 0
@@ -41,7 +50,7 @@ def generate_tenant_dashboard_snapshot():
     current_exchange_rate = latest_rate_obj.rate if latest_rate_obj else 4050
 
     # ---------------------------------------------------------
-    # NEW: BUILD CHART.JS DATA PAYLOADS
+    # Part 2: BUILD CHART.JS DATA PAYLOADS
     # ---------------------------------------------------------
     
     # Chart 1: Trailing 6-Month Revenue vs Expenses (Bar Chart)
@@ -147,6 +156,64 @@ def generate_tenant_dashboard_snapshot():
     }
     print(f"DEBUG: Final Chart Payload -> {chart_payload}")
 
+    # ---------------------------------------------------------
+    # Part 3:  Generate the Executive Summary via Gemini API
+    # ---------------------------------------------------------
+
+    # Build the dictionary that the AI prompt is expecting
+    expense_breakdown = {
+        "Payroll & Benefits": monthly_doughnut_data[default_month_name][0],
+        "Tax Accruals": monthly_doughnut_data[default_month_name][1],
+        "General OPEX": monthly_doughnut_data[default_month_name][2]
+    }
+
+    ai_summary_text = "Financial data compiled successfully. Executive summary analysis pending next generation cycle."
+    
+    print("\n--- DEBUG: STARTING AI EXECUTIVE SUMMARY GENERATION ---")
+    try:
+        # Initialize client explicitly using your project's configured env variable
+        api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+        print(f"DEBUG [AI]: API Key loaded = {'YES' if api_key else 'NO'}")
+        
+        client = genai.Client(api_key=api_key)
+        
+        # Populate prompt variables
+        system_instruction = (
+            "You are an expert Corporate Financial Analyst and Chief Financial Officer advisor. "
+            "Analyze the corporate snapshot and produce a high-impact, professional summary. "
+            "Start directly with the analysis. Max 3-4 sentences. Use markdown bold for numbers."
+        )
+        
+        user_content = f"""
+        Analyze this financial snapshot:
+        - Reporting Period: {period}
+        - Cash on Hand: ${total_cash:,.2f}
+        - Trade Payables (AP): ${total_ap:,.2f}
+        - Year-to-Date Net Profit: ${net_profit:,.2f}
+        - Current Month Expense Breakdown: {json.dumps(expense_breakdown)}
+        """
+
+        print("DEBUG [AI]: Sending prompt to Gemini-2.5-Pro...")
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=user_content,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.2, # Low temperature ensures consistent, professional terminology
+            )
+        )
+        if response.text:
+            ai_summary_text = response.text.strip()
+            print("DEBUG [AI]: Summary successfully generated.")
+        else:
+            print("DEBUG [AI]: Warning - Gemini returned an empty response.")
+            
+    except Exception as e:
+        # Prevent background job failure if external API drops; log error and preserve data integrity
+        print(f"DEBUG [AI]: Gemini API execution anomaly encountered: {str(e)}")
+
+    print("--- DEBUG: END AI EXECUTIVE SUMMARY GENERATION ---\n")
+
     # Save to the isolated tenant schema
     snapshot = DashboardSnapshot.objects.create(
         period_label=period,
@@ -154,7 +221,8 @@ def generate_tenant_dashboard_snapshot():
         total_ap_usd=total_ap,
         net_profit_usd=net_profit,
         chart_data_payload=chart_payload,
-        exchange_rate=current_exchange_rate
+        exchange_rate=current_exchange_rate,
+        ai_executive_summary=ai_summary_text
     )
     
     return snapshot

@@ -1,7 +1,7 @@
 import cloudscraper # Use cloudscraper instead of direct requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-from django.db import connection
+from django.db import connection, transaction, IntegrityError
 from celery import shared_task
 from clients.models import ExchangeRate 
 
@@ -61,14 +61,38 @@ def scrape_exchange_rate_nbc():
                     rate = int(float(rate_str))
 
         if date and rate:
-            obj, created = ExchangeRate.objects.update_or_create(
-                date=date,
-                defaults={'rate': rate}
-            )
-            if created:
-                print(f"Exchange rate for {date} saved.") 
-            else:
-                print(f"Exchange rate for {date} already exists in database.")
+            try:
+                # Wrap in atomic so Postgres doesn't abort the entire connection on an IntegrityError
+                with transaction.atomic():
+                    obj, created = ExchangeRate.objects.update_or_create(
+                        date=date,
+                        defaults={'rate': rate}
+                    )
+                    if created:
+                        print(f"Exchange rate for {date} saved.") 
+                    else:
+                        print(f"Exchange rate for {date} already exists in database.")
+            except IntegrityError as e:
+                # If the auto-increment sequence is out of sync, catch the duplicate PK IntegrityError
+                if 'clients_exchangerate_pkey' in str(e) or 'id' in str(e):
+                    print("Primary key sequence out of sync detected. Resetting sequence automatically...")
+                    with connection.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT setval(
+                                pg_get_serial_sequence('clients_exchangerate', 'id'), 
+                                coalesce(max(id), 1), 
+                                max(id) IS NOT null
+                            ) 
+                            FROM clients_exchangerate;
+                        """)
+                    # Retry creation after fixing the sequence
+                    obj, created = ExchangeRate.objects.update_or_create(
+                        date=date,
+                        defaults={'rate': rate}
+                    )
+                    print(f"Exchange rate for {date} saved after sequence reset.")
+                else:
+                    raise e
         else:
             print("Could not find date or rate in the page content.")
 

@@ -2,6 +2,7 @@ from django.db import models
 from django.core.exceptions import ValidationError
 from django.db.models import Q
 from simple_history.models import HistoricalRecords
+from django.utils.translation import gettext_lazy as _
 
 # ====================================================================
 # --- 1. CHART OF ACCOUNTS ---
@@ -179,3 +180,46 @@ class DashboardSnapshot(models.Model):
 
     def __str__(self):
         return f"Snapshot - {self.period_label} ({self.calculated_at.strftime('%Y-%m-%d %H:%M')})"
+
+class AgentNotification(models.Model):
+    """
+    The central communication ledger for all autonomous AAA agents.
+    """
+    AGENT_CHOICES = [
+        ('RECON', 'Reconciliation Agent ⚖️'),
+        ('TAX', 'Tax & Compliance Agent 🏛️'),
+        ('ECON', 'Macro-Economic Agent 📈'),
+        ('AUDIT', 'Internal Audit Agent 🔍'),
+        ('SYSTEM', 'System Operations ⚙️'),
+    ]
+
+    SEVERITY_CHOICES = [
+        ('INFO', 'Informational (Blue)'),
+        ('SUCCESS', 'Success (Green)'),
+        ('WARNING', 'Warning / Action Needed (Yellow)'),
+        ('CRITICAL', 'Critical / Blocking (Red)'),
+    ]
+
+    agent_type = models.CharField(max_length=20, choices=AGENT_CHOICES)
+    severity = models.CharField(max_length=20, choices=SEVERITY_CHOICES, default='INFO')
+    
+    title = models.CharField(max_length=255, help_text="e.g., Missing VAT TIN Detected")
+    message = models.TextField(help_text="The detailed explanation from the AI.")
+    
+    # Actionability: Where should the user click to fix this?
+    action_url = models.CharField(max_length=500, blank=True, null=True, help_text="URL path to the relevant app view")
+    action_label = models.CharField(max_length=50, blank=True, null=True, help_text="e.g., 'Review Invoices'")
+    
+    # State Management
+    is_resolved = models.BooleanField(default=False, help_text="Has the human or AI resolved this issue?")
+    created_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['is_resolved', '-created_at']),
+        ]
+
+    def __str__(self):
+        return f"[{self.get_severity_display()}] {self.get_agent_type_display()}: {self.title}"

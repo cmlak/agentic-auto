@@ -10,6 +10,7 @@ from google.genai import types
 from django.conf import settings
 import os
 import json
+import re
 
 def generate_tenant_dashboard_snapshot():
     """
@@ -175,6 +176,9 @@ def generate_tenant_dashboard_snapshot():
         api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
         print(f"DEBUG [AI]: API Key loaded = {'YES' if api_key else 'NO'}")
         
+        if not api_key:
+            raise ValueError("GEMINI_API_KEY_2 is missing or empty. Please ensure it is passed to the Cloud Run Job via --set-secrets or environment variables.")
+            
         client = genai.Client(api_key=api_key)
         
         # Populate prompt variables
@@ -205,14 +209,17 @@ def generate_tenant_dashboard_snapshot():
             )
         )
         if response.text:
-            ai_summary_text = response.text.strip()
+            raw_summary = response.text.strip()
+            # Convert Markdown bold (**text**) to HTML (<strong>text</strong>)
+            ai_summary_text = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', raw_summary)
             print("DEBUG [AI]: Summary successfully generated.")
         else:
             print("DEBUG [AI]: Warning - Gemini returned an empty response.")
+            ai_summary_text = "⚠️ AI Generation Failed: Gemini returned an empty response."
             
     except Exception as e:
-        # Prevent background job failure if external API drops; log error and preserve data integrity
         print(f"DEBUG [AI]: Gemini API execution anomaly encountered: {str(e)}")
+        ai_summary_text = f"**AI System Error:** {str(e)}"
 
     print("--- DEBUG: END AI EXECUTIVE SUMMARY GENERATION ---\n")
 

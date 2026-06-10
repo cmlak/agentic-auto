@@ -7,7 +7,7 @@ from django.db.models import Sum
 from django.contrib.auth.decorators import login_required
 from django.http import HttpResponseForbidden, HttpResponse
 from django.core.paginator import Paginator
-from .models import Account, AccountMappingRule, JournalEntry, JournalLine, DashboardSnapshot
+from .models import Account, AccountMappingRule, JournalEntry, JournalLine, DashboardSnapshot, AgentNotification
 from .filters import ReportFilter, BalanceSheetFilter
 from django.db.models.functions import ExtractMonth, ExtractYear
 import datetime
@@ -1046,6 +1046,10 @@ def main_dashboard_view(request):
     # Fetch the most recent snapshot pre-calculated by the Cloud Scheduler / Cloud Run Job
     latest_snapshot = DashboardSnapshot.objects.first()
     
+    # Fetch the top 5 unresolved agent insights
+    active_insights = AgentNotification.objects.filter(is_resolved=False).order_by('-created_at')[:5]
+    
     return render(request, 'account/dashboard.html', {
-        'snapshot': latest_snapshot
+        'snapshot': latest_snapshot,
+        'active_insights': active_insights
     })

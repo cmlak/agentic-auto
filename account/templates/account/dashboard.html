@@ -36,7 +36,7 @@
             <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-success border-4">
                 <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2 text-center text-md-start">Cash on Hand</h6>
-                    <h2 class="fw-bold text-dark mb-0 text-center text-md-start">${{ snapshot.total_cash_usd|floatformat:2 }}</h2>
+                    <h2 class="fw-bold text-dark mb-0 text-center text-md-start">${{ snapshot.total_cash_usd|floatformat:"2g" }}</h2>
                 </div>
             </div>
         </div>
@@ -44,7 +44,7 @@
             <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-danger border-4">
                 <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2 text-center text-md-start">Trade Payables (AP)</h6>
-                    <h2 class="fw-bold text-danger mb-0 text-center text-md-start">${{ snapshot.total_ap_usd|floatformat:2 }}</h2>
+                    <h2 class="fw-bold text-danger mb-0 text-center text-md-start">${{ snapshot.total_ap_usd|floatformat:"2g" }}</h2>
                 </div>
             </div>
         </div>
@@ -52,14 +52,13 @@
             <div class="card shadow-sm border-0 rounded-4 h-100 border-bottom border-primary border-4">
                 <div class="card-body p-4 d-flex flex-column justify-content-center">
                     <h6 class="text-muted text-uppercase fw-bold mb-2 text-center text-md-start">YTD Net Profit</h6>
-                    <h2 class="fw-bold text-primary mb-0 text-center text-md-start">${{ snapshot.net_profit_usd|floatformat:2 }}</h2>
+                    <h2 class="fw-bold text-primary mb-0 text-center text-md-start">${{ snapshot.net_profit_usd|floatformat:"2g" }}</h2>
                 </div>
             </div>
         </div>
     </div>
 
-    <div class="row g-4">
-        
+    <div class="row g-4 mb-4">
         <div class="col-12 col-lg-8">
             <div class="card shadow-sm border-0 rounded-4 h-100">
                 <div class="card-header bg-white border-0 pt-4 pb-0">
@@ -76,16 +75,65 @@
                 <div class="card-header bg-white border-0 pt-4 pb-0">
                     <h5 class="fw-bold text-secondary mb-2"><i class="bi bi-pie-chart-fill me-2 text-warning"></i><span id="doughnut-title-month">Current Month Expenses</span></h5>
                     <div class="d-flex flex-wrap gap-1 justify-content-start" id="doughnut-month-selectors">
-                        <!-- Buttons injected by JS -->
-                    </div>
+                        </div>
                 </div>
                 <div class="card-body d-flex justify-content-center align-items-center position-relative p-3 p-md-4" style="min-height: 350px;">
                     <canvas id="expenseBreakdownChart"></canvas>
                 </div>
             </div>
         </div>
-
     </div>
+
+    <div class="row g-4">
+        <div class="col-12">
+            <div class="card shadow-sm border-0 rounded-4">
+                <div class="card-header bg-white border-0 pt-4 pb-2 d-flex justify-content-between align-items-center">
+                    <h5 class="fw-bold text-secondary mb-0"><i class="bi bi-cpu-fill me-2 text-primary"></i>Agent Communications Hub</h5>
+                    <span class="badge bg-primary rounded-pill px-3">{{ active_insights.count|default:"0" }} Active</span>
+                </div>
+                
+                <div class="card-body p-0">
+                    <div class="list-group list-group-flush border-0 rounded-bottom-4 overflow-hidden">
+                        {% for insight in active_insights %}
+                            <div class="list-group-item p-4 border-start border-4 bg-light bg-opacity-25 mb-1 
+                                {% if insight.severity == 'CRITICAL' %}border-danger
+                                {% elif insight.severity == 'WARNING' %}border-warning
+                                {% elif insight.severity == 'SUCCESS' %}border-success
+                                {% else %}border-info{% endif %}">
+                                
+                                <div class="d-flex flex-column flex-md-row justify-content-between align-items-md-center mb-2 gap-2">
+                                    <h6 class="fw-bold mb-0">
+                                        <span class="text-muted me-2">{{ insight.get_agent_type_display }}</span>
+                                        {{ insight.title }}
+                                    </h6>
+                                    <small class="text-muted text-nowrap">{{ insight.created_at|timesince }} ago</small>
+                                </div>
+                                
+                                <p class="text-dark mb-3">{{ insight.message }}</p>
+                                
+                                {% if insight.action_url %}
+                                <a href="{{ insight.action_url }}" class="btn btn-sm fw-bold 
+                                    {% if insight.severity == 'CRITICAL' %}btn-outline-danger
+                                    {% elif insight.severity == 'WARNING' %}btn-outline-warning
+                                    {% elif insight.severity == 'SUCCESS' %}btn-outline-success
+                                    {% else %}btn-outline-info{% endif %}">
+                                    {{ insight.action_label|default:"Take Action" }} <i class="bi bi-arrow-right-short"></i>
+                                </a>
+                                {% endif %}
+                            </div>
+                        {% empty %}
+                            <div class="p-5 text-center text-muted">
+                                <i class="bi bi-check-circle display-1 text-success opacity-50 mb-3 d-block"></i>
+                                <h6 class="fw-bold">All Systems Nominal</h6>
+                                <p class="mb-0">Agents are actively monitoring the ledgers. No open alerts at this time.</p>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </div>
 
 {{ snapshot.chart_data_payload|json_script:"dashboard-chart-data" }}
@@ -120,7 +168,6 @@
         // ----------------------------------------------------
         const ctxBar = document.getElementById('performanceChart');
         if (ctxBar) {
-            // Destroy existing chart instance to prevent the "Canvas is already in use" overlap glitch
             let existingBar = Chart.getChart(ctxBar);
             if (existingBar) {
                 existingBar.destroy();
@@ -285,7 +332,6 @@
                 return `${label}: $${val.toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${pct}%)`;
             });
 
-            // Destroy existing chart instance to prevent hover glitches
             let existingDoughnut = Chart.getChart(ctxDoughnut);
             if (existingDoughnut) {
                 existingDoughnut.destroy();
@@ -298,16 +344,15 @@
                     labels: detailedLabels,
                     datasets: [{
                         data: currentData,
-                        // Assigning colors that map to Payroll, Tax, OPEX
                         backgroundColor: [colorPrimary, colorWarning, colorDanger, colorInfo, colorSuccess],
-                        borderWidth: 2, // Added small border to slice separation
+                        borderWidth: 2,
                         hoverOffset: 6
                     }]
                 },
                 options: {
                     responsive: true,
                     maintainAspectRatio: false,
-                    cutout: '60%', // Thicker ring to give the datalabels text more room to fit
+                    cutout: '60%', 
                     plugins: {
                         legend: { 
                             position: 'bottom',
@@ -317,16 +362,14 @@
                             color: '#ffffff',
                             font: { weight: 'bold', size: 13 },
                             formatter: (value, context) => {
-                                if (value === 0) return ''; // Hide labels if a category has $0 expenses
+                                if (value === 0) return '';
                                 let datasetTotal = context.dataset.data.reduce((a, b) => a + b, 0);
-                                let percentage = datasetTotal > 0 ? ((value / datasetTotal) * 100).toFixed(1) + '%' : '';
-                                return percentage;
+                                return datasetTotal > 0 ? ((value / datasetTotal) * 100).toFixed(1) + '%' : '';
                             }
                         },
                         tooltip: {
                             callbacks: {
                                 label: function(context) {
-                                    // The label already has all the detail mapped into it now
                                     return ' ' + context.label;
                                 }
                             }

@@ -22,7 +22,11 @@ python manage.py migrate_schemas --shared
 
 python manage.py showmigrations tools
 
-gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:latest
+gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:v6
+
+gcloud run jobs update debug-nbc-scraper-us \
+  --image gcr.io/document-project-464509/agentic-platform:v6 \
+  --region us-central1
 
 gcloud run jobs execute debug-nbc-scraper-us --region us-central1
 

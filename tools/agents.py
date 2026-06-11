@@ -5,6 +5,8 @@ from google import genai
 from .models import Purchase
 from account.models import AgentNotification
 from django.utils import timezone
+from clients.models import Client
+from django_tenants.utils import schema_context
 
 class TaxAgent:
     @staticmethod
@@ -64,13 +66,15 @@ class EconAgent:
         except Exception as e:
             print(f"EconAgent AI Analysis Error: {e}")
 
-        print("DEBUG: Attempting to create AgentNotification record...")
-        AgentNotification.objects.create(
-            agent_type='ECON',
-            severity='INFO',
-            title="Daily KHR Exchange Rate Analysis",
-            message=f"The NBC official exchange rate is {current_rate} KHR/USD.{ai_analysis}",
-            is_resolved=True,
-            resolved_at=timezone.now()
-        )
-        print("DEBUG: AgentNotification successfully saved to database.")
+        print("DEBUG: Broadcasting AgentNotification to all tenant schemas...")
+        for tenant in Client.objects.exclude(schema_name='public'):
+            with schema_context(tenant.schema_name):
+                AgentNotification.objects.create(
+                    agent_type='ECON',
+                    severity='INFO',
+                    title="Daily KHR Exchange Rate Analysis",
+                    message=f"The NBC official exchange rate is {current_rate} KHR/USD.{ai_analysis}",
+                    is_resolved=True,
+                    resolved_at=timezone.now()
+                )
+        print("DEBUG: AgentNotifications successfully broadcasted.")

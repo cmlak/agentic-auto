@@ -223,3 +223,39 @@ class AgentNotification(models.Model):
 
     def __str__(self):
         return f"[{self.get_severity_display()}] {self.get_agent_type_display()}: {self.title}"
+
+class AgentKnowledgeRule(models.Model):
+    """
+    An atomic rule, fact, or insight used to 'train' specific agents.
+    """
+    AGENT_SCOPE_CHOICES = [
+        ('GLOBAL', 'All Agents'),
+        ('TAX', 'Tax & Compliance Agent'),
+        ('RECON', 'Reconciliation Agent'),
+        ('ECON', 'Macro-Economic Agent'),
+    ]
+
+    RULE_TYPE_CHOICES = [
+        ('ACCOUNT_MAPPING', 'GL Account Mapping Rule'),
+        ('TAX_LAW', 'Tax Compliance Law / Rate'),
+        ('MACRO_FACT', 'Macro-Economic Insight / Fact'),
+        ('ANTI_PATTERN', 'Common Mistake to Avoid'),
+    ]
+
+    # Targetting: Who needs to know this?
+    agent_scope = models.CharField(max_length=20, choices=AGENT_SCOPE_CHOICES, default='GLOBAL')
+    rule_type = models.CharField(max_length=20, choices=RULE_TYPE_CHOICES)
+    
+    # Metadata for filtering and exporting
+    tags = models.CharField(max_length=255, help_text="Comma separated, e.g., 'WHT, rental, cambodia'")
+    is_active = models.BooleanField(default=True)
+
+    # The Knowledge
+    title = models.CharField(max_length=255, help_text="e.g., CAPEX IDENTIFICATION (FACTORY)")
+    condition = models.TextField(help_text="WHEN does this rule apply? (e.g., 'When invoice has construction materials')")
+    action_or_fact = models.TextField(help_text="WHAT should the AI do or know? (e.g., 'Classify as 181000 - Factory CIP')")
+    
+    history = HistoricalRecords()
+
+    def __str__(self):
+        return f"[{self.agent_scope}] {self.title}"

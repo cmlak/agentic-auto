@@ -67,7 +67,12 @@ def scrape_exchange_rate_nbc():
             ).aggregate(avg=Avg('rate'))
             
             if avg_data['avg']:
-                EconAgent.evaluate_currency_risk(rate, avg_data['avg'])
+                avg_rate = avg_data['avg']
+                print(f"EVALUATING RISK: Current Rate ({rate}) vs 30-Day Avg ({avg_rate:.2f})")
+                print("TRIGGERING AI ANALYSIS: Updating AgentNotification with daily evaluation.")
+                EconAgent.evaluate_currency_risk(rate, avg_rate)
+            else:
+                print("WARNING: Not enough historical data to calculate 30-day average.")
         else:
             print("ERROR: Parsing failed. The snippet above explains why.")
 

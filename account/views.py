@@ -1046,10 +1046,14 @@ def main_dashboard_view(request):
     # Fetch the most recent snapshot pre-calculated by the Cloud Scheduler / Cloud Run Job
     latest_snapshot = DashboardSnapshot.objects.first()
     
-    # Fetch the top 5 unresolved agent insights
-    active_insights = AgentNotification.objects.filter(is_resolved=False).order_by('-created_at')[:5]
+    # Fetch the top 5 recent agent insights (including informational/resolved ones like EconAgent)
+    active_insights = AgentNotification.objects.all().order_by('-created_at')[:5]
+    
+    # Calculate how many are actually requiring action
+    action_required_count = AgentNotification.objects.filter(is_resolved=False).count()
     
     return render(request, 'account/dashboard.html', {
         'snapshot': latest_snapshot,
-        'active_insights': active_insights
+        'active_insights': active_insights,
+        'action_required_count': action_required_count
     })

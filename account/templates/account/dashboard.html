@@ -109,7 +109,7 @@
                                     <small class="text-muted text-nowrap">{{ insight.created_at|timesince }} ago</small>
                                 </div>
                                 
-                                <p class="text-dark mb-3">{{ insight.message }}</p>
+                                <p class="text-dark mb-3" style="white-space: pre-line;">{{ insight.message|safe }}</p>
                                 
                                 {% if insight.action_url %}
                                 <a href="{{ insight.action_url }}" class="btn btn-sm fw-bold 

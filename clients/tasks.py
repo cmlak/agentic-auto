@@ -1,10 +1,12 @@
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from django.db import connection, transaction, IntegrityError
+from django.db.models import Avg
 from celery import shared_task
 from bs4 import BeautifulSoup
 import undetected_chromedriver as uc
 from clients.models import ExchangeRate 
+from tools.agents import EconAgent
 
 @shared_task
 def scrape_exchange_rate_nbc():
@@ -56,6 +58,16 @@ def scrape_exchange_rate_nbc():
         if date and rate:
             print(f"FOUND: {rate} on {date}. Saving...")
             ExchangeRate.objects.update_or_create(date=date, defaults={'rate': rate})
+            
+            # --- AGENTIC ORCHESTRATION: Evaluate Currency Risk ---
+            thirty_days_ago = date - timedelta(days=30)
+            avg_data = ExchangeRate.objects.filter(
+                date__gte=thirty_days_ago, 
+                date__lt=date
+            ).aggregate(avg=Avg('rate'))
+            
+            if avg_data['avg']:
+                EconAgent.evaluate_currency_risk(rate, avg_data['avg'])
         else:
             print("ERROR: Parsing failed. The snippet above explains why.")
 

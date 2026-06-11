@@ -40,11 +40,13 @@ class TaxAgent:
 class EconAgent:
     @staticmethod
     def evaluate_currency_risk(current_rate, average_last_month):
+        print(f"DEBUG: Entering evaluate_currency_risk. Rate: {current_rate}, Avg: {average_last_month:.2f}")
         # Generate AI Analysis using Gemini
         ai_analysis = ""
         try:
             api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
             if api_key:
+                print("DEBUG: Gemini API Key found. Requesting analysis...")
                 client = genai.Client(api_key=api_key)
                 prompt = (
                     f"Act as an expert corporate currency risk analyst. "
@@ -58,9 +60,11 @@ class EconAgent:
                 )
                 if response.text:
                     ai_analysis = f"\n\nAI Analysis: {response.text.strip()}"
+                    print("DEBUG: Gemini analysis successfully generated.")
         except Exception as e:
             print(f"EconAgent AI Analysis Error: {e}")
 
+        print("DEBUG: Attempting to create AgentNotification record...")
         AgentNotification.objects.create(
             agent_type='ECON',
             severity='INFO',
@@ -69,3 +73,4 @@ class EconAgent:
             is_resolved=True,
             resolved_at=timezone.now()
         )
+        print("DEBUG: AgentNotification successfully saved to database.")

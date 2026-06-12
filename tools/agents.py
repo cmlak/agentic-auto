@@ -43,6 +43,15 @@ class EconAgent:
     @staticmethod
     def evaluate_currency_risk(current_rate, average_last_month):
         print(f"DEBUG: Entering evaluate_currency_risk. Rate: {current_rate}, Avg: {average_last_month:.2f}")
+        
+        deviation_pct = 0.0
+        if average_last_month > 0:
+            deviation_pct = abs(current_rate - average_last_month) / average_last_month * 100
+            
+        if deviation_pct < 0.5:  # 0.5% threshold for significant deviation
+            print(f"DEBUG: Market is stable (Deviation: {deviation_pct:.3f}%). No open alerts generated.")
+            return
+            
         # Generate AI Analysis using Gemini
         ai_analysis = ""
         try:
@@ -71,10 +80,9 @@ class EconAgent:
             with schema_context(tenant.schema_name):
                 AgentNotification.objects.create(
                     agent_type='ECON',
-                    severity='INFO',
-                    title="Daily KHR Exchange Rate Analysis",
-                    message=f"The NBC official exchange rate is {current_rate} KHR/USD.{ai_analysis}",
-                    is_resolved=True,
-                    resolved_at=timezone.now()
+                    severity='WARNING',
+                    title="Currency Volatility Risk Detected",
+                    message=f"The NBC official exchange rate has deviated to {current_rate} KHR/USD (a {deviation_pct:.2f}% change).{ai_analysis}",
+                    is_resolved=False
                 )
         print("DEBUG: AgentNotifications successfully broadcasted.")

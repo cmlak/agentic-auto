@@ -150,7 +150,10 @@
             return;
         }
         
-        const chartData = JSON.parse(chartDataNode.textContent);
+        let chartData = JSON.parse(chartDataNode.textContent);
+        if (!chartData || typeof chartData !== 'object') {
+            chartData = {};
+        }
         
         // Prevent crashing if the dictionary is missing keys
         const barData = chartData.bar_chart || { labels: [], revenue: [], expenses: [] };

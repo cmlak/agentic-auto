@@ -13,6 +13,9 @@ from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 from datetime import datetime
+import io
+from pypdf import PdfReader
+from tools.services import build_targeted_agent_prompt
 
 from .models import Vendor, JournalVoucher
 from account.models import Account, AccountMappingRule
@@ -170,6 +173,13 @@ class GeminiInvoiceProcessor:
         if page_match:
             base_offset = int(page_match.group(1))
             computed_page = base_offset + (pg - 1)
+            
+        try:
+            reader = PdfReader(io.BytesIO(pdf_bytes))
+            raw_text = "\n".join([p.extract_text() or "" for p in reader.pages])
+        except Exception:
+            raw_text = ""
+        rag_rules = build_targeted_agent_prompt(raw_text, agent_type='TAX')
 
         try:
             document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
@@ -183,7 +193,8 @@ class GeminiInvoiceProcessor:
             <ACCOUNTING_HIERARCHY_RULES>
             1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
             2. [INDUSTRY LEVEL] RULES: {rules_context}
-            3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
+            3. [AGENT KNOWLEDGE BASE] RETRIEVED RULES:
+            {rag_rules}
             </ACCOUNTING_HIERARCHY_RULES>
             <OUTPUT_INSTRUCTIONS>
             1. AGGREGATION & SPLITTING: Output ONE PurchaseEntry per page. EXCEPTION: Split Equipment Rental and Driver Fee into TWO entries.
@@ -267,6 +278,8 @@ class GeminiInvoiceProcessor:
 
         # Handle pandas Timestamps or unexpected objects by casting them to strings
         records_json = json.dumps(records, indent=2, default=str)
+        
+        rag_rules = build_targeted_agent_prompt(records_json, agent_type='TAX')
 
         prompt = f"""
         TASK: You are an elite corporate forensic accountant. You are given a JSON data array representing manually compiled non-tax purchase invoices.
@@ -276,7 +289,8 @@ class GeminiInvoiceProcessor:
         <ACCOUNTING_HIERARCHY_RULES>
         1. [BATCH LEVEL]: {custom_prompt if custom_prompt else "None"}
         2. [INDUSTRY LEVEL] RULES: {rules_context}
-        3. [COMPANY LEVEL] MEMOS: {memo_context if memo_context else "None"}
+        3. [AGENT KNOWLEDGE BASE] RETRIEVED RULES:
+        {rag_rules}
         </ACCOUNTING_HIERARCHY_RULES>
         
         <OUTPUT_INSTRUCTIONS>

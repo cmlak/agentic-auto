@@ -12,6 +12,7 @@ from google import genai
 from google.genai import types
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+from tools.services import build_targeted_agent_prompt
 from tools.models import Vendor
 from sale.models import Sale
 
@@ -97,6 +98,8 @@ class GeminiABABankProcessor:
         except Exception as e:
             raise e
 
+        rag_rules = build_targeted_agent_prompt(raw_text, agent_type='RECON')
+
         print(f"🧠 Sending structured text to Gemini ({self.MODEL_NAME})...", flush=True)
         
         # --- THE THREE-TIER HIERARCHY PROMPT ---
@@ -115,10 +118,11 @@ class GeminiABABankProcessor:
         5. CONTEXT PRESERVATION: Put BOTH the original merged bank text AND any matched supplementary information into the 'raw_remark' field.
         </TIER_1_CORE_EXTRACTION_RULES>
 
-        <TIER_2_CLIENT_ACCOUNTING_MEMO>
-        The following instructions take absolute precedence over any default rules above:
-        {custom_prompt if custom_prompt else "No custom instructions provided."}
-        </TIER_2_CLIENT_ACCOUNTING_MEMO>
+        <TIER_2_AGENT_KNOWLEDGE_BASE>
+        [BATCH OVERRIDES]: {custom_prompt if custom_prompt else "No custom instructions provided."}
+        [RETRIEVED RECON RULES]: 
+        {rag_rules}
+        </TIER_2_AGENT_KNOWLEDGE_BASE>
 
         <TIER_3_RAW_STATEMENT_DATA>
         {raw_text}
@@ -376,6 +380,8 @@ class GeminiCanadiaBankProcessor:
         except Exception as e:
             raise e
 
+        rag_rules = build_targeted_agent_prompt(raw_text + "\n" + slips_text, agent_type='RECON')
+
         print(f"🧠 Sending structured text to Gemini ({self.MODEL_NAME})...", flush=True)
         
         extraction_prompt = f"""
@@ -395,9 +401,11 @@ class GeminiCanadiaBankProcessor:
            - Instead, annotate the exact principal and fee breakdown into the 'remark' field. For example: "Includes Principal: $15,117.41 and Bank Fee: $37.68."
         </TIER_1_CORE_EXTRACTION_RULES>
 
-        <TIER_2_CLIENT_ACCOUNTING_MEMO>
-        {custom_prompt if custom_prompt else "No custom instructions provided."}
-        </TIER_2_CLIENT_ACCOUNTING_MEMO>
+        <TIER_2_AGENT_KNOWLEDGE_BASE>
+        [BATCH OVERRIDES]: {custom_prompt if custom_prompt else "No custom instructions provided."}
+        [RETRIEVED RECON RULES]: 
+        {rag_rules}
+        </TIER_2_AGENT_KNOWLEDGE_BASE>
 
         <SUPPLEMENTARY_SLIPS_DATA>
         {slips_text if slips_text else "No remittance slips provided."}
@@ -758,6 +766,9 @@ class GeminiReconciliationEngine:
     @retry(stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=3, max=30), reraise=True)
     def reconcile(self, transactions_data: str, open_purchases_data: str, open_sales_data: str = "[]", prompt_memo: str = "", historical_gl_data: str = "", chart_of_accounts_data: str = ""):
         
+        combined_text = f"{transactions_data}\n{prompt_memo}"
+        rag_rules = build_targeted_agent_prompt(combined_text, agent_type='RECON')
+        
         prompt = f"""
         <TIER_1_CORE_RECONCILIATION_RULES>
         You are an expert strict corporate accountant. Your task is to assign perfect Double-Entry (Debit and Credit) GL accounts to bank/cash transactions.
@@ -788,10 +799,12 @@ class GeminiReconciliationEngine:
         - If you absolutely cannot find a relevant 6-digit code in the <CHART_OF_ACCOUNTS>, output 'UNKNOWN' for the account ID.
         </TIER_1_CORE_RECONCILIATION_RULES>
 
-        <TIER_2_CLIENT_ACCOUNTING_MEMO>
+        <TIER_2_AGENT_KNOWLEDGE_BASE>
         The following client-specific accounting rules, GL account mappings, and keyword triggers take absolute precedence and provide the specific logic needed to execute the mechanical rules in Tier 1.
-        {prompt_memo if prompt_memo else "No specific client memo provided."}
-        </TIER_2_CLIENT_ACCOUNTING_MEMO>
+        [BATCH OVERRIDES]: {prompt_memo if prompt_memo else "No specific client memo provided."}
+        [RETRIEVED RECON RULES]: 
+        {rag_rules}
+        </TIER_2_AGENT_KNOWLEDGE_BASE>
         
         <TIER_3_BATCH_DATA>
         <CHART_OF_ACCOUNTS>

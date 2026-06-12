@@ -1,6 +1,17 @@
-from django.shortcuts import render
+import os
+from django.shortcuts import render, redirect
 from django.http import HttpResponse
-from .models import Document
+from django.contrib import messages
+from django.contrib.auth.decorators import login_required
+from pydantic import BaseModel, Field
+from typing import List, Literal
+from google import genai
+from google.genai import types
+from django.db import transaction
+from account.models import AgentKnowledgeRule
+
+from .models import Document, SourceDocument, DraftKnowledgeRule
+from .forms import FinancialReportUploadForm, DraftKnowledgeRuleFormSet
 
 def test_db_connection(request):
     # 1. Try to write to Cloud SQL
@@ -15,3 +26,122 @@ def test_db_connection(request):
         output += f"- {doc.title} ({doc.id})<br>"
         
     return HttpResponse(output)
+
+class ExtractedRule(BaseModel):
+    agent_scope: Literal['GLOBAL', 'TAX', 'RECON', 'ECON'] = Field(description="The agent scope.")
+    title: str = Field(description="Rule title")
+    condition: str = Field(description="When does this rule apply?")
+    action_or_fact: str = Field(description="What should the AI do or know?")
+    tags: str = Field(description="Comma separated tags")
+
+class RuleBatch(BaseModel):
+    rules: List[ExtractedRule]
+
+@login_required
+def upload_financial_report_view(request):
+    if request.method == 'POST':
+        form = FinancialReportUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            source_doc = SourceDocument.objects.create(
+                title=form.cleaned_data['title'],
+                source_url=form.cleaned_data['source_url'],
+                document_pdf=form.cleaned_data['document_pdf'],
+                date_issued=form.cleaned_data['date_issued'],
+                is_processed=False
+            )
+
+            api_key = os.getenv("GEMINI_API_KEY_2")
+            if not api_key:
+                messages.error(request, "System Error: GEMINI_API_KEY_2 is missing.")
+                return redirect('document:upload_financial_report')
+
+            client = genai.Client(api_key=api_key)
+            prompt = """You are an elite Cambodian Macroeconomist and Tax Auditor. Read the attached official report.
+                Extract actionable rules, macroeconomic shifts, and compliance changes.
+                Output an array of JSON objects matching this schema:
+                [{ 'agent_scope': 'ECON', 'title': 'Q2 Inflation Shift', 'condition': 'When assessing purchasing power or FX logic', 'action_or_fact': 'The inflation rate has risen to 3.2%. Adjust cash flow forecasting models accordingly.', 'tags': 'inflation, Q2, NBC' }]
+                ONLY extract definitive facts and actionable directives. Ignore fluff."""
+
+            try:
+                pdf_bytes = form.cleaned_data['document_pdf'].read()
+                document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+                
+                response = client.models.generate_content(
+                    model='gemini-2.5-pro',
+                    contents=[prompt, document_part],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=RuleBatch,
+                        temperature=0.0
+                    )
+                )
+
+                extracted_data = response.parsed
+                
+                if extracted_data and extracted_data.rules:
+                    for rule in extracted_data.rules:
+                        DraftKnowledgeRule.objects.create(
+                            source_document=source_doc,
+                            proposed_agent_scope=rule.agent_scope,
+                            proposed_title=rule.title,
+                            proposed_condition=rule.condition,
+                            proposed_action_or_fact=rule.action_or_fact,
+                            proposed_tags=rule.tags,
+                            status='PENDING'
+                        )
+                    
+                    source_doc.is_processed = True
+                    source_doc.save()
+                    messages.success(request, f"Successfully extracted {len(extracted_data.rules)} rules.")
+                else:
+                    messages.warning(request, "No rules were extracted from the document.")
+                    
+                return redirect('document:review_draft_rules')
+
+            except Exception as e:
+                messages.error(request, f"Failed to extract information: {str(e)}")
+                return redirect('document:upload_financial_report')
+    else:
+        form = FinancialReportUploadForm()
+
+    return render(request, 'document/upload_financial_report.html', {'form': form})
+
+@login_required
+def review_draft_rules_view(request):
+    pending_rules = DraftKnowledgeRule.objects.filter(status='PENDING')
+    
+    if request.method == 'POST':
+        formset = DraftKnowledgeRuleFormSet(request.POST, queryset=pending_rules)
+        if formset.is_valid():
+            instances_saved = 0
+            with transaction.atomic():
+                for form in formset:
+                    if form.cleaned_data.get('DELETE'):
+                        rule = form.instance
+                        rule.status = 'REJECTED'
+                        rule.save()
+                        continue
+                        
+                    if form.has_changed() or form.cleaned_data.get('status') == 'APPROVED':
+                        rule = form.save(commit=False)
+                        if rule.status == 'APPROVED' and not rule.promoted_to:
+                            live_rule = AgentKnowledgeRule.objects.create(
+                                agent_scope=rule.proposed_agent_scope,
+                                rule_type='MACRO_FACT',
+                                tags=rule.proposed_tags,
+                                title=rule.proposed_title,
+                                condition=rule.proposed_condition,
+                                action_or_fact=rule.proposed_action_or_fact
+                            )
+                            rule.promoted_to = live_rule
+                        rule.save()
+                        instances_saved += 1
+                        
+            messages.success(request, f"Successfully reviewed and updated {instances_saved} rules.")
+            return redirect('document:review_draft_rules')
+        else:
+            messages.error(request, "Validation failed. Please correct the errors below.")
+    else:
+        formset = DraftKnowledgeRuleFormSet(queryset=pending_rules)
+        
+    return render(request, 'document/review_draft_rules.html', {'formset': formset})

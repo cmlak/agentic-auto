@@ -37,3 +37,20 @@ gcloud run jobs update global-dashboard-update \
 gcloud run jobs execute debug-nbc-scraper-us --region us-central1
 
 gcloud run jobs execute global-dashboard-update --region asia-southeast1
+
+---- Upstash Ping
+
+python -c "
+import redis
+r = redis.Redis(host='bright-phoenix-126241.upstash.io', port=6379, password='gQAAAAAAAe0hAAIgcDIxODMxY2Q2YTQxZDQ0YTNjOGViYzUyZGRhNWZlMWFhMA', ssl=True)
+r.set('keep_alive_ping', 'active')
+print('SUCCESS: Pinged Upstash successfully. Status:', r.ping())
+"
+
+python -c "
+import redis
+r = redis.Redis(host='bright-phoenix-126241.upstash.io', port=6379, password='gQAAAAAAAe0hAAIgcDIxODMxY2Q2YTQxZDQ0YTNjOGViYzUyZGRhNWZlMWFhMA', ssl=True)
+print('Live Key Value on Upstash:', r.get('keep_alive_ping').decode())
+"
+
+------

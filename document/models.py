@@ -1,6 +1,7 @@
 import os
 from django.db import models
 from django.utils import timezone
+from account.models import AgentKnowledgeRule
 
 def generate_upload_path(instance, filename):
     # 1. Clean the filename
@@ -33,3 +34,31 @@ class Document(models.Model):
 
     def __str__(self):
         return self.title
+
+class SourceDocument(models.Model):
+    """Tracks the official PDFs or scraped articles."""
+    title = models.CharField(max_length=255, help_text="e.g., Prakas No. 012 on WHT")
+    source_url = models.URLField(blank=True, null=True)
+    document_pdf = models.FileField(upload_to='knowledge_sources/')
+    date_issued = models.DateField()
+    is_processed = models.BooleanField(default=False)
+    
+    def __str__(self):
+        return self.title
+
+class DraftKnowledgeRule(models.Model):
+    """The staging area for rules proposed by the Librarian Agent."""
+    source_document = models.ForeignKey(SourceDocument, on_delete=models.CASCADE)
+    
+    proposed_agent_scope = models.CharField(max_length=20) # e.g., TAX, ECON
+    proposed_title = models.CharField(max_length=255)
+    proposed_condition = models.TextField()
+    proposed_action_or_fact = models.TextField()
+    proposed_tags = models.CharField(max_length=255)
+    
+    # HITL Workflow
+    STATUS_CHOICES = [('PENDING', 'Pending Review'), ('APPROVED', 'Approved'), ('REJECTED', 'Rejected')]
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='PENDING')
+    
+    # If approved, link to the live rule
+    promoted_to = models.ForeignKey('account.AgentKnowledgeRule', on_delete=models.SET_NULL, null=True, blank=True)

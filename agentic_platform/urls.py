@@ -16,6 +16,7 @@ urlpatterns = [
     path('account/', include('account.urls')),
     path('sale/', include('sale.urls')),
     path('assets/', include('assets.urls')),
+    path('document/', include('document.urls')),
     # path('', IndexView, name='main'),
     # The root domain (localhost:8000 / your base URL) goes to the lobby
     path('', client_dashboard, name='portal_dashboard'),

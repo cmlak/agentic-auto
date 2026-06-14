@@ -86,3 +86,27 @@ class EconAgent:
                     is_resolved=False
                 )
         print("DEBUG: AgentNotifications successfully broadcasted.")
+
+    @staticmethod
+    def evaluate_incoming_data(raw_data_stream: str):
+        api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+        client = genai.Client(api_key=api_key)
+        
+        prompt = (
+            f"Analyze the following incoming economic data stream: \n\n{raw_data_stream}\n\n"
+            f"If you detect significant inflation (CPI changes), structural shifts, or risks "
+            f"that impact corporate cash management, use the 'create_agent_notification' tool "
+            f"to inform the team immediately. Otherwise, take no action."
+        )
+        
+        try:
+            # Gemini decides ON ITS OWN whether or not to trigger the tool
+            response = client.models.generate_content(
+                model='gemini-2.5-pro',
+                contents=prompt,
+                config=GenerateContentConfig(
+                    tools=[create_agent_notification]  # Registers the function as a tool
+                )
+            )
+        except Exception as e:
+            print(f"EconAgent evaluate_incoming_data Error: {e}")

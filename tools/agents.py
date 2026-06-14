@@ -2,11 +2,30 @@
 import os
 from django.conf import settings
 from google import genai
+from google.genai import types
 from .models import Purchase
 from account.models import AgentNotification
 from django.utils import timezone
 from clients.models import Client
 from django_tenants.utils import schema_context
+
+def create_agent_notification(agent_type: str, title: str, message: str, severity: str, action_url: str = "") -> str:
+    """Tool that allows an agent to broadcast an official notification to all client dashboards."""
+    print(f"DEBUG: Triggering broadcast notification: {title}")
+    count = 0
+    for tenant in Client.objects.exclude(schema_name='public'):
+        with schema_context(tenant.schema_name):
+            AgentNotification.objects.create(
+                agent_type=agent_type,
+                title=title,
+                message=message,
+                severity=severity,
+                action_url=action_url,
+                is_resolved=False
+            )
+            count += 1
+    print(f"DEBUG: Broadcast complete to {count} tenants.")
+    return f"Notification '{title}' successfully broadcasted to {count} tenants."
 
 class TaxAgent:
     @staticmethod
@@ -100,13 +119,14 @@ class EconAgent:
         )
         
         try:
-            # Gemini decides ON ITS OWN whether or not to trigger the tool
-            response = client.models.generate_content(
+            # The Chat API automatically executes the function if Gemini decides to call it
+            chat = client.chats.create(
                 model='gemini-2.5-pro',
-                contents=prompt,
-                config=GenerateContentConfig(
+                config=types.GenerateContentConfig(
                     tools=[create_agent_notification]  # Registers the function as a tool
                 )
             )
+            response = chat.send_message(prompt)
+            print(f"DEBUG: Agent Response: {response.text}")
         except Exception as e:
             print(f"EconAgent evaluate_incoming_data Error: {e}")

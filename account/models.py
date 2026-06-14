@@ -3,6 +3,7 @@ from django.core.exceptions import ValidationError
 from django.db.models import Q
 from simple_history.models import HistoricalRecords
 from django.utils.translation import gettext_lazy as _
+from pgvector.django import VectorField
 
 # ====================================================================
 # --- 1. CHART OF ACCOUNTS ---
@@ -255,6 +256,9 @@ class AgentKnowledgeRule(models.Model):
     condition = models.TextField(help_text="WHEN does this rule apply? (e.g., 'When invoice has construction materials')")
     action_or_fact = models.TextField(help_text="WHAT should the AI do or know? (e.g., 'Classify as 181000 - Factory CIP')")
     
+    # The mathematical coordinate of this rule
+    embedding = VectorField(dimensions=768, null=True, blank=True)
+
     history = HistoricalRecords()
 
     def __str__(self):

@@ -24,14 +24,14 @@ python manage.py showmigrations tools
 
 python manage.py agent_knowledge_rule --schema "CCKT"
 
-gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:v10
+gcloud builds submit --tag gcr.io/document-project-464509/agentic-platform:v11
 
 gcloud run jobs update debug-nbc-scraper-us \
-  --image gcr.io/document-project-464509/agentic-platform:latest \
+  --image gcr.io/document-project-464509/agentic-platform:v11 \
   --region us-central1
 
 gcloud run jobs update global-dashboard-update \
-  --image gcr.io/document-project-464509/agentic-platform:v10 \
+  --image gcr.io/document-project-464509/agentic-platform:v11 \
   --region asia-southeast1
 
 gcloud run jobs execute debug-nbc-scraper-us --region us-central1

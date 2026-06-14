@@ -8,6 +8,7 @@ from typing import List, Literal
 from google import genai
 from google.genai import types
 from django.db import transaction
+from google.cloud import documentai
 from account.models import AgentKnowledgeRule
 
 from .models import Document, SourceDocument, DraftKnowledgeRule
@@ -56,19 +57,40 @@ def upload_financial_report_view(request):
                 return redirect('document:upload_financial_report')
 
             client = genai.Client(api_key=api_key)
-            prompt = """You are an elite Cambodian Macroeconomist and Tax Auditor. Read the attached official report.
+            
+            try:
+                pdf_bytes = form.cleaned_data['document_pdf'].read()
+                
+                # 1. Use the Vertex AI Document Parsing API (Google Cloud Document AI)
+                project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+                location = os.getenv("DOCUMENTAI_LOCATION", "us")
+                processor_id = os.getenv("DOCUMENTAI_PROCESSOR_ID")
+                
+                parsed_text = ""
+                if project_id and processor_id:
+                    docai_client = documentai.DocumentProcessorServiceClient()
+                    name = docai_client.processor_path(project_id, location, processor_id)
+                    raw_document = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
+                    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
+                    result = docai_client.process_document(request=request)
+                    parsed_text = result.document.text
+                else:
+                    parsed_text = "Fallback: Direct text extraction required. (DOCUMENTAI_PROCESSOR_ID missing)"
+
+                # 2. Use Gemini 1.5 Pro for Extraction
+                prompt = f"""You are an elite Cambodian Macroeconomist and Tax Auditor. Read the perfectly parsed text below.
                 Extract actionable rules, macroeconomic shifts, and compliance changes.
                 Output an array of JSON objects matching this schema:
                 [{ 'agent_scope': 'ECON', 'title': 'Q2 Inflation Shift', 'condition': 'When assessing purchasing power or FX logic', 'action_or_fact': 'The inflation rate has risen to 3.2%. Adjust cash flow forecasting models accordingly.', 'tags': 'inflation, Q2, NBC' }]
-                ONLY extract definitive facts and actionable directives. Ignore fluff."""
-
-            try:
-                pdf_bytes = form.cleaned_data['document_pdf'].read()
-                document_part = types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf")
+                ONLY extract definitive facts and actionable directives. Ignore fluff.
+                
+                <PARSED_TEXT>
+                {parsed_text}
+                </PARSED_TEXT>"""
                 
                 response = client.models.generate_content(
-                    model='gemini-2.5-pro',
-                    contents=[prompt, document_part],
+                    model='gemini-1.5-pro',
+                    contents=[prompt],
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=RuleBatch,
@@ -114,6 +136,10 @@ def review_draft_rules_view(request):
         formset = DraftKnowledgeRuleFormSet(request.POST, queryset=pending_rules)
         if formset.is_valid():
             instances_saved = 0
+            
+            api_key = os.getenv("GEMINI_API_KEY_2")
+            client = genai.Client(api_key=api_key) if api_key else None
+            
             with transaction.atomic():
                 for form in formset:
                     if form.cleaned_data.get('DELETE'):
@@ -125,13 +151,29 @@ def review_draft_rules_view(request):
                     if form.has_changed() or form.cleaned_data.get('status') == 'APPROVED':
                         rule = form.save(commit=False)
                         if rule.status == 'APPROVED' and not rule.promoted_to:
+                            
+                            # Generate embeddings for RAG Pipeline ingestion
+                            embedding_val = None
+                            if client:
+                                content_to_embed = f"Title: {rule.proposed_title}\nCondition: {rule.proposed_condition}\nAction/Fact: {rule.proposed_action_or_fact}\nTags: {rule.proposed_tags}"
+                                try:
+                                    embed_res = client.models.embed_content(
+                                        model='text-embedding-004',
+                                        contents=content_to_embed
+                                    )
+                                    if embed_res.embeddings:
+                                        embedding_val = embed_res.embeddings[0].values
+                                except Exception as e:
+                                    print(f"Embedding generation failed: {e}")
+
                             live_rule = AgentKnowledgeRule.objects.create(
                                 agent_scope=rule.proposed_agent_scope,
                                 rule_type='MACRO_FACT',
                                 tags=rule.proposed_tags,
                                 title=rule.proposed_title,
                                 condition=rule.proposed_condition,
-                                action_or_fact=rule.proposed_action_or_fact
+                                action_or_fact=rule.proposed_action_or_fact,
+                                embedding=embedding_val
                             )
                             rule.promoted_to = live_rule
                         rule.save()

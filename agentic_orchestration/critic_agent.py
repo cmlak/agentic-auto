@@ -1,6 +1,6 @@
 from typing import Literal
 from pydantic import BaseModel, Field
-from .base_agent import BaseAutonomousAgent
+from .base_agent import BaseAutonomousAgent, AgentResponse
 
 class ProposedRule(BaseModel):
     agent_scope: Literal['GLOBAL', 'TAX', 'RECON', 'ECON'] = Field(
@@ -16,7 +16,7 @@ class CriticAgent(BaseAutonomousAgent):
     Reflective agent that analyzes AI mapping failures and autonomously 
     proposes new AgentKnowledgeRules to prevent future mistakes.
     """
-    def analyze_correction(self, context_data: str, ai_decision: str, human_correction: str) -> dict:
+    def analyze_correction(self, context_data: str, ai_decision: str, human_correction: str) -> AgentResponse:
         prompt = f"""
         You are an elite AI Alignment Critic. Your job is to analyze a mistake made by another AI agent 
         and propose a new, permanent Knowledge Rule to prevent this mistake in the future.
@@ -38,9 +38,9 @@ class CriticAgent(BaseAutonomousAgent):
         Focus on the underlying accounting principle or mapping logic, not just the specific document.
         """
         
-        result = self.execute_task(contents=[prompt], response_schema=ProposedRule)
+        agent_response = self.execute_task(contents=[prompt], response_schema=ProposedRule)
         
-        if not result:
-            raise ValueError("CriticAgent failed to generate a valid rule from the LLM response. The response was empty or could not be parsed.")
+        if agent_response.status == 'SUCCESS' and agent_response.payload:
+            agent_response.payload = agent_response.payload.model_dump()
             
-        return result.model_dump()
+        return agent_response

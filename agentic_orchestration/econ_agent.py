@@ -23,6 +23,7 @@ class EconAgent(BaseAutonomousAgent):
         )
         
         # Inherited execute_task handles LLM connectivity and token counting
-        analysis = self.execute_task(contents=[prompt])
+        agent_response = self.execute_task(contents=[prompt])
+        analysis = agent_response.payload if agent_response.status == 'SUCCESS' and agent_response.payload else "AI analysis failed."
         
         return {"is_risk": True, "deviation_pct": deviation_pct, "analysis": analysis.strip()}

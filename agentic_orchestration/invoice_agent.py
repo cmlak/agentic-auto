@@ -41,10 +41,16 @@ class InvoiceAgent(BaseAutonomousAgent):
         """
 
         # Inherited from BaseAutonomousAgent: handles retries, token counting, and Schema validation automatically
-        audit_batch: AccountingBatch = self.execute_task(
+        agent_response = self.execute_task(
             contents=[document_part, prompt],
             response_schema=AccountingBatch
         )
+        
+        if agent_response.status == 'FAILURE' or not agent_response.payload:
+            print(f"⚠️ [InvoiceAgent] Failed to extract data: {agent_response.error_message}")
+            return []
+            
+        audit_batch: AccountingBatch = agent_response.payload
         
         for entry in audit_batch.purchase_entries:
             entry.page = computed_page

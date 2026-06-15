@@ -21,15 +21,20 @@ def process_user_correction(event, context):
     # 1. Initialize and run the Agent
     agent = CriticAgent(api_key=api_key)
     try:
-        proposed_rule = agent.analyze_correction(
+        agent_response = agent.analyze_correction(
             context_data=payload.get("context_data"),
             ai_decision=payload.get("ai_decision"),
             human_correction=payload.get("human_correction")
         )
         
-        # Defensive check before publishing
+        if agent_response.status == 'FAILURE':
+            print(f"⚠️ [CloudFunction] CriticAgent failed to generate a rule. Reason: {agent_response.error_message}")
+            return
+
+        proposed_rule = agent_response.payload
+
         if not proposed_rule or not proposed_rule.get('title'):
-            print(f"⚠️ [CloudFunction] Generated rule is invalid or empty. Aborting publish. Rule: {proposed_rule}")
+            print(f"⚠️ [CloudFunction] Agent returned SUCCESS but rule is invalid. Aborting publish. Rule: {proposed_rule}")
             return
 
         # 2. Publish the new rule to the second topic so Django can receive it
@@ -39,5 +44,5 @@ def process_user_correction(event, context):
         
         publisher.publish(topic_path, data=json.dumps(proposed_rule).encode("utf-8"))
         print(f"✅ [CloudFunction] Successfully drafted rule and published to draft-rules-topic: {proposed_rule.get('title')}")
-    except Exception as e:
-        print(f"⚠️ [CloudFunction] Failed to generate rule: {e}")
+    except Exception as e: # This now catches infrastructure errors, not agent logic errors
+        print(f"CRITICAL [CloudFunction] Infrastructure error during critic execution: {e}")

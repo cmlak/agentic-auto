@@ -40,7 +40,18 @@ def handle_user_correction(payload: dict):
     
     agent = CriticAgent(api_key=api_key)
     try:
-        proposed_rule = agent.analyze_correction(context, ai_decision, human_correction)
+        agent_response = agent.analyze_correction(context, ai_decision, human_correction)
+        
+        if agent_response.status == 'FAILURE':
+            print(f"⚠️ [CriticAgent] Failed to generate rule. Reason: {agent_response.error_message}")
+            return
+            
+        proposed_rule = agent_response.payload
+        
+        if not proposed_rule or not proposed_rule.get('title'):
+            print(f"⚠️ [CriticAgent] Agent returned SUCCESS but rule is invalid. Rule: {proposed_rule}")
+            return
+            
         EventBus.publish("DRAFT_RULE_PROPOSED", proposed_rule)
     except Exception as e:
-        print(f"⚠️ [CriticAgent] Failed to generate rule: {e}")
+        print(f"CRITICAL [CriticAgent] Infrastructure error during critic execution: {e}")

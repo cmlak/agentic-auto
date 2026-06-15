@@ -15,6 +15,7 @@ from django.conf import settings
 from django.shortcuts import render, redirect, get_object_or_404
 from django.contrib import messages
 from django.http import HttpResponse, HttpResponseForbidden, HttpResponseRedirect, JsonResponse
+from django.views.decorators.csrf import csrf_exempt
 from django.urls import reverse, reverse_lazy
 from django.contrib.admin.views.decorators import staff_member_required
 from django.contrib.auth.decorators import login_required
@@ -33,7 +34,7 @@ MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, Engagement
 AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet, ManualInvoiceUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
-from .orchestrators import InvoiceOrchestrator
+from .orchestrators import InvoiceOrchestrator, DjangoEventOrchestrator
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -3059,3 +3060,27 @@ def agentic_review_invoices(request):
         )
         
     return render(request, 'tools/agentic_invoice_review.html', {'formset': formset, 'metadata': metadata})
+
+@csrf_exempt
+def pubsub_draft_rule_webhook(request):
+    """
+    Catches 'DRAFT_RULE_PROPOSED' events from Google Cloud Pub/Sub
+    and routes them to the Dashboard by saving them to the DB as 'PENDING'.
+    """
+    if request.method == 'POST':
+        try:
+            body = json.loads(request.body)
+            message = body.get('message', {})
+            if not message:
+                return JsonResponse({'error': 'Invalid payload format'}, status=400)
+                
+            data = base64.b64decode(message.get('data', '')).decode('utf-8')
+            payload = json.loads(data)
+            
+            DjangoEventOrchestrator.handle_draft_rule_proposed(payload)
+            return JsonResponse({'status': 'Rule drafted successfully'}, status=200)
+        except Exception as e:
+            print(f"❌ [PubSub Webhook] Error processing incoming rule: {e}")
+            return JsonResponse({'error': str(e)}, status=500)
+            
+    return JsonResponse({'error': 'Method not allowed'}, status=405)

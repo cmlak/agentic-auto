@@ -3,6 +3,8 @@ import io
 import difflib
 import threading
 from datetime import datetime
+import json
+from google.cloud import pubsub_v1
 from pypdf import PdfReader
 from django.utils import timezone
 
@@ -160,12 +162,24 @@ class SystemOrchestrator:
         """
         PHASE 5: Autonomously triggers the CriticAgent when a human overrides the AI.
         """
-        EventBus.publish("USER_CORRECTION_LOGGED", {
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project_id:
+            print("⚠️ [SystemOrchestrator] GOOGLE_CLOUD_PROJECT missing. Cannot publish to Pub/Sub.")
+            return False
+            
+        publisher = pubsub_v1.PublisherClient()
+        topic_path = publisher.topic_path(project_id, "user-corrections-topic")
+        
+        payload = {
             "context_data": context_data,
             "ai_decision": ai_decision,
             "human_correction": human_correction,
             "api_key": api_key
-        })
+        }
+        
+        data_bytes = json.dumps(payload).encode("utf-8")
+        publisher.publish(topic_path, data=data_bytes)
+        print(f"📡 [SystemOrchestrator] Published correction feedback to Pub/Sub.")
         return True
 
 class DjangoEventOrchestrator:

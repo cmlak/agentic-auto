@@ -69,4 +69,7 @@ urlpatterns = [
     path('agentic/invoice-upload/', views.agentic_invoice_upload_view, name='agentic_invoice_upload'),
     path('agentic/invoice-review/', views.agentic_review_invoices, name='agentic_review_invoices'),
 
+    # Pub/Sub Webhooks
+    path('webhooks/draft-rules/', views.pubsub_draft_rule_webhook, name='pubsub_draft_rule_webhook'),
+
 ]

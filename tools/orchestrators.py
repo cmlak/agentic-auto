@@ -189,29 +189,47 @@ class DjangoEventOrchestrator:
     def handle_system_notification(payload: dict):
         from clients.models import Client
         from django_tenants.utils import schema_context
+        # FIX: Added missing import locally inside tenant context to ensure correct schema resolution
+        from account.models import AgentNotification 
         
-        print(f"💾 [DjangoEventOrchestrator] Writing Notification to DB: {payload.get('title')}")
+        title_val = payload.get('title') or "System Notification"
+        print(f"💾 [DjangoEventOrchestrator] Writing Notification to DB: {title_val}")
+        
         for tenant in Client.objects.exclude(schema_name='public'):
             with schema_context(tenant.schema_name):
                 AgentNotification.objects.create(
                     agent_type=payload.get('agent_type', 'SYSTEM'),
                     severity=payload.get('severity', 'INFO'),
-                    title=payload.get('title'),
-                    message=payload.get('message'),
+                    title=title_val,
+                    message=payload.get('message', ''),
                     action_url=payload.get('action_url', ''),
                     is_resolved=False
                 )
+        print("✅ [DjangoEventOrchestrator] Notifications successfully broadcasted.")
 
     @staticmethod
     def handle_draft_rule_proposed(payload: dict):
         from document.models import DraftKnowledgeRule, SourceDocument
+        from django.utils import timezone
         
-        print(f"📝 [DjangoEventOrchestrator] Autonomously drafting new rule: {payload.get('title')}")
+        # FIX: Support both plain and prefixed payload schemas dynamically
+        title = payload.get('title') or payload.get('proposed_title')
+        condition = payload.get('condition') or payload.get('proposed_condition')
+        action_or_fact = payload.get('action_or_fact') or payload.get('proposed_action_or_fact')
+        tags = payload.get('tags') or payload.get('proposed_tags', '')
+        agent_scope = payload.get('agent_scope') or payload.get('proposed_agent_scope', 'GLOBAL')
 
-        # Defensive check for required keys to prevent IntegrityError
-        if not all(key in payload and payload[key] for key in ['title', 'condition', 'action_or_fact']):
-            print(f"⚠️ [DjangoEventOrchestrator] Aborting save. Payload missing required keys or has empty values. Payload: {payload}")
-            return
+        print(f"📝 [DjangoEventOrchestrator] Autonomously drafting new rule: {title}")
+
+        # FIX: Secure fallbacks to completely guarantee no NOT-NULL database violations occur
+        if not title:
+            title = f"Autodrafted Rule - {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+            
+        if not condition:
+            condition = "No condition specified."
+            
+        if not action_or_fact:
+            action_or_fact = "No action or fact specified."
 
         try:
             # Get or create a generic placeholder for autonomous system feedback safely
@@ -226,13 +244,14 @@ class DjangoEventOrchestrator:
             
             DraftKnowledgeRule.objects.create(
                 source_document=source_doc,
-                proposed_agent_scope=payload.get('agent_scope', 'GLOBAL'),
-                proposed_title=payload.get('title'),
-                proposed_condition=payload.get('condition'),
-                proposed_action_or_fact=payload.get('action_or_fact'),
-                proposed_tags=payload.get('tags'),
+                proposed_agent_scope=agent_scope,
+                proposed_title=title,
+                proposed_condition=condition,
+                proposed_action_or_fact=action_or_fact,
+                proposed_tags=tags,
                 status='PENDING'
             )
+            print(f"✅ [DjangoEventOrchestrator] Draft Rule successfully saved: {title}")
         except Exception as e:
             print(f"⚠️ [DjangoEventOrchestrator] Failed to save Draft Rule: {e}")
 

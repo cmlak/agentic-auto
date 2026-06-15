@@ -33,6 +33,7 @@ MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, Engagement
 AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet, ManualInvoiceUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
+from .orchestrators import InvoiceOrchestrator
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -262,7 +263,7 @@ def invoice_ai_upload_view(request):
 # ====================================================================
 
 @login_required(login_url="register:login")
-def review_invoices(request):
+def review_invoices(request, template_name='tools/invoice_review.html'):
     """Step 2: Review AI data, Update Vendors, Save Source Doc, and Post Journal Entry."""
     extracted_data = request.session.get('extracted_invoices', [])
     metadata = request.session.get('ai_metadata', {})
@@ -520,7 +521,7 @@ def review_invoices(request):
             form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
         )
         
-    return render(request, 'tools/invoice_review.html', {'formset': formset, 'metadata': metadata})
+    return render(request, template_name, {'formset': formset, 'metadata': metadata})
 
 # ====================================================================
 # --- 3. DOWNLOAD & DASHBOARD VIEWS ---
@@ -2787,3 +2788,274 @@ def automate_prepayment_offset(request):
 def offset_success_view(request):
     """Renders the success page after prepayment offset completes."""
     return render(request, 'offset_success.html')
+
+# ====================================================================
+# --- 7. AGENTIC ORCHESTRATOR TESTING VIEWS (PARALLEL WORKFLOW) ---
+# ====================================================================
+
+@login_required(login_url="register:login")
+def agentic_invoice_upload_view(request):
+    """Parallel testing view that routes to the new Agentic Orchestrator architecture."""
+    user = request.user
+
+    if request.method == 'POST':
+        action = request.POST.get('action')
+        
+        if action == 'process_page':
+            job = request.session.get('agentic_invoice_job')
+            if not job:
+                return JsonResponse({"status": "error", "message": "Job session not found."})
+                
+            page = int(request.POST.get('page', 1))
+            api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+            
+            # 🚀 USE THE NEW ORCHESTRATOR
+            processor = InvoiceOrchestrator(api_key=api_key)
+            
+            local_file_path = job.get('local_file_path')
+            if not local_file_path or not os.path.exists(local_file_path):
+                return JsonResponse({"status": "error", "message": "Source PDF lost on server."})
+                
+            try:
+                reader = PdfReader(local_file_path)
+                writer = PdfWriter()
+                writer.add_page(reader.pages[page - 1])
+                
+                pdf_bytes_io = io.BytesIO()
+                writer.write(pdf_bytes_io)
+                single_page_bytes = pdf_bytes_io.getvalue()
+            except Exception as e:
+                return JsonResponse({"status": "error", "message": f"Failed to isolate PDF page {page}. Error: {str(e)}"})
+            
+            print(f"\n[AGENTIC PAGE {page}] EXTRACTING KEY INVOICE DATA...")
+            ledgers, page_cost, next_seq, err = processor.process_single_page(
+                pdf_bytes=single_page_bytes, 
+                pg=page, custom_prompt=job['custom_prompt'],
+                batch_name=job['batch_name'], rules_context=job['rules_context'],
+                memo_context=job['memo_context'], current_invoice_seq=job['current_seq'],
+                date_prefix=job['date_prefix'], is_explicit_seq=job['is_explicit_seq']
+            )
+            
+            current_job = request.session.get('agentic_invoice_job')
+            if current_job:
+                if ledgers:
+                    current_job['results'].extend(ledgers)
+                    print(f"   🎉 Extracted {len(ledgers)} invoices from Page {page}.")
+
+                current_job['current_seq'] = max(current_job.get('current_seq', 1), next_seq)
+                current_job['costs']['pro_cost'] += page_cost
+                request.session['agentic_invoice_job'] = current_job
+                request.session.save()
+            
+            if err and "Timeout Error" in err:
+                return JsonResponse({"status": "timeout", "page": page, "message": f"AI timed out on Page {page}."})
+            
+            return JsonResponse({"status": "success", "page": page, "ledgers_count": len(ledgers) if ledgers else 0, "error": err})
+            
+        if action == 'finalize':
+            job = request.session.get('agentic_invoice_job')
+            if not job:
+                return JsonResponse({"status": "error", "message": "Job session not found."})
+                
+            local_file_path = job.get('local_file_path')
+            if local_file_path and os.path.exists(local_file_path):
+                os.remove(local_file_path)
+                
+            results = job.get('results', [])
+            results.sort(key=lambda x: int(x.get('page', 0) or 0))
+            
+            is_explicit_seq = job.get('is_explicit_seq', False)
+            date_prefix = job.get('date_prefix')
+            original_seq = job.get('original_seq', 1)
+            
+            processed_pages = set()
+            month_trackers = {}
+            current_explicit_seq = original_seq
+            
+            for item in results:
+                page = item.get('page')
+                inv_no = str(item.get('invoice_no', ''))
+
+                if inv_no == "NEEDS_SEQ" or inv_no.startswith('INV-'):
+                    if is_explicit_seq:
+                        if page not in processed_pages:
+                            processed_pages.add(page)
+                            base_seq = current_explicit_seq
+                            current_explicit_seq += 1
+                        else:
+                            base_seq = current_explicit_seq - 1
+                        base_inv_no = f"INV-{date_prefix}{base_seq:02d}"
+                    else:
+                        item_date = item.get('date')
+                        if item_date:
+                            try:
+                                parsed_date = datetime.strptime(item_date, "%Y-%m-%d")
+                                month_prefix = parsed_date.strftime("%Y%m")
+                            except ValueError: month_prefix = datetime.now().strftime("%Y%m")
+                        else:
+                            month_prefix = datetime.now().strftime("%Y%m")
+                            
+                        if month_prefix not in month_trackers:
+                            existing_invs = Purchase.objects.filter(
+                                invoice_no__startswith=f"INV-{month_prefix}"
+                            ).values_list('invoice_no', flat=True)
+                            max_seq = 0
+                            for inv in existing_invs:
+                                match = re.search(rf'INV-{month_prefix}(\d+)', inv)
+                                if match: max_seq = max(max_seq, int(match.group(1)))
+                            month_trackers[month_prefix] = max_seq + 1
+                            
+                        if page not in processed_pages:
+                            processed_pages.add(page)
+                            base_seq = month_trackers[month_prefix]
+                            month_trackers[month_prefix] += 1
+                        else:
+                            base_seq = month_trackers[month_prefix] - 1
+                            
+                        base_inv_no = f"INV-{month_prefix}{base_seq:02d}"
+
+                    parts = inv_no.split("-")
+                    if len(parts) > 2 and parts[-1].isdigit() and len(parts[-1]) < 4:
+                        item['invoice_no'] = f"{base_inv_no}-{parts[-1]}"
+                    else:
+                        item['invoice_no'] = base_inv_no
+
+            total_flash = job['costs']['flash_cost']
+            total_pro = job['costs']['pro_cost']
+            total_cost = total_flash + total_pro
+            
+            try:
+                AICostLog.objects.create(file_name=f"[AGENTIC] {job['file_name']}", total_pages=job['total_pages'], flash_cost=total_flash, pro_cost=total_pro, total_cost=total_cost)
+            except NameError: pass
+                
+            request.session['agentic_extracted_invoices'] = results
+            request.session['agentic_ai_metadata'] = {
+                'file_name': job['file_name'], 'batch_name': job['batch_name'],
+                'total_pages': job['total_pages'], 'costs': job['costs']
+            }
+            request.session.pop('agentic_invoice_job', None)
+            return JsonResponse({"status": "success", "redirect_url": reverse('tools:agentic_review_invoices')})
+
+        request.session.pop('invoice_report_path', None)
+        form = BatchUploadForm(request.POST, request.FILES)
+        if form.is_valid():
+            uploaded_pdf = form.cleaned_data['invoice_pdf']
+            batch_name = form.cleaned_data['batch_name']
+            custom_prompt = form.cleaned_data.get('ai_prompt', '')
+            
+            inv_match = re.search(r'INV-(\d{6})(\d+)', custom_prompt, re.IGNORECASE)
+            if inv_match:
+                date_prefix = inv_match.group(1) 
+                current_seq = int(inv_match.group(2)) 
+                is_explicit_seq = True
+            else:
+                date_prefix = datetime.now().strftime("%Y%m")
+                current_seq = 1
+                is_explicit_seq = False
+
+            # Agentic Orchestrator handles its own RAG pipeline. We just pass memos for batch context if any.
+            client_memo = ClientPromptMemo.objects.first()
+            memo_context = client_memo.memo_text if client_memo else ""
+            rules_context = ""
+
+            temp_dir = os.path.join(settings.MEDIA_ROOT, 'temp_invoices')
+            os.makedirs(temp_dir, exist_ok=True)
+            unique_filename = f"agentic_batch_{uuid.uuid4().hex}.pdf"
+            local_file_path = os.path.join(temp_dir, unique_filename)
+            
+            with open(local_file_path, 'wb') as f:
+                for chunk in uploaded_pdf.chunks(): f.write(chunk)
+
+            try:
+                reader = PdfReader(local_file_path)
+                total_pages = len(reader.pages)
+                
+                if total_pages > 20:
+                    os.remove(local_file_path)
+                    return JsonResponse({"status": "error", "message": f"Limit exceeded. PDF has {total_pages} pages, max is 20."})
+                
+                request.session['agentic_invoice_job'] = {
+                    'local_file_path': local_file_path, 'file_name': uploaded_pdf.name, 'total_pages': total_pages,
+                    'batch_name': batch_name, 'custom_prompt': custom_prompt,
+                    'rules_context': rules_context, 'memo_context': memo_context, 'is_explicit_seq': is_explicit_seq,
+                    'date_prefix': date_prefix, 'original_seq': current_seq, 'current_seq': current_seq,
+                    'results': [], 'costs': {'flash_cost': 0.0, 'pro_cost': 0.0}
+                }
+                request.session.save()
+                return JsonResponse({"status": "init_success", "total_pages": total_pages})
+                
+            except Exception as e:
+                if os.path.exists(local_file_path): os.remove(local_file_path)
+                return JsonResponse({"status": "error", "message": f"Initialization Error: {str(e)}"})
+        else:
+            return JsonResponse({"status": "error", "message": "Form validation failed."})
+    else:
+        job = request.session.get('agentic_invoice_job')
+        if job and 'local_file_path' in job and os.path.exists(job['local_file_path']):
+            os.remove(job['local_file_path'])
+            request.session.pop('agentic_invoice_job', None)
+            
+        form = BatchUploadForm()
+
+    return render(request, 'agentic_invoice_upload.html', {'form': form})
+
+
+@login_required(login_url="register:login")
+def agentic_review_invoices(request):
+    """Parallel view: Human-In-The-Loop review specifically for the new Agentic Orchestrator data."""
+    extracted_data = request.session.get('agentic_extracted_invoices', [])
+    metadata = request.session.get('agentic_ai_metadata', {})
+
+    if not extracted_data and request.method == 'GET':
+        return redirect('tools:agentic_invoice_upload')
+        
+    extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
+        
+    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
+    temp_vendors = []
+    for item in extracted_data:
+        if item.get('is_new_vendor') and item.get('temp_id'):
+            temp_id = item['temp_id']
+            temp_vid = item.get('temp_vid', 'NEW')
+            company = item.get('company', 'Unknown')
+            if not any(tv[0] == temp_id for tv in temp_vendors):
+                temp_vendors.append((temp_id, f"✨ NEW: {company} ({temp_vid})"))
+                
+    dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
+
+    seen_accounts = set()
+    db_accounts = []
+    for acc_id, name in Account.objects.values_list('account_id', 'name'):
+        if acc_id not in seen_accounts:
+            seen_accounts.add(acc_id)
+            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
+    db_accounts.sort(key=lambda x: str(x[0]))
+    account_choices = [('', '--- Select Account ---')] + db_accounts
+
+    # We pass the data to the same robust formset and database posting logic
+    # To keep this DRY and concise, we route the verified data to your existing hitl review pipeline logic
+    # We temporarily assign the session keys back to normal, call the logic, and pop them!
+    if request.method == 'POST':
+        request.session['extracted_invoices'] = request.session.get('agentic_extracted_invoices')
+        request.session['ai_metadata'] = request.session.get('agentic_ai_metadata')
+        
+        response = review_invoices(request, template_name='tools/agentic_invoice_review.html')
+        
+        # Clear our parallel keys after the main function processes them
+        if not isinstance(response, HttpResponseRedirect) and response.status_code == 200:
+            # Validation failed, restore normal state and render
+            pass
+        else:
+            # Success!
+            request.session.pop('agentic_extracted_invoices', None)
+            request.session.pop('agentic_ai_metadata', None)
+            
+        return response
+        
+    else:
+        formset = PurchaseFormSet(
+            initial=extracted_data, 
+            form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
+        )
+        
+    return render(request, 'tools/agentic_invoice_review.html', {'formset': formset, 'metadata': metadata})

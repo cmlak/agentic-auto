@@ -1,0 +1,135 @@
+{% extends 'base_3_account.html' %}
+{% load crispy_forms_tags %}
+
+{% block title %}Review AI Extracted Invoices{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="card shadow-sm">
+        <div class="card-header bg-primary text-white">
+            <h3 class="mb-0">Review & Post Invoices</h3>
+        </div>
+        <div class="card-body bg-light border-bottom">
+            <div class="row align-items-center">
+                <div class="col-md-4"><strong>File:</strong> {{ metadata.file_name }}</div>
+                <div class="col-md-4"><strong>Batch:</strong> {{ metadata.batch_name }}</div>
+                <div class="col-md-2"><strong>Total Records:</strong> {{ metadata.total_pages }}</div>
+                <div class="col-md-2 text-end"><strong>AI Cost:</strong> ${{ metadata.costs.pro_cost|floatformat:5 }}</div>
+            </div>
+        </div>
+        <div class="card-body">
+            {% if formset.non_form_errors %}
+                <div class="alert alert-danger">
+                    {{ formset.non_form_errors }}
+                </div>
+            {% endif %}
+
+            <form method="post">
+                {% csrf_token %}
+                {{ formset.management_form }}
+
+                {% for form in formset %}
+                    <div class="purchase-form-wrapper">
+                        {% crispy form %}
+                    </div>
+                {% endfor %}
+
+                <div class="mt-5 d-flex justify-content-end">
+                    <a href="{% url 'tools:agentic_review_invoices' %}" class="btn btn-secondary btn-lg me-3">Cancel & Discard</a>
+                    <button type="submit" class="btn btn-success btn-lg">
+                        <i class="fas fa-check-circle me-2"></i>Save All & Post to GL
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Event delegation to handle clicks for both existing and cloned buttons
+    document.body.addEventListener('click', function(e) {
+        if (e.target.matches('.toggle-accruals-btn')) {
+            const wrapper = e.target.closest('.purchase-form-wrapper');
+            if (wrapper) wrapper.querySelectorAll('.accrual-fields').forEach(el => el.classList.toggle('d-none'));
+        }
+        
+        if (e.target.matches('.toggle-taxes-btn')) {
+            const wrapper = e.target.closest('.purchase-form-wrapper');
+            if (wrapper) wrapper.querySelectorAll('.tax-fields').forEach(el => el.classList.toggle('d-none'));
+        }
+        
+        if (e.target.matches('.clone-form-btn')) {
+            clonePurchaseForm(e.target);
+        }
+    });
+});
+
+if (typeof clonePurchaseForm !== 'function') {
+    function clonePurchaseForm(btn) {
+        const currentForm = btn.closest('.purchase-form-wrapper');
+        
+        // TOGGLE OFF: Hide the cloned form and mark it for deletion in Django
+        if (btn.classList.contains('is-cloned-active')) {
+            const clonedFormId = btn.getAttribute('data-cloned-target');
+            const clonedForm = document.getElementById(clonedFormId);
+            if (clonedForm) {
+                const deleteCheckbox = clonedForm.querySelector('input[name$="-DELETE"]');
+                if (deleteCheckbox) {
+                    deleteCheckbox.checked = true;
+                }
+                clonedForm.style.display = 'none';
+            }
+            btn.classList.remove('is-cloned-active');
+            btn.classList.replace('btn-outline-danger', 'btn-outline-success');
+            btn.innerText = '+ Add Manual Split/Entry';
+            return;
+        }
+
+        const totalFormsInput = document.querySelector('input[name$="-TOTAL_FORMS"]');
+        if (!totalFormsInput) {
+            console.error("TOTAL_FORMS input not found.");
+            return;
+        }
+        
+        let currentTotal = parseInt(totalFormsInput.value);
+        const newForm = currentForm.cloneNode(true);
+        
+        const newFormId = 'cloned-form-' + currentTotal;
+        newForm.id = newFormId;
+        
+        const regex = new RegExp('form-\\d+-', 'g');
+        const replaceStr = 'form-' + currentTotal + '-';
+        
+        newForm.querySelectorAll('input, select, textarea').forEach(input => {
+            if (input.name) input.name = input.name.replace(regex, replaceStr);
+            if (input.id) input.id = input.id.replace(regex, replaceStr);
+            
+            // Clear values for inputs that are not readonly/disabled
+            if (!input.readOnly && !input.disabled && input.type !== 'hidden') {
+                if (input.tagName === 'SELECT') { input.selectedIndex = 0; } 
+                else { input.value = ''; }
+            }
+        });
+        
+        const formNumberInput = newForm.querySelector('input[name$="-form_number"]');
+        if (formNumberInput) formNumberInput.value = currentTotal + 1;
+        
+        const clonedBtn = newForm.querySelector('.clone-form-btn');
+        if (clonedBtn) {
+            clonedBtn.remove();
+        }
+        
+        currentForm.parentNode.insertBefore(newForm, currentForm.nextSibling);
+        totalFormsInput.value = currentTotal + 1;
+        
+        btn.classList.add('is-cloned-active');
+        btn.classList.replace('btn-outline-success', 'btn-outline-danger');
+        btn.innerText = '- Remove Manual Split/Entry';
+        btn.setAttribute('data-cloned-target', newFormId);
+    }
+}
+</script>
+{% endblock extra_js %}

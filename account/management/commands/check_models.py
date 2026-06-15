@@ -27,9 +27,11 @@ class Command(BaseCommand):
             # 3. List Models
             count = 0
             for m in client.models.list():
-                # filter for models that support generating content
                 if "generateContent" in m.supported_actions:
-                    self.stdout.write(self.style.SUCCESS(f"✅ Found: {m.name}"))
+                    self.stdout.write(self.style.SUCCESS(f"✅ Found Generation Model: {m.name}"))
+                    count += 1
+                elif "embedContent" in m.supported_actions:
+                    self.stdout.write(self.style.SUCCESS(f"✅ Found Embedding Model: {m.name}"))
                     count += 1
                     
             if count == 0:

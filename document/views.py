@@ -157,10 +157,21 @@ def review_draft_rules_view(request):
                             if client:
                                 content_to_embed = f"Title: {rule.proposed_title}\nCondition: {rule.proposed_condition}\nAction/Fact: {rule.proposed_action_or_fact}\nTags: {rule.proposed_tags}"
                                 try:
-                                    embed_res = client.models.embed_content(
-                                        model='text-embedding-004',
-                                        contents=content_to_embed
-                                    )
+                                    try:
+                                        embed_res = client.models.embed_content(
+                                            model='gemini-embedding-2',
+                                            contents=content_to_embed,
+                                            config=types.EmbedContentConfig(output_dimensionality=768)
+                                        )
+                                    except Exception as e:
+                                        if '404' in str(e):
+                                            embed_res = client.models.embed_content(
+                                                model='gemini-embedding-001',
+                                                contents=content_to_embed,
+                                                config=types.EmbedContentConfig(output_dimensionality=768)
+                                            )
+                                        else:
+                                            raise e
                                     if embed_res.embeddings:
                                         embedding_val = embed_res.embeddings[0].values
                                 except Exception as e:

@@ -1,0 +1,168 @@
+{% extends 'base_1_tools.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+<head>
+    {% block title %}
+        Invoice AI Processing
+    {% endblock %}
+</head>
+
+{% block content %}
+<div class="container mt-4 mb-5 position-relative">
+    
+    <div id="loading-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 1000; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
+        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h4 id="loading-text" class="text-primary mb-3">Uploading PDF...</h4>
+        <div class="progress w-50" style="height: 25px;">
+            <div id="loading-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 10%;"></div>
+        </div>
+        <p class="text-muted mt-3 text-sm">Gemini AI is parsing your documents. This may take up to a minute.</p>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-3">
+            <h2>Process Invoices with AI</h2>
+            <p class="text-muted">Upload a PDF batch. The AI will extract the data for your review.</p>
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 shadow-sm p-5 bg-white rounded border">
+            <form id="upload-form" method="post" enctype="multipart/form-data">
+                {% csrf_token %}
+                
+                <h4 class="mb-4 text-primary border-bottom pb-2">Batch Upload</h4>
+                
+                <div class="mb-4">
+                    {{ form|crispy }}
+                </div>
+                
+                <div class="d-grid gap-2">
+                    <button class="btn btn-primary btn-lg shadow-sm" type="submit">
+                        Start AI Extraction
+                    </button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    document.getElementById('upload-form').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        
+        let overlay = document.getElementById('loading-overlay');
+        let bar = document.getElementById('loading-bar');
+        let text = document.getElementById('loading-text');
+        
+        let detailText = document.getElementById('progress-detail');
+        if (!detailText) {
+            detailText = document.createElement('p');
+            detailText.className = "text-muted mt-2 fw-bold";
+            detailText.id = "progress-detail";
+            text.parentNode.insertBefore(detailText, text.nextSibling);
+        }
+
+        overlay.style.display = 'flex';
+        bar.style.width = '5%';
+        text.innerText = "Initializing and Uploading Document...";
+        detailText.innerText = "Please wait while we prepare the AI...";
+        detailText.classList.remove('text-danger');
+        detailText.classList.add('text-muted');
+
+        let formData = new FormData(this);
+        
+        try {
+            let initResponse = await fetch('', {
+                method: 'POST',
+                body: formData,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            let initData = await initResponse.json();
+            
+            if (initData.status === 'error') {
+                alert(initData.message);
+                overlay.style.display = 'none';
+                return;
+            }
+            
+            let totalPages = initData.total_pages;
+            text.innerText = "Processing Invoices...";
+            
+            for (let pg = 1; pg <= totalPages; pg++) {
+                bar.style.width = Math.round((pg / totalPages) * 100) + '%';
+                detailText.innerText = `Extracting Page ${pg} of ${totalPages}...`;
+                
+                let pageForm = new FormData();
+                pageForm.append('action', 'process_page');
+                pageForm.append('page', pg);
+                pageForm.append('csrfmiddlewaretoken', formData.get('csrfmiddlewaretoken'));
+                
+                let pageResponse = await fetch('', {
+                    method: 'POST',
+                    body: pageForm,
+                    headers: { 'X-Requested-With': 'XMLHttpRequest' }
+                });
+                
+                let pageData = await pageResponse.json();
+                
+                if (pageData.status === 'error') {
+                    console.error("Page processing error:", pageData.message);
+                } else if (pageData.status === 'timeout') {
+                    // --- THE TIMEOUT FAILSAFE TRIGGER ---
+                    console.warn("AI Timeout Detected. Stopping extraction loop.");
+                    text.innerText = "Timeout Detected!";
+                    detailText.innerText = `AI hung on Page ${pg}. Salvaging extracted data...`;
+                    detailText.classList.remove('text-muted');
+                    detailText.classList.add('text-danger');
+                    bar.classList.replace('bg-success', 'bg-warning');
+                    
+                    // Break the loop early, preserving whatever data was successfully extracted
+                    break;
+                }
+            }
+            
+            // This runs after the loop completes OR if the loop breaks due to a timeout
+            text.innerText = "Finalizing AI Output...";
+            detailText.innerText = "Saving extracted data...";
+            
+            let finForm = new FormData();
+            finForm.append('action', 'finalize');
+            finForm.append('csrfmiddlewaretoken', formData.get('csrfmiddlewaretoken'));
+            
+            let finResponse = await fetch('', {
+                method: 'POST',
+                body: finForm,
+                headers: { 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            let finData = await finResponse.json();
+            
+            if (finData.status === 'success') {
+                window.location.href = finData.redirect_url;
+            } else {
+                alert("Finalization error: " + finData.message);
+                overlay.style.display = 'none';
+            }
+            
+        } catch (error) {
+            console.error(error);
+            alert("A network error occurred. Please try again.");
+            overlay.style.display = 'none';
+        }
+    });
+</script>
+{% endblock %}

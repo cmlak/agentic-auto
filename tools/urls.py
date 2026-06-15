@@ -66,4 +66,7 @@ urlpatterns = [
 
     path('invoices/upload-manual/', views.hand_written_invoice_view, name='hand_written_invoice'),
 
+    path('agentic/invoice-upload/', views.agentic_invoice_upload_view, name='agentic_invoice_upload'),
+    path('agentic/invoice-review/', views.agentic_review_invoices, name='agentic_review_invoices'),
+
 ]

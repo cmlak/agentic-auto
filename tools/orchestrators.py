@@ -208,11 +208,15 @@ class DjangoEventOrchestrator:
         
         print(f"📝 [DjangoEventOrchestrator] Autonomously drafting new rule: {payload.get('title')}")
         try:
-            # Create a generic placeholder for autonomous system feedback
-            source_doc, _ = SourceDocument.objects.get_or_create(
-                title="Autonomous Critic Feedback",
-                defaults={'source_url': 'System Generated', 'date_issued': timezone.now().date(), 'is_processed': True}
-            )
+            # Get or create a generic placeholder for autonomous system feedback safely
+            source_doc = SourceDocument.objects.filter(title="Autonomous Critic Feedback").first()
+            if not source_doc:
+                source_doc = SourceDocument.objects.create(
+                    title="Autonomous Critic Feedback",
+                    source_url='System Generated',
+                    date_issued=timezone.now().date(),
+                    is_processed=True
+                )
             
             DraftKnowledgeRule.objects.create(
                 source_document=source_doc,

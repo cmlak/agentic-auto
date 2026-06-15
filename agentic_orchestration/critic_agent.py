@@ -39,4 +39,8 @@ class CriticAgent(BaseAutonomousAgent):
         """
         
         result = self.execute_task(contents=[prompt], response_schema=ProposedRule)
+        
+        if not result:
+            raise ValueError("CriticAgent failed to generate a valid rule from the LLM response. The response was empty or could not be parsed.")
+            
         return result.model_dump()

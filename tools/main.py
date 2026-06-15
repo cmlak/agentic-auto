@@ -27,6 +27,11 @@ def process_user_correction(event, context):
             human_correction=payload.get("human_correction")
         )
         
+        # Defensive check before publishing
+        if not proposed_rule or not proposed_rule.get('title'):
+            print(f"⚠️ [CloudFunction] Generated rule is invalid or empty. Aborting publish. Rule: {proposed_rule}")
+            return
+
         # 2. Publish the new rule to the second topic so Django can receive it
         publisher = pubsub_v1.PublisherClient()
         project_id = os.environ.get("GOOGLE_CLOUD_PROJECT")

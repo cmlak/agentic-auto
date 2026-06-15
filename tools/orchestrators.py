@@ -207,6 +207,12 @@ class DjangoEventOrchestrator:
         from document.models import DraftKnowledgeRule, SourceDocument
         
         print(f"📝 [DjangoEventOrchestrator] Autonomously drafting new rule: {payload.get('title')}")
+
+        # Defensive check for required keys to prevent IntegrityError
+        if not all(key in payload and payload[key] for key in ['title', 'condition', 'action_or_fact']):
+            print(f"⚠️ [DjangoEventOrchestrator] Aborting save. Payload missing required keys or has empty values. Payload: {payload}")
+            return
+
         try:
             # Get or create a generic placeholder for autonomous system feedback safely
             source_doc = SourceDocument.objects.filter(title="Autonomous Critic Feedback").first()

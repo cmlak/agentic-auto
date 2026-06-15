@@ -212,7 +212,7 @@ class DjangoEventOrchestrator:
         from document.models import DraftKnowledgeRule, SourceDocument
         from django.utils import timezone
         
-        # FIX: Support both plain and prefixed payload schemas dynamically
+        # Support both plain and prefixed payload schemas dynamically
         title = payload.get('title') or payload.get('proposed_title')
         condition = payload.get('condition') or payload.get('proposed_condition')
         action_or_fact = payload.get('action_or_fact') or payload.get('proposed_action_or_fact')
@@ -221,7 +221,7 @@ class DjangoEventOrchestrator:
 
         print(f"📝 [DjangoEventOrchestrator] Autonomously drafting new rule: {title}")
 
-        # FIX: Secure fallbacks to completely guarantee no NOT-NULL database violations occur
+        # Secure fallbacks to completely guarantee no NOT-NULL database violations occur
         if not title:
             title = f"Autodrafted Rule - {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
             
@@ -242,7 +242,8 @@ class DjangoEventOrchestrator:
                     is_processed=True
                 )
             
-            DraftKnowledgeRule.objects.create(
+            # 1. Save the Draft Rule in the database
+            draft_rule = DraftKnowledgeRule.objects.create(
                 source_document=source_doc,
                 proposed_agent_scope=agent_scope,
                 proposed_title=title,
@@ -252,6 +253,24 @@ class DjangoEventOrchestrator:
                 status='PENDING'
             )
             print(f"✅ [DjangoEventOrchestrator] Draft Rule successfully saved: {title}")
+
+            # --- 2. FIX: PROPAGATE ALERT TO USER DASHBOARD ---
+            try:
+                from account.models import AgentNotification
+                
+                # Create a dashboard notification alert linking to the draft rule
+                AgentNotification.objects.create(
+                    agent_type='CRITIC',
+                    severity='WARNING', # Highlights the alert on the dashboard
+                    title=f"New Draft Rule Proposed: {title}",
+                    message=f"CriticAgent has proposed a new {agent_scope} rule based on recent data. Condition: {condition}.",
+                    action_url=f"/tools/agentic/rule-review/",  # Points to your rule approval page
+                    is_resolved=False
+                )
+                print(f"🔔 [DjangoEventOrchestrator] Notification successfully propagated to Dashboard.")
+            except Exception as notify_err:
+                print(f"⚠️ [DjangoEventOrchestrator] Draft rule saved, but failed to create dashboard alert: {notify_err}")
+
         except Exception as e:
             print(f"⚠️ [DjangoEventOrchestrator] Failed to save Draft Rule: {e}")
 

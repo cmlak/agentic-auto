@@ -135,7 +135,7 @@ TEMPLATES = [
             os.path.join(BASE_DIR, 'account', 'templates', 'account'),
             os.path.join(BASE_DIR, 'sale', 'templates', 'sale'),
             os.path.join(BASE_DIR, 'portal', 'templates', 'portal'),
-            # os.path.join(BASE_DIR, 'document', 'templates'),
+            os.path.join(BASE_DIR, 'document', 'templates'),
             os.path.join(BASE_DIR, 'document', 'templates', 'document'),
         ],
         'APP_DIRS': True,

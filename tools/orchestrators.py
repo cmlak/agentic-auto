@@ -264,7 +264,7 @@ class DjangoEventOrchestrator:
                     severity='WARNING', # Highlights the alert on the dashboard
                     title=f"New Draft Rule Proposed: {title}",
                     message=f"CriticAgent has proposed a new {agent_scope} rule based on recent data. Condition: {condition}.",
-                    action_url=f"/tools/agentic/rule-review/",  # Points to your rule approval page
+                    action_url=f"document/draftknowledgerule/{draft_rule.id}/change/",  # Points to your rule approval page
                     is_resolved=False
                 )
                 print(f"🔔 [DjangoEventOrchestrator] Notification successfully propagated to Dashboard.")

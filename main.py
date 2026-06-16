@@ -4,9 +4,8 @@ import os
 from google.cloud import pubsub_v1
 
 # The Cloud Function's source is now the project root.
-# We must update the import to point inside the 'tools' package,
-# assuming 'critic_agent.py' resides in the 'tools' directory.
-from tools.critic_agent import CriticAgent
+# Update the import to point to the correct package 'agentic_orchestration'
+from agentic_orchestration.critic_agent import CriticAgent
 
 def process_user_correction(event, context):
     """

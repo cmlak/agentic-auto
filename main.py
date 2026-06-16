@@ -14,10 +14,13 @@ def process_user_correction(event, context):
     """
     print("🧐 [CloudFunction] Triggered CriticAgent for human correction analysis.")
     
+    api_key = os.getenv("GEMINI_API_KEY_2")
+    if not api_key:
+        print("CRITICAL [CloudFunction] GEMINI_API_KEY_2 environment variable not set.")
+        return
+
     pubsub_message = base64.b64decode(event['data']).decode('utf-8')
     payload = json.loads(pubsub_message)
-    
-    api_key = payload.get("api_key")
     
     # 1. Initialize and run the Agent
     agent = CriticAgent(api_key=api_key)

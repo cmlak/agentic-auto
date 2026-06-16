@@ -395,14 +395,12 @@ def review_invoices(request, template_name='tools/invoice_review.html'):
                             # --- AI FEEDBACK PUBLISHING (PUB/SUB) ---
                             # ==========================================================
                             if form.has_changed() and 'account_id' in form.changed_data:
-                                api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
                                 initial_acct = form.initial.get('account_id')
                                 final_acct = form.cleaned_data.get('account_id')
                                 SystemOrchestrator.submit_correction_feedback(
                                     context_data=f"Vendor: {raw_name}, Description: {purchase_instance.description_en or purchase_instance.description}",
                                     ai_decision=f"Mapped to Account: {initial_acct}",
-                                    human_correction=f"Changed to Account: {final_acct}",
-                                    api_key=api_key
+                                    human_correction=f"Changed to Account: {final_acct}"
                                 )
 
                             # ==========================================================

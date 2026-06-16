@@ -38,7 +38,7 @@ MultiplePDFUploadForm, MonthlyClosingForm, AccrualFormSet, FXFormSet, Engagement
 AdjustmentEntryForm, AdjustmentFormSet, OffsetFormSet, ManualInvoiceUploadForm
 from .processors import GeminiInvoiceProcessor, GLMigrationProcessor, ProposalPDFProcessor, TOSPDFProcessor,\
 TaxLiabilitiesProcessor, EngagementLetterProcessor, UnifiedTaxProcessor
-from .orchestrators import InvoiceOrchestrator, DjangoEventOrchestrator
+from .orchestrators import InvoiceOrchestrator, DjangoEventOrchestrator, SystemOrchestrator
 from .models import Purchase, AICostLog, Vendor, Old, JournalVoucher, Adjustment
 from account.models import Account, JournalEntry, JournalLine, AccountMappingRule, ClientPromptMemo
 from register.models import Profile
@@ -391,6 +391,20 @@ def review_invoices(request, template_name='tools/invoice_review.html'):
                             purchase_instance.save()
                             saved_instances.append(purchase_instance)
                             
+                            # ==========================================================
+                            # --- AI FEEDBACK PUBLISHING (PUB/SUB) ---
+                            # ==========================================================
+                            if form.has_changed() and 'account_id' in form.changed_data:
+                                api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+                                initial_acct = form.initial.get('account_id')
+                                final_acct = form.cleaned_data.get('account_id')
+                                SystemOrchestrator.submit_correction_feedback(
+                                    context_data=f"Vendor: {raw_name}, Description: {purchase_instance.description_en or purchase_instance.description}",
+                                    ai_decision=f"Mapped to Account: {initial_acct}",
+                                    human_correction=f"Changed to Account: {final_acct}",
+                                    api_key=api_key
+                                )
+
                             # ==========================================================
                             # --- 2. AUTOMATIC DOUBLE-ENTRY JOURNAL CREATION ---
                             # ==========================================================
@@ -3124,7 +3138,7 @@ def pubsub_user_corrections_webhook(request):
         # 3. Offload to Celery (Crucial for Step 2)
         # We use .delay() to respond to Pub/Sub immediately.
         # This function should save to DraftKnowledgeRule AND then publish to Topic 2.
-        from your_app.tasks import handle_user_correction_task
+        from tools.tasks import handle_user_correction_task
         handle_user_correction_task.delay(payload)
 
         # 4. Acknowledge the message immediately

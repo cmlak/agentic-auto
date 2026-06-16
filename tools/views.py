@@ -46,7 +46,7 @@ from .filters import PurchaseFilter, JournalVoucherFilter, AdjustmentFilter
 from .resources import PurchaseResource, AdjustmentResource
 from cash.models import Bank
 from sale.models import Customer, Sale
-from tools.tasks import handle_user_correction_task, process_draft_rule_task
+from tools.tasks import process_draft_rule_task
 
 
 # ====================================================================
@@ -3109,44 +3109,3 @@ def pubsub_draft_rule_webhook(request):
     except Exception as e:
         print(f"❌ [Webhook Entry Error]: {e}")
         return JsonResponse({'error': str(e)}, status=500)
-
-@csrf_exempt
-def pubsub_user_corrections_webhook(request):
-    """
-    Step 2: Receives user corrections from Pub/Sub Topic 1,
-    validates the OIDC token, and offloads processing to Celery.
-    """
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Method not allowed'}, status=405)
-
-    # 1. (Recommended) Validate the OIDC Token
-    # This prevents unauthorized users from posting fake rules to your endpoint.
-    # auth_header = request.headers.get('Authorization')
-    # if not auth_header or not verify_oidc_token(auth_header):
-    #     return JsonResponse({'error': 'Unauthorized'}, status=401)
-
-    try:
-        body = json.loads(request.body)
-        message = body.get('message', {})
-        if not message:
-            return JsonResponse({'error': 'No message found in payload'}, status=400)
-            
-        # 2. Decode the Base64 data from Pub/Sub
-        raw_data = base64.b64decode(message.get('data', '')).decode('utf-8')
-        payload = json.loads(raw_data)
-        
-        # 3. Offload to Celery (Crucial for Step 2)
-        # We use .delay() to respond to Pub/Sub immediately.
-        # This function should save to DraftKnowledgeRule AND then publish to Topic 2.
-        from tools.tasks import handle_user_correction_task
-        handle_user_correction_task.delay(payload)
-
-        # 4. Acknowledge the message immediately
-        return JsonResponse({'status': 'Processing started'}, status=200)
-
-    except json.JSONDecodeError:
-        return JsonResponse({'error': 'Invalid JSON'}, status=400)
-    except Exception as e:
-        # Logging errors is vital for troubleshooting Pub/Sub delivery
-        print(f"❌ [PubSub Webhook Error]: {e}")
-        return JsonResponse({'error': 'Internal server error'}, status=500)

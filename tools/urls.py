@@ -71,7 +71,6 @@ urlpatterns = [
 
     # Pub/Sub Webhooks
     path('webhooks/draft-rules/', views.pubsub_draft_rule_webhook, name='pubsub_draft_rule_webhook'),
-    path('webhooks/user-corrections/', views.pubsub_user_corrections_webhook, name='pubsub_user_corrections_webhook'),
 
 
 ]

@@ -44,6 +44,19 @@ gcloud run jobs execute global-dashboard-update --region asia-southeast1
 
 gcloud beta run services logs tail agentic-platform --region asia-southeast1
 
+gcloud functions logs read process_user_correction --region asia-southeast1 --limit 20
+
+
+---- GCP function deployment
+
+gcloud functions deploy process_user_correction \
+  --runtime python311 \
+  --trigger-topic user-corrections-topic \
+  --entry-point process_user_correction \
+  --region asia-southeast1 \
+  --set-env-vars GOOGLE_CLOUD_PROJECT="document-project-464509" \
+  --source .
+
 ---- Upstash Ping
 
 python -c "

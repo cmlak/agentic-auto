@@ -98,49 +98,6 @@ def backup_all_tenant_schemas():
 
 logger = logging.getLogger(__name__)
 
-@shared_task(name="tasks.handle_user_correction")
-def handle_user_correction_task(payload):
-    """
-    Step 2 & 3 Completion:
-    1. Processes user correction from Topic 1.
-    2. Saves to DraftKnowledgeRule.
-    3. Publishes to Topic 2 to alert the Dashboard.
-    """
-    try:
-        # 1. Business Logic / AI Pick up
-        # This part does the heavy lifting of formulating the rule
-        draft_rule_data = DjangoEventOrchestrator.process_ai_correction(payload)
-
-        # 2. Store in DraftKnowledgeRule model
-        draft = DraftKnowledgeRule.objects.create(
-            content=draft_rule_data['content'],
-            source_correction_id=payload.get('correction_id'),
-            status='PENDING'
-        )
-        logger.info(f"✅ Draft rule {draft.id} created.")
-
-        # 3. Loop back to Step 3: Publish to Topic 2 (draft-rules-topic)
-        # This triggers the 'draft-rules-push-sub' webhook which updates your dashboard
-        dashboard_payload = {
-            "draft_id": draft.id,
-            "event": "DRAFT_RULE_PROPOSED",
-            "link": f"/dashboard/review/{draft.id}/"
-        }
-        
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
-        if project_id:
-            publisher = pubsub_v1.PublisherClient()
-            topic_path = publisher.topic_path(project_id, "draft-rules-topic")
-            publisher.publish(topic_path, data=json.dumps(dashboard_payload).encode("utf-8"))
-            logger.info(f"🚀 Published update to dashboard for draft {draft.id}")
-        else:
-            logger.warning("⚠️ GOOGLE_CLOUD_PROJECT is not set. Skipping Pub/Sub publish.")
-
-    except Exception as e:
-        logger.error(f"❌ Failed to process user correction: {e}")
-        # Celery will handle retries if configured
-        raise e
-
 @shared_task(name="tools.tasks.process_draft_rule_task")
 def process_draft_rule_task(payload):
     """

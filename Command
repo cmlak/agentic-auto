@@ -49,12 +49,13 @@ gcloud functions logs read process_user_correction --region asia-southeast1 --li
 ---- GCP function deployment
 
 gcloud functions deploy process_user_correction \
-  --runtime python311 \
-  --trigger-topic user-corrections-topic \
-  --entry-point process_user_correction \
-  --region asia-southeast1 \
-  --set-env-vars GOOGLE_CLOUD_PROJECT="document-project-464509" \
-  --source .
+  --gen2 \
+  --region=asia-southeast1 \
+  --runtime=python311 \
+  --source=. \
+  --entry-point=process_user_correction \
+  --trigger-topic=user-corrections-topic \
+  --set-secrets="GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest"
 
 ---- Upstash Ping
 

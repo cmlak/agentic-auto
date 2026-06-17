@@ -14,9 +14,9 @@ def process_user_correction(event, context):
     """
     print("🧐 [CloudFunction] Triggered CriticAgent for human correction analysis.")
     
-    api_key = os.getenv("GEMINI_API_KEY_2")
+    api_key = os.getenv("GEMINI_API_KEY_2") or os.getenv("GEMINI_API_KEY")
     if not api_key:
-        print("CRITICAL [CloudFunction] GEMINI_API_KEY_2 environment variable not set.")
+        print("CRITICAL [CloudFunction] GEMINI_API_KEY_2 or GEMINI_API_KEY environment variable not set.")
         return
 
     pubsub_message = base64.b64decode(event['data']).decode('utf-8')

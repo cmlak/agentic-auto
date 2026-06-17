@@ -163,24 +163,28 @@ class SystemOrchestrator:
         """
         PHASE 5: Autonomously triggers the CriticAgent when a human overrides the AI.
         """
-        project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
+        project_id = os.getenv("GOOGLE_CLOUD_PROJECT", "document-project-464509")
         if not project_id:
             print("⚠️ [SystemOrchestrator] GOOGLE_CLOUD_PROJECT missing. Cannot publish to Pub/Sub.")
             return False
             
-        publisher = pubsub_v1.PublisherClient()
-        topic_path = publisher.topic_path(project_id, "user-corrections-topic")
-        
-        payload = {
-            "context_data": context_data,
-            "ai_decision": ai_decision,
-            "human_correction": human_correction,
-        }
-        
-        data_bytes = json.dumps(payload).encode("utf-8")
-        publisher.publish(topic_path, data=data_bytes)
-        print(f"📡 [SystemOrchestrator] Published correction feedback to Pub/Sub.")
-        return True
+        try:
+            publisher = pubsub_v1.PublisherClient()
+            topic_path = publisher.topic_path(project_id, "user-corrections-topic")
+            
+            payload = {
+                "context_data": context_data,
+                "ai_decision": ai_decision,
+                "human_correction": human_correction,
+            }
+            
+            data_bytes = json.dumps(payload).encode("utf-8")
+            publisher.publish(topic_path, data=data_bytes)
+            print(f"📡 [SystemOrchestrator] Published correction feedback to Pub/Sub.")
+            return True
+        except Exception as e:
+            print(f"⚠️ [SystemOrchestrator] Pub/Sub publish failed (safely bypassed): {e}")
+            return False
 
 class DjangoEventOrchestrator:
     """Listens to AI output events and executes Django ORM writes safely."""

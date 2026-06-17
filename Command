@@ -71,5 +71,16 @@ import redis
 r = redis.Redis(host='bright-phoenix-126241.upstash.io', port=6379, password='gQAAAAAAAe0hAAIgcDIxODMxY2Q2YTQxZDQ0YTNjOGViYzUyZGRhNWZlMWFhMA', ssl=True)
 print('Live Key Value on Upstash:', r.get('keep_alive_ping').decode())
 "
-
 ------
+
+ngrok
+
+.\ngrok config add-authtoken 3FFQhxPABBL3Bef0yxsn3QwTwPO_2GzZuL4FHVtkhh8rnSRUZ
+
+.\ngrok http 8080
+
+gcloud pubsub subscriptions create user-corrections-push-sub-local \
+    --topic=user-corrections-topic \
+    --push-endpoint=https://habitat-backyard-jingle.ngrok-free.dev \
+    --project=document-project-464509
+

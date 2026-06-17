@@ -29,7 +29,11 @@ ALLOWED_HOSTS = [
     '127.0.0.1',
     '.localhost',  # Allows any subdomain locally, like cckt.localhost
     '.cambodiasmeprojects.com',
+    '.pinggy.net',
+    '.pinggy-free.link',
 ]
+
+ALLOWED_HOSTS = ['localhost', '127.0.0.1', '.pinggy.net', '.pinggy-free.link']
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 

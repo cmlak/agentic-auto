@@ -75,12 +75,45 @@ print('Live Key Value on Upstash:', r.get('keep_alive_ping').decode())
 
 ngrok
 
-.\ngrok config add-authtoken 3FFQhxPABBL3Bef0yxsn3QwTwPO_2GzZuL4FHVtkhh8rnSRUZ
+ngrok config add-authtoken 3FFQhxPABBL3Bef0yxsn3QwTwPO_2GzZuL4FHVtkhh8rnSRUZ
 
-.\ngrok http 8080
+ngrok http 8080
 
 gcloud pubsub subscriptions create user-corrections-push-sub-local \
     --topic=user-corrections-topic \
     --push-endpoint=https://habitat-backyard-jingle.ngrok-free.dev \
     --project=document-project-464509
+
+----
+
+Bypassing method
+
+ssh -p 443 -R0:localhost:8080 qr@a.pinggy.io
+
+ssh -p 443 -R0:localhost:8000 qr@a.pinggy.io
+
+gcloud pubsub subscriptions update user-corrections-push-sub-local \
+    --push-endpoint=https://lncaj-202-56-1-206.run.pinggy-free.link \
+    --project=document-project-464509
+
+gcloud pubsub subscriptions update draft-rules-push-sub \
+    --push-endpoint=https://uvytr-202-56-1-206.free.pinggy.net \
+    --project=document-project-464509
+
+functions-framework --target=process_user_correction --signature-type=cloudevent --port=8080
+
+curl -X POST https://lncaj-202-56-1-206.run.pinggy-free.link \
+   -H "Content-Type: application/json" \
+   -H "ce-id: pinggy-test-1" \
+   -H "ce-specversion: 1.0" \
+   -H "ce-type: google.cloud.pubsub.topic.v1.messagePublished" \
+   -H "ce-source: cloud-shell" \
+   -d '{
+     "message": {
+       "data": "'$(echo '{"user_id": "123", "correction": "Pinggy Test"}' | base64)'"
+     }
+   }'
+
+
+
 

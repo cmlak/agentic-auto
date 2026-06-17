@@ -16,3 +16,5 @@ staticfiles/
 media/
 db.sqlite3
 
+
+gcp-key.json

@@ -12,9 +12,6 @@ class EconAgent(BaseAutonomousAgent):
         if average_last_month > 0:
             deviation_pct = abs(current_rate - average_last_month) / average_last_month * 100
             
-        if deviation_pct < 0.5:
-            return {"is_risk": False, "deviation_pct": deviation_pct, "analysis": ""}
-            
         prompt = (
             f"Act as an expert corporate currency risk analyst. "
             f"The current NBC official exchange rate is {current_rate} KHR/USD, compared to the 30-day "

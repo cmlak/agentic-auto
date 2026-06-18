@@ -28,7 +28,9 @@ def scrape_exchange_rate_nbc():
     driver = None
     try:
         print("Starting Scraper [DEBUG_PROBE_202]...")
-        driver = uc.Chrome(options=options)
+        # Explicitly setting version_main=149 to match your local Windows Chrome browser
+        # Note: If deploying to Cloud Run, you may need to remove this or update it to match the container's Chrome version.
+        driver = uc.Chrome(options=options, version_main=149)
         
         print(f"Navigating to {url}...")
         driver.get(url)
@@ -86,3 +88,7 @@ def scrape_exchange_rate_nbc():
         if driver:
             print("Closing Chrome [DEBUG_PROBE_202].")
             driver.quit()
+            
+            # Prevent undetected_chromedriver's __del__ from throwing WinError 6
+            # during Windows garbage collection by neutering the quit method.
+            driver.quit = lambda: None

@@ -23,8 +23,8 @@ def handle_currency_update(payload: dict):
         # AI has determined a risk! Publish a new instruction event.
         EventBus.publish("SYSTEM_NOTIFICATION_REQUIRED", {
             "agent_type": "ECON",
-            "severity": "WARNING",
-            "title": "Currency Volatility Risk Detected",
+            "severity": "INFO" if result['deviation_pct'] < 0.5 else "WARNING",
+            "title": "Daily Currency Analysis" if result['deviation_pct'] < 0.5 else "Currency Volatility Risk Detected",
             "message": f"The NBC official exchange rate has deviated to {current_rate} KHR/USD (a {result['deviation_pct']:.2f}% change).\n\nAI Analysis: {result['analysis']}",
             "action_url": ""
         })

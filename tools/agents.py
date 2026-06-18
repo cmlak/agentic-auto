@@ -67,9 +67,7 @@ class EconAgent:
         if average_last_month > 0:
             deviation_pct = abs(current_rate - average_last_month) / average_last_month * 100
             
-        if deviation_pct < 0.5:  # 0.5% threshold for significant deviation
-            print(f"DEBUG: Market is stable (Deviation: {deviation_pct:.3f}%). No open alerts generated.")
-            return
+        print(f"DEBUG: Market deviation is {deviation_pct:.3f}%. Generating daily AI analysis.")
             
         # Generate AI Analysis using Gemini
         ai_analysis = ""
@@ -99,8 +97,8 @@ class EconAgent:
             with schema_context(tenant.schema_name):
                 AgentNotification.objects.create(
                     agent_type='ECON',
-                    severity='WARNING',
-                    title="Currency Volatility Risk Detected",
+                    severity='INFO' if deviation_pct < 0.5 else 'WARNING',
+                    title="Daily Currency Analysis" if deviation_pct < 0.5 else "Currency Volatility Risk Detected",
                     message=f"The NBC official exchange rate has deviated to {current_rate} KHR/USD (a {deviation_pct:.2f}% change).{ai_analysis}",
                     is_resolved=False
                 )

@@ -46,8 +46,9 @@ def generate_tenant_dashboard_snapshot():
         "data": [rev_cr, exp_dr, total_cash, total_ap]
     }
 
-    # 5. Retrieve the most recent exchange rate (falling back to 4050 if none exist)
-    latest_rate_obj = ExchangeRate.objects.order_by('-date').first()
+    # 5. Retrieve the most recent exchange rate applicable for TODAY (ignoring future holiday rates)
+    today = now.date()
+    latest_rate_obj = ExchangeRate.objects.filter(date__lte=today).order_by('-date').first()
     current_exchange_rate = latest_rate_obj.rate if latest_rate_obj else 4050
 
     # ---------------------------------------------------------

@@ -2947,13 +2947,13 @@ def agentic_invoice_upload_view(request):
                 AICostLog.objects.create(file_name=f"[AGENTIC] {job['file_name']}", total_pages=job['total_pages'], flash_cost=total_flash, pro_cost=total_pro, total_cost=total_cost)
             except NameError: pass
                 
-            request.session['agentic_extracted_invoices'] = results
-            request.session['agentic_ai_metadata'] = {
+            request.session['extracted_invoices'] = results
+            request.session['ai_metadata'] = {
                 'file_name': job['file_name'], 'batch_name': job['batch_name'],
                 'total_pages': job['total_pages'], 'costs': job['costs']
             }
             request.session.pop('agentic_invoice_job', None)
-            return JsonResponse({"status": "success", "redirect_url": reverse('tools:agentic_review_invoices')})
+            return JsonResponse({"status": "success", "redirect_url": reverse('tools:review_invoices')})
 
         request.session.pop('invoice_report_path', None)
         form = BatchUploadForm(request.POST, request.FILES)
@@ -3018,66 +3018,6 @@ def agentic_invoice_upload_view(request):
 
     return render(request, 'agentic_invoice_upload.html', {'form': form})
 
-
-@login_required(login_url="register:login")
-def agentic_review_invoices(request):
-    """Parallel view: Human-In-The-Loop review specifically for the new Agentic Orchestrator data."""
-    extracted_data = request.session.get('agentic_extracted_invoices', [])
-    metadata = request.session.get('agentic_ai_metadata', {})
-
-    if not extracted_data and request.method == 'GET':
-        return redirect('tools:agentic_invoice_upload')
-        
-    extracted_data.sort(key=lambda x: int(x.get('page', 0) or 0))
-        
-    db_vendors = [(v.id, f"{v.vendor_id} - {v.name}") for v in Vendor.objects.all().order_by('vendor_id')]
-    temp_vendors = []
-    for item in extracted_data:
-        if item.get('is_new_vendor') and item.get('temp_id'):
-            temp_id = item['temp_id']
-            temp_vid = item.get('temp_vid', 'NEW')
-            company = item.get('company', 'Unknown')
-            if not any(tv[0] == temp_id for tv in temp_vendors):
-                temp_vendors.append((temp_id, f"✨ NEW: {company} ({temp_vid})"))
-                
-    dynamic_choices = [('', '--- Select Vendor ---')] + db_vendors + temp_vendors
-
-    seen_accounts = set()
-    db_accounts = []
-    for acc_id, name in Account.objects.values_list('account_id', 'name'):
-        if acc_id not in seen_accounts:
-            seen_accounts.add(acc_id)
-            db_accounts.append((str(acc_id), f"{acc_id} - {name}"))
-    db_accounts.sort(key=lambda x: str(x[0]))
-    account_choices = [('', '--- Select Account ---')] + db_accounts
-
-    # We pass the data to the same robust formset and database posting logic
-    # To keep this DRY and concise, we route the verified data to your existing hitl review pipeline logic
-    # We temporarily assign the session keys back to normal, call the logic, and pop them!
-    if request.method == 'POST':
-        request.session['extracted_invoices'] = request.session.get('agentic_extracted_invoices')
-        request.session['ai_metadata'] = request.session.get('agentic_ai_metadata')
-        
-        response = review_invoices(request, template_name='tools/agentic_invoice_review.html')
-        
-        # Clear our parallel keys after the main function processes them
-        if not isinstance(response, HttpResponseRedirect) and response.status_code == 200:
-            # Validation failed, restore normal state and render
-            pass
-        else:
-            # Success!
-            request.session.pop('agentic_extracted_invoices', None)
-            request.session.pop('agentic_ai_metadata', None)
-            
-        return response
-        
-    else:
-        formset = PurchaseFormSet(
-            initial=extracted_data, 
-            form_kwargs={'dynamic_choices': dynamic_choices, 'account_choices': account_choices}
-        )
-        
-    return render(request, 'tools/agentic_invoice_review.html', {'formset': formset, 'metadata': metadata})
 
 @csrf_exempt
 def pubsub_draft_rule_webhook(request):

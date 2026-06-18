@@ -69,7 +69,10 @@ def process_user_correction(cloud_event):
         proposed_rule['draft_id'] = payload.get('draft_id')
         proposed_rule['schema_name'] = payload.get('schema_name', 'cckt')
         
-        publisher.publish(topic_path, data=json.dumps(proposed_rule).encode("utf-8"))
+        # Tag the published message with the tenant_schema attribute
+        tenant_schema = proposed_rule['schema_name']
+        
+        publisher.publish(topic_path, data=json.dumps(proposed_rule).encode("utf-8"), tenant_schema=tenant_schema)
         print(f"✅ [CloudFunction] Published rule to draft-rules-topic: {proposed_rule.get('title')}")
 
     except Exception as e:

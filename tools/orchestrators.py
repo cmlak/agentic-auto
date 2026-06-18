@@ -180,7 +180,7 @@ class SystemOrchestrator:
             }
             
             data_bytes = json.dumps(payload).encode("utf-8")
-            publisher.publish(topic_path, data=data_bytes)
+            publisher.publish(topic_path, data=data_bytes, tenant_schema=schema_name)
             print(f"📡 [SystemOrchestrator] Published correction feedback to Pub/Sub.")
             return True
         except Exception as e:

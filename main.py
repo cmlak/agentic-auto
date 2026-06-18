@@ -67,6 +67,7 @@ def process_user_correction(cloud_event):
         
         # Ensure draft_id is passed through if it exists in original payload
         proposed_rule['draft_id'] = payload.get('draft_id')
+        proposed_rule['schema_name'] = payload.get('schema_name', 'cckt')
         
         publisher.publish(topic_path, data=json.dumps(proposed_rule).encode("utf-8"))
         print(f"✅ [CloudFunction] Published rule to draft-rules-topic: {proposed_rule.get('title')}")

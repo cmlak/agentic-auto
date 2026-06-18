@@ -47,6 +47,7 @@ from .resources import PurchaseResource, AdjustmentResource
 from cash.models import Bank
 from sale.models import Customer, Sale
 from tools.tasks import process_draft_rule_task
+from django_tenants.utils import schema_context
 
 
 # ====================================================================
@@ -397,10 +398,12 @@ def review_invoices(request, template_name='tools/invoice_review.html'):
                             if form.has_changed() and 'account_id' in form.changed_data:
                                 initial_acct = form.initial.get('account_id')
                                 final_acct = form.cleaned_data.get('account_id')
+                                tenant_schema = getattr(request, 'tenant', None).schema_name if hasattr(request, 'tenant') else 'cckt'
                                 SystemOrchestrator.submit_correction_feedback(
                                     context_data=f"Vendor: {raw_name}, Description: {purchase_instance.description_en or purchase_instance.description}",
                                     ai_decision=f"Mapped to Account: {initial_acct}",
-                                    human_correction=f"Changed to Account: {final_acct}"
+                                    human_correction=f"Changed to Account: {final_acct}",
+                                    schema_name=tenant_schema
                                 )
 
                             # ==========================================================
@@ -3039,8 +3042,12 @@ def pubsub_draft_rule_webhook(request):
         raw_data = base64.b64decode(message['data']).decode('utf-8')
         payload = json.loads(raw_data)
         
-        # OFFLOAD TO CELERY: Executes inline for Cloud Run compatibility
-        process_draft_rule_task.apply(args=[payload])
+        # ARCHITECTURE FIX: Switch to the correct tenant schema 
+        # Ensure 'schema_name' is passed in your Pub/Sub payload. Defaulting to 'cckt' for safety.
+        schema_name = payload.get('schema_name', 'cckt') 
+        
+        with schema_context(schema_name):
+            process_draft_rule_task.apply(args=[payload])
         
         return JsonResponse({'status': 'Accepted for background processing'}, status=200)
 

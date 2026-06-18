@@ -12,7 +12,8 @@ os.environ["GOOGLE_CLOUD_PROJECT"] = "document-project-464509"
 payload = {
     "context_data": "Vendor: Test Vendor, Description: Office Supplies",
     "ai_decision": "Mapped to Account: 100000",
-    "human_correction": "Changed to Account: 725080"
+    "human_correction": "Changed to Account: 725080",
+    "schema_name": "cckt"
 }
 
 # 3. Encode the payload exactly as Cloud Pub/Sub does (Base64)

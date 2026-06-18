@@ -159,7 +159,7 @@ class SystemOrchestrator:
         return True
 
     @staticmethod
-    def submit_correction_feedback(context_data: str, ai_decision: str, human_correction: str):
+    def submit_correction_feedback(context_data: str, ai_decision: str, human_correction: str, schema_name: str = 'cckt'):
         """
         PHASE 5: Autonomously triggers the CriticAgent when a human overrides the AI.
         """
@@ -175,6 +175,7 @@ class SystemOrchestrator:
             "context_data": context_data,
             "ai_decision": ai_decision,
             "human_correction": human_correction,
+            "schema_name": schema_name,
         }
         
         data_bytes = json.dumps(payload).encode("utf-8")

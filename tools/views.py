@@ -3039,8 +3039,8 @@ def pubsub_draft_rule_webhook(request):
         raw_data = base64.b64decode(message['data']).decode('utf-8')
         payload = json.loads(raw_data)
         
-        # OFFLOAD TO CELERY: Ensures consistency and prevents Pub/Sub timeouts
-        process_draft_rule_task.delay(payload)
+        # OFFLOAD TO CELERY: Executes inline for Cloud Run compatibility
+        process_draft_rule_task.apply(args=[payload])
         
         return JsonResponse({'status': 'Accepted for background processing'}, status=200)
 

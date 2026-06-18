@@ -33,8 +33,6 @@ ALLOWED_HOSTS = [
     '.pinggy-free.link',
 ]
 
-ALLOWED_HOSTS = ['localhost', '127.0.0.1', '.pinggy.net', '.pinggy-free.link']
-
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
 
 CSRF_TRUSTED_ORIGINS = [

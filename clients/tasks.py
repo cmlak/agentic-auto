@@ -1,4 +1,5 @@
 import time
+import re
 from datetime import datetime, timedelta
 from django.db import connection, transaction, IntegrityError
 from django.db.models import Avg
@@ -53,7 +54,10 @@ def scrape_exchange_rate_nbc():
                 if tag: date = datetime.strptime(tag.get_text().strip(), "%Y-%m-%d").date()
             if "Official Exchange Rate :" in txt:
                 tag = row.find("font", color="#FF3300")
-                if tag: rate = int(float(tag.get_text().strip().replace(",", "")))
+                if tag: 
+                    numeric_str = re.sub(r'[^\d.]', '', tag.get_text())
+                    if numeric_str:
+                        rate = int(float(numeric_str))
 
         if date and rate:
             print(f"FOUND: {rate} on {date}. Saving...")

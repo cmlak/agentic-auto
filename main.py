@@ -31,11 +31,15 @@ def process_user_correction(cloud_event):
     # 2. Extract and Decode Data (2nd Gen / CloudEvent Format)
     try:
         # Access nested data from CloudEvent
-        pubsub_data = cloud_event.data.get("message", {}).get("data")
-        if not pubsub_data:
+        message = cloud_event.data.get("message", {})
+        pubsub_data = message.get("data")
+        attributes = message.get("attributes", {})
+
+        if not pubsub_data or not attributes:
             print("⚠️ [CloudFunction] Received event with no message data.")
             return
 
+        schema_name_from_attr = attributes.get('tenant_schema', 'cckt')
         decoded_message = base64.b64decode(pubsub_data).decode('utf-8')
         payload = json.loads(decoded_message)
     except Exception as e:
@@ -67,10 +71,10 @@ def process_user_correction(cloud_event):
         
         # Ensure draft_id is passed through if it exists in original payload
         proposed_rule['draft_id'] = payload.get('draft_id')
-        proposed_rule['schema_name'] = payload.get('schema_name', 'cckt')
+        proposed_rule['schema_name'] = payload.get('schema_name', schema_name_from_attr)
         
         # Tag the published message with the tenant_schema attribute
-        tenant_schema = proposed_rule['schema_name']
+        tenant_schema = str(proposed_rule['schema_name'])
         
         publisher.publish(topic_path, data=json.dumps(proposed_rule).encode("utf-8"), tenant_schema=tenant_schema)
         print(f"✅ [CloudFunction] Published rule to draft-rules-topic: {proposed_rule.get('title')}")

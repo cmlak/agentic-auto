@@ -109,11 +109,52 @@ def process_draft_rule_task(payload):
     try:
         logger.info(f"START: Processing draft rule proposal: {payload.get('draft_id')}")
         
-        # Consistency: We use the same Orchestrator logic you already defined
-        # This should handle: DraftKnowledgeRule.objects.update_or_create(...)
-        DjangoEventOrchestrator.handle_draft_rule_proposed(payload)
+        # IDEMPOTENCY FIX: Instead of directly calling the create handler, we implement
+        # update_or_create logic here to prevent duplicate rules from Pub/Sub retries.
+        from document.models import DraftKnowledgeRule, SourceDocument
+        from account.models import AgentNotification
+        from django.utils import timezone
+
+        title = payload.get('title') or payload.get('proposed_title')
+        condition = payload.get('condition') or payload.get('proposed_condition')
+
+        if not title or not condition:
+            logger.error(f"FAIL: Task aborted. Payload missing required 'title' or 'condition'. Payload: {payload}")
+            return # Do not retry if data is invalid
+
+        source_doc, _ = SourceDocument.objects.get_or_create(
+            title="Autonomous Critic Feedback",
+            defaults={
+                'source_url': 'System Generated',
+                'date_issued': timezone.now().date(),
+                'is_processed': True
+            }
+        )
+
+        draft_rule, created = DraftKnowledgeRule.objects.update_or_create(
+            proposed_title=title,
+            proposed_condition=condition,
+            defaults={
+                'source_document': source_doc,
+                'proposed_agent_scope': payload.get('agent_scope') or payload.get('proposed_agent_scope', 'GLOBAL'),
+                'proposed_action_or_fact': payload.get('action_or_fact') or payload.get('proposed_action_or_fact', 'No action specified.'),
+                'proposed_tags': payload.get('tags') or payload.get('proposed_tags', ''),
+                'status': 'PENDING'
+            }
+        )
         
-        logger.info(f"SUCCESS: Draft rule {payload.get('draft_id')} is now PENDING on Dashboard.")
+        if created:
+            logger.info(f"SUCCESS: New draft rule '{title}' created and is now PENDING on Dashboard.")
+            # Only create a notification if the rule is new
+            AgentNotification.objects.create(
+                agent_type='CRITIC',
+                severity='WARNING',
+                title=f"New Draft Rule Proposed: {title}",
+                message=f"CriticAgent has proposed a new rule. Condition: {condition}.",
+                action_url=f"/document/draftknowledgerule/{draft_rule.id}/change/",
+            )
+        else:
+            logger.info(f"SUCCESS: Existing draft rule '{title}' found and updated. Status remains PENDING.")
         
     except Exception as e:
         logger.error(f"FAIL: Error in process_draft_rule_task: {e}")

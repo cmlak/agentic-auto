@@ -1,5 +1,6 @@
 # account/services.py (Create this file)
 from django.db.models import Sum
+from .models import AgentKnowledgeRule
 from .models import JournalLine, Account, DashboardSnapshot
 from clients.models import ExchangeRate
 from django.utils import timezone
@@ -11,6 +12,7 @@ from django.conf import settings
 import os
 import json
 import re
+from django.db.models import Q
 
 def generate_tenant_dashboard_snapshot():
     """
@@ -241,3 +243,42 @@ def generate_tenant_dashboard_snapshot():
     )
     
     return snapshot
+
+def build_targeted_agent_prompt(invoice_raw_text: str, agent_type: str = 'TAX') -> str:
+    """
+    RAG Implementation: Pulls atomic rules based on keyword/semantic hits in the text.
+    Sorts by priority_weight descending to ensure exceptions override general rules.
+    """
+    if not invoice_raw_text:
+        return "No text could be extracted from this page."
+
+    # 1. Base query: Get active rules for this specific agent + global rules
+    base_query = Q(agent_scope=agent_type) | Q(agent_scope='GLOBAL')
+    
+    # 💡 CRITICAL UPDATE: Sort by priority_weight DESC
+    active_rules = AgentKnowledgeRule.objects.filter(
+        base_query, 
+        is_active=True
+    ).order_by('-priority_weight', 'id')
+
+    targeted_rules_text = ""
+    rule_count = 1
+    
+    # Simple Keyword RAG (This can be swapped with pgvector cosine similarity later)
+    invoice_text_lower = invoice_raw_text.lower()
+    
+    for rule in active_rules:
+        # Split tags into a clean list
+        rule_tags = [tag.strip().lower() for tag in str(rule.tags).split(',')]
+        
+        # If any tag exists in the invoice text, inject this rule into the prompt
+        if any(tag in invoice_text_lower for tag in rule_tags):
+            targeted_rules_text += f"RULE {rule_count} [Priority {rule.priority_weight}]: {rule.title}\n"
+            targeted_rules_text += f"WHEN: {rule.condition}\n"
+            targeted_rules_text += f"ACTION: {rule.action_or_fact}\n\n"
+            rule_count += 1
+
+    if not targeted_rules_text:
+        return "No specific overriding rules triggered. Use standard accounting logic."
+        
+    return targeted_rules_text

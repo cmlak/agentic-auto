@@ -11,6 +11,7 @@ from django.utils import timezone
 
 from .models import Vendor, Purchase
 from account.models import Account, AgentNotification
+from account.services import build_targeted_agent_prompt
 
 # Import the decoupled agents from Phase 1
 try:
@@ -44,6 +45,10 @@ class InvoiceOrchestrator:
         general_vendor, _ = Vendor.objects.get_or_create(
             vendor_id='V-00001', defaults={'name': 'General Vendor', 'normalized_name': 'general vendor'}
         )
+
+        # 💡 FIX: Catch explicitly returned "General Vendor" from the AI RAG rules
+        if str(raw_name).strip().lower() == 'general vendor':
+            return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
 
         if not raw_name or str(raw_name).strip().lower() in ['unknown', 'n/a', 'none', '']:
             return {'db_id': general_vendor.id, 'is_new': False, 'temp_vid': None}
@@ -89,22 +94,27 @@ class InvoiceOrchestrator:
         print(f"\n🚀 [InvoiceOrchestrator] Initiating Agentic Workflow for Page {pg}...")
         coa_context = self._get_coa_context()
         
-        # Phase 4: Generate True Vector RAG Context
+        # 1. Extract raw text from the isolated page bytes
         try:
             reader = PdfReader(io.BytesIO(pdf_bytes))
             raw_text = "\n".join([p.extract_text() or "" for p in reader.pages])
-        except Exception:
+        except Exception as e:
+            print(f"⚠️ [PDF Warning] Failed to extract text: {e}")
             raw_text = ""
             
-        rag_rules = build_targeted_agent_prompt(raw_text, agent_type='TAX')
+        # 2. Trigger the Priority-Sorted RAG Pipeline
+        rag_rules = build_targeted_agent_prompt(invoice_raw_text=raw_text, agent_type='TAX')
         print(f"🔍 [Vector RAG] Semantic Rules successfully retrieved and bound to agent prompt.")
 
         try:
-            # Call the decoupled Agent
+            # 3. Call the decoupled Agent
             print(f"🧠 [InvoiceAgent] Analyzing document structure independent of Django...")
             raw_entries = self.agent.process_single_page(
-                pdf_bytes=pdf_bytes, page_num=pg,
-                coa_context=coa_context, rag_rules=rag_rules, custom_prompt=custom_prompt
+                pdf_bytes=pdf_bytes, 
+                page_num=pg,
+                coa_context=coa_context, 
+                rag_rules=rag_rules, 
+                custom_prompt=custom_prompt
             )
             
             # Retrieve costs safely
@@ -112,10 +122,10 @@ class InvoiceOrchestrator:
                 page_cost = self.agent.cost_stats["pro_cost"] + self.agent.cost_stats["flash_cost"]
                 
             ledgers = []
-            is_split_invoice = len(raw_entries) > 1
             
             print(f"⚙️ [Orchestrator] AI extracted {len(raw_entries)} entries. Resolving Django Vendors...")
-            # Determine Sequence and resolve Vendors (Django-side data mutation)
+            
+            # 4. Determine Sequence and resolve Vendors (Django-side data mutation)
             for idx, entry_dict in enumerate(raw_entries, 1):
                 if 'vendor_name' in entry_dict: 
                     entry_dict['company'] = entry_dict.pop('vendor_name')
@@ -125,7 +135,9 @@ class InvoiceOrchestrator:
                 
                 # Query the Django DB via the Orchestrator
                 vendor_data = self.resolve_and_assign_vendor(
-                    entry_dict.get('company', ''), entry_dict.get('vattin', ''), entry_dict.get('vat_usd', 0.0)
+                    entry_dict.get('company', ''), 
+                    entry_dict.get('vattin', ''), 
+                    entry_dict.get('vat_usd', 0.0)
                 )
                 
                 entry_dict['vendor_db_id'] = vendor_data.get('db_id')

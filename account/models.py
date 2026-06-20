@@ -241,6 +241,8 @@ class AgentKnowledgeRule(models.Model):
         ('TAX_LAW', 'Tax Compliance Law / Rate'),
         ('MACRO_FACT', 'Macro-Economic Insight / Fact'),
         ('ANTI_PATTERN', 'Common Mistake to Avoid'),
+        ('DOCUMENT_PARSING', 'OCR & Document Formatting Directive'),
+        ('WORKFLOW_ROUTING', 'System Orchestration Rule')
     ]
 
     # Targetting: Who needs to know this?
@@ -258,6 +260,11 @@ class AgentKnowledgeRule(models.Model):
     
     # The mathematical coordinate of this rule
     embedding = VectorField(dimensions=768, null=True, blank=True)
+
+    priority_weight = models.IntegerField(
+        default=10, 
+        help_text="Higher numbers override lower numbers during conflicts. (e.g., Exceptions = 100)"
+    )
 
     history = HistoricalRecords()
 

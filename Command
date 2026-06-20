@@ -55,7 +55,8 @@ gcloud functions deploy process_user_correction \
   --source=. \
   --entry-point=process_user_correction \
   --trigger-topic=user-corrections-topic \
-  --set-secrets="GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest"
+  --set-secrets="GEMINI_API_KEY_2=GEMINI_API_KEY_2:latest" \
+  --project=document-project-464509
 
 ---- Upstash Ping
 

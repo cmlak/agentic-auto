@@ -28,21 +28,38 @@ def test_db_connection(request):
         
     return HttpResponse(output)
 
+# ==============================================================================
+# 1. ENHANCED PYDANTIC SCHEMAS (For Strict Gemini Output)
+# ==============================================================================
 class ExtractedRule(BaseModel):
-    agent_scope: Literal['GLOBAL', 'TAX', 'RECON', 'ECON'] = Field(description="The agent scope.")
-    title: str = Field(description="Rule title")
-    condition: str = Field(description="When does this rule apply?")
-    action_or_fact: str = Field(description="What should the AI do or know?")
-    tags: str = Field(description="Comma separated tags")
+    agent_scope: Literal['GLOBAL', 'TAX', 'RECON', 'ECON'] = Field(
+        description="Which agent should know this?"
+    )
+    rule_type: Literal['ACCOUNT_MAPPING', 'TAX_LAW', 'MACRO_FACT', 'ANTI_PATTERN', 'DOCUMENT_PARSING', 'WORKFLOW_ROUTING'] = Field(
+        description="The strict classification of this rule."
+    )
+    title: str = Field(description="A concise, descriptive rule title.")
+    condition: str = Field(description="WHEN does this rule apply? Be highly specific.")
+    action_or_fact: str = Field(description="WHAT should the AI do or know?")
+    tags: str = Field(description="Comma-separated keywords for vector search fallback.")
+    priority_weight: int = Field(
+        description="Priority. Use 10 for standard rules. Use 50-100 for strict exceptions or legal overrides."
+    )
 
 class RuleBatch(BaseModel):
     rules: List[ExtractedRule]
 
+
+# ==============================================================================
+# 2. UPLOAD & EXTRACTION VIEW (The Librarian Agent)
+# ==============================================================================
 @login_required
 def upload_financial_report_view(request):
     if request.method == 'POST':
         form = FinancialReportUploadForm(request.POST, request.FILES)
         if form.is_valid():
+            
+            # 1. Save the initial Source Document
             source_doc = SourceDocument.objects.create(
                 title=form.cleaned_data['title'],
                 source_url=form.cleaned_data['source_url'],
@@ -61,7 +78,7 @@ def upload_financial_report_view(request):
             try:
                 pdf_bytes = form.cleaned_data['document_pdf'].read()
                 
-                # 1. Use the Vertex AI Document Parsing API (Google Cloud Document AI)
+                # 2. Extract raw text using Vertex AI Document AI
                 project_id = os.getenv("GOOGLE_CLOUD_PROJECT")
                 location = os.getenv("DOCUMENTAI_LOCATION", "us")
                 processor_id = os.getenv("DOCUMENTAI_PROCESSOR_ID")
@@ -71,18 +88,31 @@ def upload_financial_report_view(request):
                     docai_client = documentai.DocumentProcessorServiceClient()
                     name = docai_client.processor_path(project_id, location, processor_id)
                     raw_document = documentai.RawDocument(content=pdf_bytes, mime_type="application/pdf")
-                    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-                    result = docai_client.process_document(request=request)
+                    request_docai = documentai.ProcessRequest(name=name, raw_document=raw_document)
+                    result = docai_client.process_document(request=request_docai)
                     parsed_text = result.document.text
                 else:
                     parsed_text = "Fallback: Direct text extraction required. (DOCUMENTAI_PROCESSOR_ID missing)"
 
-                # 2. Use Gemini 1.5 Pro for Extraction
-                prompt = f"""You are an elite Cambodian Macroeconomist and Tax Auditor. Read the perfectly parsed text below.
-                Extract actionable rules, macroeconomic shifts, and compliance changes.
-                Output an array of JSON objects matching this schema:
-                [{ 'agent_scope': 'ECON', 'title': 'Q2 Inflation Shift', 'condition': 'When assessing purchasing power or FX logic', 'action_or_fact': 'The inflation rate has risen to 3.2%. Adjust cash flow forecasting models accordingly.', 'tags': 'inflation, Q2, NBC' }]
-                ONLY extract definitive facts and actionable directives. Ignore fluff.
+                # 3. Use Gemini 1.5 Pro to extract structured atomic rules
+                prompt = f"""You are an elite Cambodian Macroeconomist and Tax Auditor. 
+                Read the perfectly parsed text below and extract actionable rules, macroeconomic shifts, and compliance changes.
+                
+                CRITICAL INSTRUCTIONS:
+                1. rule_type: You MUST classify the rule into one of the allowed categories. Do NOT use MACRO_FACT for procedural formatting or tax laws.
+                2. priority_weight: Assign a weight of 10 for general facts/rules. If the rule explicitly states an EXCEPTION or a strict legal override, assign a weight between 50 and 100.
+                3. ATOMICITY: Do not combine multiple distinct rules into one. If the text covers 3 different scenarios, output 3 separate JSON objects.
+
+                Example Schema format:
+                [{{ 
+                    'agent_scope': 'TAX', 
+                    'rule_type': 'TAX_LAW',
+                    'title': 'WHT Exemption on Software', 
+                    'condition': 'When a vendor provides cloud software services under Prakas 123', 
+                    'action_or_fact': 'Do not deduct 15% WHT. Exempt the transaction.', 
+                    'tags': 'software, WHT, exemption, prakas 123',
+                    'priority_weight': 80
+                }}]
                 
                 <PARSED_TEXT>
                 {parsed_text}
@@ -94,27 +124,30 @@ def upload_financial_report_view(request):
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=RuleBatch,
-                        temperature=0.0
+                        temperature=0.1  # Low temperature for strict analytical extraction
                     )
                 )
 
                 extracted_data = response.parsed
                 
+                # 4. Save the drafted rules for Human review
                 if extracted_data and extracted_data.rules:
                     for rule in extracted_data.rules:
                         DraftKnowledgeRule.objects.create(
                             source_document=source_doc,
                             proposed_agent_scope=rule.agent_scope,
+                            proposed_rule_type=rule.rule_type,
                             proposed_title=rule.title,
                             proposed_condition=rule.condition,
                             proposed_action_or_fact=rule.action_or_fact,
                             proposed_tags=rule.tags,
+                            proposed_priority_weight=rule.priority_weight,
                             status='PENDING'
                         )
                     
                     source_doc.is_processed = True
                     source_doc.save()
-                    messages.success(request, f"Successfully extracted {len(extracted_data.rules)} rules.")
+                    messages.success(request, f"Successfully extracted {len(extracted_data.rules)} atomic rules.")
                 else:
                     messages.warning(request, "No rules were extracted from the document.")
                     
@@ -128,6 +161,10 @@ def upload_financial_report_view(request):
 
     return render(request, 'document/upload_financial_report.html', {'form': form})
 
+
+# ==============================================================================
+# 3. REVIEW & APPROVAL VIEW (Human-in-the-Loop)
+# ==============================================================================
 @login_required
 def review_draft_rules_view(request):
     pending_rules = DraftKnowledgeRule.objects.filter(status='PENDING')
@@ -142,24 +179,29 @@ def review_draft_rules_view(request):
             
             with transaction.atomic():
                 for form in formset:
+                    
+                    # Handle Deletions/Rejections
                     if form.cleaned_data.get('DELETE'):
                         rule = form.instance
                         rule.status = 'REJECTED'
                         rule.save()
                         continue
                         
+                    # Handle Approvals
                     if form.has_changed() or form.cleaned_data.get('status') == 'APPROVED':
                         rule = form.save(commit=False)
+                        
+                        # Only promote to Live Database if Approved and not already promoted
                         if rule.status == 'APPROVED' and not rule.promoted_to:
                             
-                            # Generate embeddings for RAG Pipeline ingestion
+                            # 1. Generate embeddings for Vector RAG search
                             embedding_val = None
                             if client:
                                 content_to_embed = f"Title: {rule.proposed_title}\nCondition: {rule.proposed_condition}\nAction/Fact: {rule.proposed_action_or_fact}\nTags: {rule.proposed_tags}"
                                 try:
                                     try:
                                         embed_res = client.models.embed_content(
-                                            model='gemini-embedding-2',
+                                            model='text-embedding-004', # Updated to latest standard embedding model
                                             contents=content_to_embed,
                                             config=types.EmbedContentConfig(output_dimensionality=768)
                                         )
@@ -172,21 +214,27 @@ def review_draft_rules_view(request):
                                             )
                                         else:
                                             raise e
+                                    
                                     if embed_res.embeddings:
                                         embedding_val = embed_res.embeddings[0].values
+                                        
                                 except Exception as e:
                                     print(f"Embedding generation failed: {e}")
 
+                            # 2. Create the live AgentKnowledgeRule using the dynamic extracted data
                             live_rule = AgentKnowledgeRule.objects.create(
                                 agent_scope=rule.proposed_agent_scope,
-                                rule_type='MACRO_FACT',
+                                rule_type=rule.proposed_rule_type,                 # Dynamically mapped from AI
+                                priority_weight=rule.proposed_priority_weight,     # Dynamically mapped from AI
                                 tags=rule.proposed_tags,
                                 title=rule.proposed_title,
                                 condition=rule.proposed_condition,
                                 action_or_fact=rule.proposed_action_or_fact,
                                 embedding=embedding_val
                             )
+                            
                             rule.promoted_to = live_rule
+                            
                         rule.save()
                         instances_saved += 1
                         

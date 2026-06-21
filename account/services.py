@@ -343,15 +343,6 @@ def run_agent_rule_audit():
         notification = AgentNotification.objects.create(
             title=f"Rulebook Audit: {timezone.now().strftime('%Y-%m-%d')}",
             message=report_text,
-            notification_type='SYSTEM',
-            severity=severity,
-            is_resolved=False
-        )
-
-        # Create the notification for the Dashboard
-        notification = AgentNotification.objects.create(
-            title=f"Rulebook Audit: {timezone.now().strftime('%Y-%m-%d')}",
-            message=report_text,
             agent_type='SYSTEM',  # Updated from notification_type to type
             severity=severity,
             is_resolved=False

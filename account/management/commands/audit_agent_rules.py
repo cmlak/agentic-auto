@@ -1,7 +1,14 @@
+import os
 from django.core.management.base import BaseCommand
+from dotenv import load_dotenv
 from django_tenants.utils import schema_context
 from clients.models import Client
 from account.services import run_agent_rule_audit
+
+# Load environment variables at the module level to ensure 
+# settings (like SECRET_KEY) are available during Django initialization.
+if os.path.exists('.env'):
+    load_dotenv()
 
 class Command(BaseCommand):
     help = 'Triggers the AI Audit Agent to analyze RAG rules for all tenants and send dashboard notifications.'

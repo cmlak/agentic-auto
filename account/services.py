@@ -1,7 +1,7 @@
 # account/services.py (Create this file)
 from django.db.models import Sum
 from .models import AgentKnowledgeRule
-from .models import JournalLine, Account, DashboardSnapshot
+from .models import JournalLine, Account, DashboardSnapshot, AgentNotification
 from clients.models import ExchangeRate
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
@@ -282,3 +282,77 @@ def build_targeted_agent_prompt(invoice_raw_text: str, agent_type: str = 'TAX') 
         return "No specific overriding rules triggered. Use standard accounting logic."
         
     return targeted_rules_text
+
+def run_agent_rule_audit():
+    """
+    Analyzes AgentKnowledgeRule for logical consistency using Gemini
+    and posts results to the AgentNotification model for Dashboard visibility.
+    """
+    print("\n--- DEBUG: STARTING AI RULEBOOK AUDIT ---")
+    rules = AgentKnowledgeRule.objects.filter(is_active=True).order_by('agent_scope', 'rule_type')
+    
+    if not rules.exists():
+        print("DEBUG [Audit]: No active rules found.")
+        return "No active rules found to audit."
+
+    formatted_rules = []
+    for rule in rules:
+        formatted_rules.append(
+            f"Rule ID: {rule.id} | Scope: {rule.agent_scope} | Type: {rule.rule_type}\n"
+            f"Title: {rule.title}\n"
+            f"Condition: {rule.condition}\n"
+            f"Action/Fact: {rule.action_or_fact}\n---"
+        )
+    
+    rules_context = "\n".join(formatted_rules)
+
+    prompt = f"""
+    You are an elite QA Engineer and Systems Auditor for an Agentic Accounting Platform.
+    Analyze these RAG rules for:
+    1. CONTRADICTIONS: Opposite instructions for the same scenario.
+    2. DILUTION: Overlapping rules that confuse vector search.
+    3. CLARITY: Vague conditions or actions.
+
+    Reference Rule IDs in your findings. If perfect, state 'Rulebase is consistent'.
+    Use Markdown. Bold Rule IDs like **Rule 123**.
+
+    <ACTIVE_RULES>
+    {rules_context}
+    </ACTIVE_RULES>
+    """
+
+    try:
+        api_key = getattr(settings, 'GEMINI_API_KEY_2', os.getenv("GEMINI_API_KEY_2"))
+        client = genai.Client(api_key=api_key)
+        
+        print("DEBUG [Audit]: Sending rulebook context to Gemini-2.5-Pro...")
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=prompt,
+            config=types.GenerateContentConfig(temperature=0.2)
+        )
+
+        report_text = response.text if response.text else "AI returned empty audit."
+        
+        # Determine severity: If 'Contradiction' or 'Conflict' is found, mark as high priority
+        severity = 'INFO'
+        if any(word in report_text.upper() for word in ['CONTRADICTION', 'CONFLICT', 'ERROR']):
+            severity = 'WARNING'
+
+        # Create the notification for the Dashboard
+        notification = AgentNotification.objects.create(
+            title=f"Rulebook Audit: {timezone.now().strftime('%Y-%m-%d')}",
+            message=report_text,
+            notification_type='SYSTEM',
+            severity=severity,
+            is_resolved=False
+        )
+        
+        print(f"DEBUG [Audit]: Successfully generated notification ID {notification.id}")
+        return notification
+
+    except Exception as e:
+        print(f"DEBUG [Audit]: Error during rule audit: {str(e)}")
+        raise e
+    finally:
+        print("--- DEBUG: END AI RULEBOOK AUDIT ---\n")

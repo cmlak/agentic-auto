@@ -38,9 +38,15 @@ gcloud run jobs update global-dashboard-update \
   --image gcr.io/document-project-464509/agentic-platform:latest \
   --region asia-southeast1
 
+gcloud run jobs update audit-agent-rules-job \
+  --image gcr.io/document-project-464509/agentic-platform:latest \
+  --region asia-southeast1
+
 gcloud run jobs execute debug-nbc-scraper-us --region us-central1
 
 gcloud run jobs execute global-dashboard-update --region asia-southeast1
+
+gcloud run jobs execute audit-agent-rules-job --region asia-southeast1
 
 gcloud beta run services logs tail agentic-platform --region asia-southeast1
 

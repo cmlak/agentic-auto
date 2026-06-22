@@ -36,10 +36,12 @@ class Asset(models.Model):
     dep_expense_account = models.ForeignKey('account.Account', related_name='dep_exp_acct', on_delete=models.PROTECT)
     
     # Depreciation Settings
-    depreciation_start_date = models.DateField()
+    depreciation_start_date = models.DateField(blank=True, null=True)
     depreciation_method = models.CharField(max_length=5, choices=DEPRECIATION_METHODS, default='SL')
     useful_life_months = models.IntegerField(help_text="e.g. 5.5 years = 66 months")
     salvage_value = models.DecimalField(max_digits=12, decimal_places=2, default=0.00)
+
+    description = models.TextField(blank=True, null=True)
 
     @property
     def accumulated_depreciation(self):

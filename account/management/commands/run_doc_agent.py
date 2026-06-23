@@ -32,7 +32,6 @@ class Command(BaseCommand):
         
         # Accumulators for auxiliary costs
         aux_invoice_numbers = []
-        aux_custom_doc_fee_usd = 0.0
         total_freight_usd = 0.0
         total_insurance_usd = 0.0
         aux_thc_usd = 0.0
@@ -41,10 +40,8 @@ class Command(BaseCommand):
         
         # Accumulators for reimbursement
         total_reimb_amount_usd = 0.0
-        reimb_custom_doc_fee_usd = 0.0
         reimb_thc_usd = 0.0
         reimb_port_charges_usd = 0.0
-        reimb_clearance_trucking_usd = 0.0
         
         global_exchange_rate = 1.0
         
@@ -99,10 +96,8 @@ class Command(BaseCommand):
                                 aux_invoice_numbers.append(inv_num)
                             
                             total_reimb_amount_usd += data.get('total_reimbursement_usd', 0.0)
-                            reimb_custom_doc_fee_usd += data.get('custom_document_fee_usd', 0.0)
                             reimb_thc_usd += data.get('thc_usd', 0.0)
                             reimb_port_charges_usd += data.get('port_charges_usd', 0.0)
-                            reimb_clearance_trucking_usd += data.get('clearance_trucking_demurrage_usd', 0.0)
                     else:
                         # Process as auxiliary document
                         self.stdout.write(f"Processing Auxiliary Document: {filename}...")
@@ -112,15 +107,14 @@ class Command(BaseCommand):
                             if inv_num:
                                 aux_invoice_numbers.append(inv_num)
                                 
-                            fee = data.get('custom_document_fee', 0.0)
-                            curr = data.get('custom_document_fee_currency', 'USD').upper()
-                            if fee > 0:
-                                if curr == 'KHR':
-                                    # Fixed exchange rate of 4000 Riel to 1 USD
-                                    aux_custom_doc_fee_usd += (fee / 4000.0)
-                                else:
-                                    aux_custom_doc_fee_usd += fee
-                                    
+                            # Safeguards against LLM miscategorization based on filenames
+                            if "port charge" in name_lower:
+                                data['port_charges_usd'] = data.get('port_charges_usd', 0.0) + data.get('terminal_handling_charge_usd', 0.0)
+                                data['terminal_handling_charge_usd'] = 0.0
+                            if "terminal handling" in name_lower or "thc" in name_lower:
+                                data['terminal_handling_charge_usd'] = data.get('terminal_handling_charge_usd', 0.0) + data.get('port_charges_usd', 0.0)
+                                data['port_charges_usd'] = 0.0
+                                
                             total_freight_usd += data.get('freight_charge_usd', 0.0)
                             total_insurance_usd += data.get('insurance_usd', 0.0)
                             aux_thc_usd += data.get('terminal_handling_charge_usd', 0.0)
@@ -130,14 +124,13 @@ class Command(BaseCommand):
                 except Exception as e:
                     self.stdout.write(self.style.ERROR(f"Error processing {filename}: {e}"))
                     
-        # Cross-check to avoid double counting
-        actual_custom_doc_fee_usd = max(aux_custom_doc_fee_usd, reimb_custom_doc_fee_usd)
+        # Cross-check to avoid double counting. Use max to ensure we don't undercut the master reimbursement.
         actual_thc_usd = max(aux_thc_usd, reimb_thc_usd)
         actual_port_charges_usd = max(aux_port_charges_usd, reimb_port_charges_usd)
-        actual_clearance_trucking_usd = max(aux_clearance_trucking_usd, reimb_clearance_trucking_usd)
+        actual_clearance_trucking_usd = aux_clearance_trucking_usd
         
         # Only deduct fees that we are sure exist as line items on the reimbursement document
-        deducted_fees = reimb_custom_doc_fee_usd + reimb_thc_usd + reimb_port_charges_usd + reimb_clearance_trucking_usd
+        deducted_fees = reimb_thc_usd + reimb_port_charges_usd
         net_reimbursement_usd = max(0.0, total_reimb_amount_usd - deducted_fees)
 
         def find_taxes(item_name):
@@ -213,7 +206,6 @@ class Command(BaseCommand):
                     'Special Tax (USD)': 0.0,
                     'Value Added Tax (USD)': 0.0,
                     'Auxiliary Invoice Numbers': aux_inv_str,
-                    'Total Custom Document Fee (USD)': round(actual_custom_doc_fee_usd, 2),
                     'Total Freight (USD)': round(total_freight_usd, 2),
                     'Total Insurance (USD)': round(total_insurance_usd, 2),
                     'Total Terminal Handling Charge (USD)': round(actual_thc_usd, 2),
@@ -221,7 +213,6 @@ class Command(BaseCommand):
                     'Total Clearance & Trucking (USD)': round(actual_clearance_trucking_usd, 2),
                     'Net Reimbursement (USD)': round(net_reimbursement_usd, 2),
                     'Prorated Insurance (USD)': 0.0,
-                    'Prorated Custom Doc Fee (USD)': 0.0,
                     'Prorated Net Reimbursement (USD)': 0.0,
                     'Prorated Freight (USD)': 0.0,
                     'Prorated THC (USD)': 0.0,
@@ -243,7 +234,6 @@ class Command(BaseCommand):
                     
                     # Value-based allocations
                     prorated_insurance = total_insurance_usd * value_ratio
-                    prorated_custom_doc_fee = actual_custom_doc_fee_usd * value_ratio
                     prorated_net_reimb = net_reimbursement_usd * value_ratio
                     
                     # Weight-based allocations
@@ -254,7 +244,7 @@ class Command(BaseCommand):
                     
                     # Final Capitalized Value
                     # Includes: Base Price + Prorated Value-Based Costs + Prorated Weight-Based Costs + Exact Taxes (Including VAT as requested)
-                    capitalized_value = (item_amt + prorated_insurance + prorated_custom_doc_fee + prorated_net_reimb + 
+                    capitalized_value = (item_amt + prorated_insurance + prorated_net_reimb + 
                                          prorated_freight + prorated_thc + prorated_port_charges + prorated_clearance_trucking + 
                                          cd_usd + st_usd + vat_usd)
                                          
@@ -276,7 +266,6 @@ class Command(BaseCommand):
                         'Special Tax (USD)': round(st_usd, 2),
                         'Value Added Tax (USD)': round(vat_usd, 2),
                         'Auxiliary Invoice Numbers': aux_inv_str,
-                        'Total Custom Document Fee (USD)': round(actual_custom_doc_fee_usd, 2),
                         'Total Freight (USD)': round(total_freight_usd, 2),
                         'Total Insurance (USD)': round(total_insurance_usd, 2),
                         'Total Terminal Handling Charge (USD)': round(actual_thc_usd, 2),
@@ -284,7 +273,6 @@ class Command(BaseCommand):
                         'Total Clearance & Trucking (USD)': round(actual_clearance_trucking_usd, 2),
                         'Net Reimbursement (USD)': round(net_reimbursement_usd, 2),
                         'Prorated Insurance (USD)': round(prorated_insurance, 2),
-                        'Prorated Custom Doc Fee (USD)': round(prorated_custom_doc_fee, 2),
                         'Prorated Net Reimbursement (USD)': round(prorated_net_reimb, 2),
                         'Prorated Freight (USD)': round(prorated_freight, 2),
                         'Prorated THC (USD)': round(prorated_thc, 2),

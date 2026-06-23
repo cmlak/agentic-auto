@@ -32,8 +32,6 @@ class CustomsDeclarationData(BaseModel):
 
 class AuxiliaryCostsData(BaseModel):
     invoice_number: str = Field(description="Invoice or receipt number (e.g., AHKW26050005, INV2026-0258, 81836)", default="")
-    custom_document_fee: float = Field(description="Custom document fee or Other Payment Receipt fee", default=0.0)
-    custom_document_fee_currency: str = Field(description="Currency of custom document fee (e.g., KHR, USD)", default="USD")
     freight_charge_usd: float = Field(description="Freight charge amount in USD", default=0.0)
     insurance_usd: float = Field(description="Insurance amount in USD", default=0.0)
     terminal_handling_charge_usd: float = Field(description="Terminal Handling Charge (THC), DOC Fee, Agency Fee, or Delivery Fee in USD. Sum these up if multiple exist.", default=0.0)
@@ -43,10 +41,8 @@ class AuxiliaryCostsData(BaseModel):
 class ReimbursementData(BaseModel):
     invoice_number: str = Field(description="Reimbursement invoice or reference number", default="")
     total_reimbursement_usd: float = Field(description="Total reimbursement amount in USD", default=0.0)
-    custom_document_fee_usd: float = Field(description="Customs Procedure Fee (CPF) or Custom document fee in USD", default=0.0)
     thc_usd: float = Field(description="THC / D.O Fee in USD", default=0.0)
     port_charges_usd: float = Field(description="Port Charges (e.g. LoLo.Port Charges) in USD", default=0.0)
-    clearance_trucking_demurrage_usd: float = Field(description="Clearance, Trucking, Truck Standby, Over Weight, Demurrage fees in USD", default=0.0)
 
 
 class DocAgent:
@@ -116,15 +112,29 @@ class DocAgent:
         prompt = """
         You are an expert data extractor. Extract shipment-level costs from the attached document.
         This could be a freight invoice, a tax invoice for shipping, or a customs receipt.
-        Extract:
+        
+        To ensure absolute accuracy for Terminal Handling and Delivery Order charges, you must process the attached document using the following step-by-step logic:
+        
+        Step 1: Itemized Extraction. Read the invoice table and extract every single fee line item, noting its Gross Amount (Amount inclusive of Tax/VAT).
+        
+        Step 2: Semantic Evaluation (Chain of Thought). For each item, ask: "Does this fee represent physical terminal operations, administrative documentation, or neither?"
+        - If it relates to physical terminal/container operations -> Classify as Terminal_Handling_Pool.
+          (Definition: Any fee levied by the shipping line, port, or forwarder related to the physical movement, yard storage, or facility usage of containers at the destination terminal before they are loaded onto a truck. Semantic Indicators: "Terminal", "Handling", "Facility", "CY", "Lift", "Crane", "Stevedoring", "Imbalance Charges", "Equipment Repositioning".)
+        - If it relates to paperwork/agency/release -> Classify as Delivery_Order_Pool.
+          (Definition: Administrative fees charged by the local shipping agent to process the paperwork, endorse the Bill of Lading, and issue the release order allowing the cargo to leave the port. Semantic Indicators: "Document", "Doc", "Agency", "Delivery Order", "D/O", "Admin", "Release", "Manifest".)
+        - If it represents Ocean Freight, purely inland trucking (Site Delivery), or refundable deposits -> Exclude from this specific extraction step.
+        
+        Step 3: Mathematical Aggregation. Sum the Gross Amounts for the Terminal_Handling_Pool and the Delivery_Order_Pool, and output this sum to `terminal_handling_charge_usd`.
+        
+        Step 4: Tax Inclusion Check. Verify that the aggregated totals strictly include the 10% VAT if applicable.
+
+        Extract the other fields as follows:
         - invoice_number: The reference, receipt, or invoice number (e.g., Job No, Inv No, Receipt No).
-        - custom_document_fee: ONLY extract this if the document is titled 'OTHER PAYMENT RECEIPT'. Look for 'Total Amount for Fee' (e.g., 40,000). Return 0.0 for any other type of invoice.
-        - custom_document_fee_currency: The currency of the custom document fee. Default to 'KHR' if no currency is specified on a Cambodian Other Payment Receipt.
         - freight_charge_usd: The Freight Charge amount in USD.
         - insurance_usd: The Insurance amount in USD.
-        - terminal_handling_charge_usd: The Terminal Handling Charge (THC), or sum of DOC fees, Agency fees, and Delivery fees in USD.
-        - port_charges_usd: The Port Charges amount in USD.
-        - clearance_trucking_demurrage_usd: The Clearance, Trucking, or Demurrage amount in USD.
+        - port_charges_usd: The Port Charges amount in USD. Use Semantic Evaluation to find fees related to port infrastructure, vessel docking, and cargo lifting from the vessel to the pier. (Semantic Indicators: "Port", "LoLo", "Lift-on/Lift-off", "Wharfage", "Harbour"). Output the Gross Amount (inclusive of Tax/VAT).
+        - clearance_trucking_demurrage_usd: The Clearance, Trucking, or Demurrage amount in USD. Use Semantic Evaluation to combine fees related to customs clearance brokerage and inland transportation (e.g. "Trucking to Site", "Break Bulk Clearance"). Please extract the Grand Total (including VAT) if a tax invoice is provided.
+        
         If a fee is not present on this document, use 0.0.
         Make sure to return the exact structure requested in the JSON schema.
         """
@@ -151,10 +161,8 @@ class DocAgent:
         Extract:
         - invoice_number: The No-Date or DN number or reference.
         - total_reimbursement_usd: The Total or Amount in Due at the bottom (e.g., 5677.61).
-        - custom_document_fee_usd: Look for CPF or Custom Procedure Fee or Custom Document Fee.
         - thc_usd: Look for THC or D.O Fee.
         - port_charges_usd: Look for Port Charges or LoLo.Port Charges.
-        - clearance_trucking_demurrage_usd: Sum up any Truck Standby, Over Weight, Demurrage, or Clearance fees.
         If a fee is not present, use 0.0.
         Make sure to return the exact structure requested in the JSON schema.
         """

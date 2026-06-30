@@ -1,0 +1,27 @@
+{% extends 'base_1_tools.html' %}
+
+{% block title %}Delete Capitalization{% endblock %}
+
+{% block content %}
+<div class="container mt-4 mb-5">
+    <div class="row justify-content-center">
+        <div class="col-md-6">
+            <div class="card border-danger mb-3 shadow-sm">
+                <div class="card-header bg-danger text-white">
+                    <h5 class="mb-0">Confirm Delete</h5>
+                </div>
+                <div class="card-body">
+                    <p class="card-text">Are you sure you want to delete the Capitalization entry for <strong>{{ object.company|default:object.description }}</strong>?</p>
+                    <p class="text-muted"><small>Batch: {{ object.batch }} | Amount: {{ object.total_usd }}</small></p>
+                    
+                    <form method="post" class="d-flex justify-content-end mt-4">
+                        {% csrf_token %}
+                        <a href="{% url 'assets:capitalization_list' %}" class="btn btn-secondary me-2">Cancel</a>
+                        <button type="submit" class="btn btn-danger">Yes, Delete</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

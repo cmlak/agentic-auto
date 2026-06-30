@@ -628,3 +628,5 @@ def export_asset_depreciation_schedule(request, pk):
     response = HttpResponse(dataset.xlsx, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
     response['Content-Disposition'] = f'attachment; filename="Depreciation_Schedule_{asset.asset_code}.xlsx"'
     return response
+
+from .views_cap import capitalization_upload_view, capitalization_review_view, capitalization_list_view, capitalization_edit_view, capitalization_delete_view

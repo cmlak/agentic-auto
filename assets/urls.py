@@ -1,5 +1,6 @@
 from django.urls import path
 from . import views
+from . import views_capitalization_agent
 
 app_name = 'assets'
 
@@ -28,4 +29,15 @@ urlpatterns = [
     path('asset-disposals/<int:pk>/update/', views.AssetDisposalUpdateView.as_view(), name='asset_disposal_update'),
     path('asset-disposals/<int:pk>/delete/', views.AssetDisposalDeleteView.as_view(), name='asset_disposal_delete'),
     path('asset-disposals/export/', views.export_asset_disposals, name='export_asset_disposals'),
+
+    path('capitalization/upload/', views.capitalization_upload_view, name='capitalization_upload'),
+    path('capitalization/review/', views.capitalization_review_view, name='capitalization_review'),
+    path('capitalization/', views.capitalization_list_view, name='capitalization_list'),
+    path('capitalization/<int:pk>/edit/', views.capitalization_edit_view, name='capitalization_edit'),
+    path('capitalization/<int:pk>/delete/', views.capitalization_delete_view, name='capitalization_delete'),
+
+    # New Agentic Capitalization Pipeline
+    path('capitalization-agent/upload/', views_capitalization_agent.capitalization_agent_upload_view, name='capitalization_agent_upload'),
+    path('capitalization-agent/review/', views_capitalization_agent.capitalization_agent_review_view, name='capitalization_agent_review'),
+    path('capitalization-agent/', views_capitalization_agent.capitalization_agent_list_view, name='capitalization_agent_list'),
 ]

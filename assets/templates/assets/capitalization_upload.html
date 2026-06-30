@@ -1,0 +1,68 @@
+{% extends 'base_1_tools.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+<head>
+    {% block title %}
+        Capitalization Upload
+    {% endblock %}
+</head>
+
+{% block content %}
+<div class="container mt-4 mb-5 position-relative">
+    
+    <div id="loading-overlay" style="display: none; position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.95); z-index: 1000; flex-direction: column; align-items: center; justify-content: center; border-radius: 8px;">
+        <div class="spinner-border text-primary mb-3" style="width: 3rem; height: 3rem;" role="status"></div>
+        <h4 id="loading-text" class="text-primary mb-3">Uploading and Processing Documents...</h4>
+        <div class="progress w-50" style="height: 25px;">
+            <div id="loading-bar" class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 100%;"></div>
+        </div>
+        <p class="text-muted mt-3 text-sm">Gemini AI is parsing your documents and calculating prorations. This may take a minute.</p>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col text-center py-3">
+            <h2>Process Capitalization Documents with AI</h2>
+            <p class="text-muted">Upload all related documents (Commercial Invoices, Customs Declarations, Freight, Insurance, etc.). The AI will extract the data and prorate the costs.</p>
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6">
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm" role="alert">
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="row d-flex justify-content-center">
+        <div class="col-sm-12 col-md-8 col-lg-6 shadow-sm p-5 bg-white rounded border">
+            <form id="upload-form" method="post" enctype="multipart/form-data" onsubmit="showLoading()">
+                {% csrf_token %}
+                
+                <h4 class="mb-4 text-primary border-bottom pb-2">Batch Upload</h4>
+                
+                {{ form|crispy }}
+                
+                <div class="mt-4 d-grid gap-2">
+                    <button type="submit" class="btn btn-primary btn-lg shadow-sm">
+                        <i class="bi bi-cloud-arrow-up me-2"></i> Upload & Process
+                    </button>
+                    <a href="{% url 'assets:capitalization_list' %}" class="btn btn-outline-secondary">Cancel</a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<script>
+    function showLoading() {
+        document.getElementById('loading-overlay').style.display = 'flex';
+    }
+</script>
+{% endblock %}

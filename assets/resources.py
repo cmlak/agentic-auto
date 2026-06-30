@@ -62,3 +62,26 @@ class DepreciationScheduleResource(resources.Resource):
 
     class Meta:
         export_order = ('period', 'date', 'depreciation_expense', 'accumulated_depreciation', 'net_book_value')
+
+from .models import Capitalization, AssetBatch
+
+class CapitalizationResource(resources.ModelResource):
+    vendor_name = Field(attribute='vendor__name', column_name='Vendor Name')
+
+    class Meta:
+        model = Capitalization
+        fields = ('id', 'batch', 'date', 'company', 'invoice_no', 'vendor_name', 'vattin', 'description', 'description_en', 'instruction', 'capitalization', 'payment_status', 'unreg_usd', 'exempt_usd', 'vat_base_usd', 'vat_usd', 'wht_usd', 'total_usd')
+        export_order = fields
+
+class AssetBatchResource(resources.ModelResource):
+    class Meta:
+        model = AssetBatch
+        fields = (
+            'id', 'batch_id', 'source_file', 'invoice_number', 'date', 'total_invoice_value', 'total_invoice_weight',
+            'item_name', 'cdc', 'quantity', 'unit', 'unit_price', 'amount_usd', 'item_gross_weight_kg',
+            'customs_declaration_number', 'custom_duty_usd', 'special_tax_usd', 'value_added_tax_usd',
+            'auxiliary_invoice_numbers', 'total_freight_usd', 'total_insurance_usd', 'total_thc_usd', 'total_port_charges_usd', 'total_clearance_trucking_usd', 'net_reimbursement_usd',
+            'prorated_insurance_usd', 'prorated_net_reimb_usd', 'prorated_freight_usd', 'prorated_thc_usd', 'prorated_port_charges_usd', 'prorated_clearance_trucking_usd',
+            'capitalized_value_usd'
+        )
+        export_order = fields

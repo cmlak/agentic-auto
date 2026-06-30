@@ -1,0 +1,162 @@
+{% extends 'base_1_tools.html' %}
+{% load static %}
+{% load crispy_forms_tags %}
+
+{% block title %}Review Capitalization{% endblock %}
+
+{% block head %}
+<link href="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/css/select2.min.css" rel="stylesheet" />
+<style>
+    .form-control-sm, .form-select-sm {
+        font-size: 0.8rem;
+        padding: 0.2rem 0.4rem;
+    }
+    .table th {
+        font-size: 0.85rem;
+        vertical-align: middle;
+        white-space: nowrap;
+    }
+    .table td {
+        vertical-align: middle;
+        padding: 0.3rem;
+    }
+    .nav-tabs .nav-link {
+        font-weight: 600;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4 mb-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <div>
+            <h2>Review Capitalization Extracted Data</h2>
+            <p class="text-muted">Please review and edit the data before saving.</p>
+        </div>
+    </div>
+
+    {% if messages %}
+        {% for message in messages %}
+            <div class="alert alert-{{ message.tags }} alert-dismissible fade show shadow-sm" role="alert">
+                {{ message }}
+                <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+            </div>
+        {% endfor %}
+    {% endif %}
+
+    <form method="post" id="review-form">
+        {% csrf_token %}
+        
+        <ul class="nav nav-tabs mb-4" id="reviewTabs" role="tablist">
+            <li class="nav-item" role="presentation">
+                <button class="nav-link active" id="cap-tab" data-bs-toggle="tab" data-bs-target="#cap-pane" type="button" role="tab">Capitalization Entries</button>
+            </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="ab-tab" data-bs-toggle="tab" data-bs-target="#ab-pane" type="button" role="tab">Asset Batch Details (Prorated Costs)</button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="reviewTabsContent">
+            <!-- Capitalization Tab -->
+            <div class="tab-pane fade show active" id="cap-pane" role="tabpanel">
+                {{ cap_formset.management_form }}
+                {% for form in cap_formset %}
+                    <div class="capitalization-form-wrapper">
+                        {% crispy form %}
+                    </div>
+                {% endfor %}
+            </div>
+
+            <!-- Asset Batch Tab -->
+            <div class="tab-pane fade" id="ab-pane" role="tabpanel">
+                {{ ab_formset.management_form }}
+                <div class="table-responsive bg-white shadow-sm rounded border">
+                    <table class="table table-bordered table-hover mb-0">
+                        <thead class="table-light">
+                            <tr>
+                                <th>Batch ID</th>
+                                <th>Source File</th>
+                                <th>Invoice Number</th>
+                                <th>Item Name</th>
+                                <th>Unit Price</th>
+                                <th>Amount USD</th>
+                                <th>Capitalized Value</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for form in ab_formset %}
+                            <tr>
+                                {% for hidden in form.hidden_fields %}
+                                    {{ hidden }}
+                                {% endfor %}
+                                <td style="width: 150px;">{{ form.batch_id|as_crispy_field }}</td>
+                                <td>{{ form.source_file|as_crispy_field }}</td>
+                                <td>{{ form.invoice_number|as_crispy_field }}</td>
+                                <td>{{ form.item_name|as_crispy_field }}</td>
+                                <td style="width: 100px;">{{ form.unit_price|as_crispy_field }}</td>
+                                <td style="width: 100px;">{{ form.amount_usd|as_crispy_field }}</td>
+                                <td style="width: 120px;" class="table-success">{{ form.capitalized_value_usd|as_crispy_field }}</td>
+                                <td class="d-none">
+                                    {{ form.date }}
+                                    {{ form.total_invoice_value }}
+                                    {{ form.total_invoice_weight }}
+                                    {{ form.cdc }}
+                                    {{ form.quantity }}
+                                    {{ form.unit }}
+                                    {{ form.item_gross_weight_kg }}
+                                    {{ form.customs_declaration_number }}
+                                    {{ form.custom_duty_usd }}
+                                    {{ form.special_tax_usd }}
+                                    {{ form.value_added_tax_usd }}
+                                    {{ form.auxiliary_invoice_numbers }}
+                                    {{ form.total_freight_usd }}
+                                    {{ form.total_insurance_usd }}
+                                    {{ form.total_thc_usd }}
+                                    {{ form.total_port_charges_usd }}
+                                    {{ form.total_clearance_trucking_usd }}
+                                    {{ form.net_reimbursement_usd }}
+                                    {{ form.prorated_insurance_usd }}
+                                    {{ form.prorated_net_reimb_usd }}
+                                    {{ form.prorated_freight_usd }}
+                                    {{ form.prorated_thc_usd }}
+                                    {{ form.prorated_port_charges_usd }}
+                                    {{ form.prorated_clearance_trucking_usd }}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <div class="mt-4 d-flex justify-content-end">
+            <a href="{% url 'assets:capitalization_upload' %}" class="btn btn-outline-danger me-3 btn-lg shadow-sm">Discard</a>
+            <button type="submit" class="btn btn-success btn-lg shadow-sm">Save All Records</button>
+        </div>
+    </form>
+</div>
+
+<script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/select2@4.1.0-rc.0/dist/js/select2.min.js"></script>
+<script>
+    $(document).ready(function() {
+        $('.select2').select2({
+            theme: 'bootstrap-5',
+            width: '100%',
+            placeholder: 'Select a Vendor',
+            allowClear: true
+        });
+        
+        // Add title attribute for mouse hover
+        $('textarea').each(function() {
+            if (!$(this).attr('title')) {
+                $(this).attr('title', $(this).val());
+            }
+            $(this).on('input', function() {
+                $(this).attr('title', $(this).val());
+            });
+        });
+    });
+</script>
+{% endblock %}

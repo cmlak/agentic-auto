@@ -107,3 +107,47 @@ class AssetDisposalFilter(django_filters.FilterSet):
                 Column('end_date', css_class='form-group col-md-4 mb-0'),
             )
         )
+
+from .models import Capitalization, AssetBatch
+
+class CapitalizationFilter(django_filters.FilterSet):
+    batch = django_filters.CharFilter(lookup_expr='icontains', label='Batch')
+    date = django_filters.DateFilter(widget=forms.DateInput(attrs={'type': 'date'}), label='Date')
+    company = django_filters.CharFilter(lookup_expr='icontains', label='Company')
+    vendor = django_filters.CharFilter(field_name='vendor__name', lookup_expr='icontains', label='Vendor Name')
+
+    class Meta:
+        model = Capitalization
+        fields = ['batch', 'date', 'company', 'vendor']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.form.helper = FormHelper()
+        self.form.helper.form_tag = False
+        self.form.helper.layout = Layout(
+            Row(
+                Column('batch', css_class='form-group col-md-3 mb-0'),
+                Column('date', css_class='form-group col-md-3 mb-0'),
+                Column('company', css_class='form-group col-md-3 mb-0'),
+                Column('vendor', css_class='form-group col-md-3 mb-0'),
+            )
+        )
+
+class AssetBatchFilter(django_filters.FilterSet):
+    batch_id = django_filters.CharFilter(lookup_expr='icontains', label='Batch ID')
+    invoice_number = django_filters.CharFilter(lookup_expr='icontains', label='Invoice Number')
+
+    class Meta:
+        model = AssetBatch
+        fields = ['batch_id', 'invoice_number']
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.form.helper = FormHelper()
+        self.form.helper.form_tag = False
+        self.form.helper.layout = Layout(
+            Row(
+                Column('batch_id', css_class='form-group col-md-6 mb-0'),
+                Column('invoice_number', css_class='form-group col-md-6 mb-0'),
+            )
+        )

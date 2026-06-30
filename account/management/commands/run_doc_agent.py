@@ -32,16 +32,29 @@ class Command(BaseCommand):
         
         # Accumulators for auxiliary costs
         aux_invoice_numbers = []
-        total_freight_usd = 0.0
-        total_insurance_usd = 0.0
-        aux_thc_usd = 0.0
-        aux_port_charges_usd = 0.0
-        aux_clearance_trucking_usd = 0.0
+        total_freight_net_usd = 0.0
+        total_freight_gross_usd = 0.0
+        total_insurance_net_usd = 0.0
+        total_insurance_gross_usd = 0.0
+        aux_thc_net_usd = 0.0
+        aux_thc_gross_usd = 0.0
+        aux_port_charges_net_usd = 0.0
+        aux_port_charges_gross_usd = 0.0
+        aux_clearance_trucking_net_usd = 0.0
+        aux_clearance_trucking_gross_usd = 0.0
+        
+        aux_crosscheck_thc_do_gross = 0.0
+        aux_crosscheck_port_gross = 0.0
         
         # Accumulators for reimbursement
         total_reimb_amount_usd = 0.0
         reimb_thc_usd = 0.0
         reimb_port_charges_usd = 0.0
+        
+        # Accumulators for unscrambled final outputs based on filename
+        actual_thc_usd = 0.0
+        actual_port_charges_usd = 0.0
+        actual_clearance_trucking_usd = 0.0
         
         global_exchange_rate = 1.0
         
@@ -74,6 +87,7 @@ class Command(BaseCommand):
                             for item in data['items']:
                                 customs_data_list.append({
                                     'declaration_number': declaration_number,
+                                    'item_no': item.get('item_no', 0),
                                     'name': item.get('name', ''),
                                     'customs_duty_usd': item.get('customs_duty_riel', 0.0) / exchange_rate,
                                     'special_tax_usd': item.get('special_tax_riel', 0.0) / exchange_rate,
@@ -91,6 +105,7 @@ class Command(BaseCommand):
                         self.stdout.write(f"Processing Reimbursement Document: {filename}...")
                         data = agent.extract_reimbursement(file_bytes, mime_type=mime_type)
                         if data:
+                            self.stdout.write(f"DEBUG REIMBURSEMENT: {data}")
                             inv_num = data.get('invoice_number', '')
                             if inv_num:
                                 aux_invoice_numbers.append(inv_num)
@@ -101,40 +116,71 @@ class Command(BaseCommand):
                     else:
                         # Process as auxiliary document
                         self.stdout.write(f"Processing Auxiliary Document: {filename}...")
-                        data = agent.extract_auxiliary_costs(file_bytes, mime_type=mime_type)
+                        data = agent.extract_auxiliary_costs(file_bytes, mime_type=mime_type, filename=filename)
                         if data:
                             inv_num = data.get('invoice_number', '')
                             if inv_num:
                                 aux_invoice_numbers.append(inv_num)
                                 
-                            # Safeguards against LLM miscategorization based on filenames
-                            if "port charge" in name_lower:
-                                data['port_charges_usd'] = data.get('port_charges_usd', 0.0) + data.get('terminal_handling_charge_usd', 0.0)
-                                data['terminal_handling_charge_usd'] = 0.0
-                            if "terminal handling" in name_lower or "thc" in name_lower:
-                                data['terminal_handling_charge_usd'] = data.get('terminal_handling_charge_usd', 0.0) + data.get('port_charges_usd', 0.0)
-                                data['port_charges_usd'] = 0.0
+                            self.stdout.write(f"DEBUG {filename}: {data}")
                                 
-                            total_freight_usd += data.get('freight_charge_usd', 0.0)
-                            total_insurance_usd += data.get('insurance_usd', 0.0)
-                            aux_thc_usd += data.get('terminal_handling_charge_usd', 0.0)
-                            aux_port_charges_usd += data.get('port_charges_usd', 0.0)
-                            aux_clearance_trucking_usd += data.get('clearance_trucking_demurrage_usd', 0.0)
+                            total_freight_net_usd += data.get('freight_charge_net_usd', 0.0)
+                            total_freight_gross_usd += data.get('freight_charge_gross_usd', 0.0)
+                            total_insurance_net_usd += data.get('insurance_net_usd', 0.0)
+                            total_insurance_gross_usd += data.get('insurance_gross_usd', 0.0)
+                            
+                            aux_thc_net_usd += data.get('terminal_handling_charge_net_usd', 0.0)
+                            aux_thc_gross_usd += data.get('terminal_handling_charge_gross_usd', 0.0)
+                            aux_port_charges_net_usd += data.get('port_charges_net_usd', 0.0)
+                            aux_port_charges_gross_usd += data.get('port_charges_gross_usd', 0.0)
+                            aux_clearance_trucking_net_usd += data.get('clearance_trucking_net_usd', 0.0)
+                            aux_clearance_trucking_gross_usd += data.get('clearance_trucking_gross_usd', 0.0)
+                            
+                            doc_net_sum = (data.get('terminal_handling_charge_net_usd', 0.0) + 
+                                           data.get('port_charges_net_usd', 0.0) + 
+                                           data.get('clearance_trucking_net_usd', 0.0))
+                            
+                            doc_gross_sum = (data.get('terminal_handling_charge_gross_usd', 0.0) + 
+                                             data.get('port_charges_gross_usd', 0.0) + 
+                                             data.get('clearance_trucking_gross_usd', 0.0))
+                            
+                            if "thc" in name_lower or "do" in name_lower:
+                                aux_crosscheck_thc_do_gross += doc_gross_sum
+                                actual_thc_usd += doc_net_sum
+                            elif "port" in name_lower:
+                                aux_crosscheck_port_gross += doc_gross_sum
+                                actual_port_charges_usd += doc_net_sum
+                            elif "clearance" in name_lower or "truck" in name_lower:
+                                actual_clearance_trucking_usd += doc_net_sum
                             
                 except Exception as e:
                     self.stdout.write(self.style.ERROR(f"Error processing {filename}: {e}"))
                     
-        # Cross-check to avoid double counting. Use max to ensure we don't undercut the master reimbursement.
-        actual_thc_usd = max(aux_thc_usd, reimb_thc_usd)
-        actual_port_charges_usd = max(aux_port_charges_usd, reimb_port_charges_usd)
-        actual_clearance_trucking_usd = aux_clearance_trucking_usd
+        # Final Output Values are purely the NET amounts from the Auxiliary invoices
         
-        # Only deduct fees that we are sure exist as line items on the reimbursement document
-        deducted_fees = reimb_thc_usd + reimb_port_charges_usd
-        net_reimbursement_usd = max(0.0, total_reimb_amount_usd - deducted_fees)
+        # Aggregate Cross-Check (Targeted: THC/DO and Port Charge ONLY)
+        total_target_aux_gross = aux_crosscheck_thc_do_gross + aux_crosscheck_port_gross
+        total_target_reimb_billed = reimb_thc_usd + reimb_port_charges_usd
+        
+        is_error = (total_target_reimb_billed > 0 and abs(total_target_aux_gross - total_target_reimb_billed) > 2.0)
+        
+        if is_error:
+            self.stdout.write(self.style.ERROR(
+                f"ERROR: Targeted Cross-Check failed! "
+                f"Total Aux THC+Port Gross ({total_target_aux_gross}) vs Total Reimb THC+Port ({total_target_reimb_billed})"
+            ))
+            net_reimbursement_usd = "ERROR"
+        else:
+            net_reimbursement_usd = max(0.0, total_reimb_amount_usd - (reimb_thc_usd + reimb_port_charges_usd))
 
-        def find_taxes(item_name):
-            if not item_name: return 0.0, 0.0, 0.0, ""
+        def find_taxes(item_name, item_no=0):
+            if not item_name and item_no <= 0: return 0.0, 0.0, 0.0, ""
+            
+            # First, attempt an exact match by item_no if it is provided
+            if item_no > 0:
+                for cd in customs_data_list:
+                    if cd.get('item_no') == item_no:
+                        return cd['customs_duty_usd'], cd['special_tax_usd'], cd['vat_usd'], cd.get('declaration_number', '')
             
             import re
             # Extract alphanumeric tokens, ignoring small unhelpful words if needed
@@ -175,7 +221,10 @@ class Command(BaseCommand):
                 
             return 0.0, 0.0, 0.0, ""
 
-        all_items = []
+        # First, flatten all items to calculate global totals for proration and plugging
+        all_flattened_items = []
+        grand_total_val = 0.0
+        grand_total_weight = 0.0
         aux_inv_str = ", ".join(aux_invoice_numbers)
         
         for inv in invoices_data:
@@ -188,12 +237,52 @@ class Command(BaseCommand):
             
             items = data.get('items', [])
             if not items:
+                all_flattened_items.append({
+                    'is_empty': True,
+                    'filename': filename,
+                    'inv_number': inv_number,
+                    'date': date,
+                    'total_val': total_val,
+                    'total_weight': total_weight,
+                })
+            else:
+                for item in items:
+                    item_amt = item.get('amount_usd', 0.0)
+                    item_weight = item.get('gross_weight_kg', 0.0)
+                    grand_total_val += item_amt
+                    grand_total_weight += item_weight
+                    
+                    all_flattened_items.append({
+                        'is_empty': False,
+                        'filename': filename,
+                        'inv_number': inv_number,
+                        'date': date,
+                        'total_val': total_val,
+                        'total_weight': total_weight,
+                        'item': item,
+                        'item_amt': item_amt,
+                        'item_weight': item_weight,
+                    })
+                    
+        # Accumulators to prevent rounding imbalance via plugging on the last item
+        allocated_insurance = 0.0
+        allocated_net_reimb = 0.0
+        allocated_freight = 0.0
+        allocated_thc = 0.0
+        allocated_port_charges = 0.0
+        allocated_clearance_trucking = 0.0
+        
+        non_empty_items = [x for x in all_flattened_items if not x['is_empty']]
+        
+        all_items = []
+        for i, row in enumerate(all_flattened_items):
+            if row['is_empty']:
                 all_items.append({
-                    'Source File': filename,
-                    'Invoice Number': inv_number,
-                    'Date': date,
-                    'Total Invoice Value': total_val,
-                    'Total Invoice Weight': total_weight,
+                    'Source File': row['filename'],
+                    'Invoice Number': row['inv_number'],
+                    'Date': row['date'],
+                    'Total Invoice Value': row['total_val'],
+                    'Total Invoice Weight': row['total_weight'],
                     'Item Name': '',
                     'CDC': '',
                     'Quantity': 0,
@@ -206,12 +295,12 @@ class Command(BaseCommand):
                     'Special Tax (USD)': 0.0,
                     'Value Added Tax (USD)': 0.0,
                     'Auxiliary Invoice Numbers': aux_inv_str,
-                    'Total Freight (USD)': round(total_freight_usd, 2),
-                    'Total Insurance (USD)': round(total_insurance_usd, 2),
+                    'Total Freight (USD)': round(total_freight_net_usd, 2),
+                    'Total Insurance (USD)': round(total_insurance_net_usd, 2),
                     'Total Terminal Handling Charge (USD)': round(actual_thc_usd, 2),
                     'Total Port Charges (USD)': round(actual_port_charges_usd, 2),
                     'Total Clearance & Trucking (USD)': round(actual_clearance_trucking_usd, 2),
-                    'Net Reimbursement (USD)': round(net_reimbursement_usd, 2),
+                    'Net Reimbursement (USD)': round(net_reimbursement_usd, 2) if net_reimbursement_usd != "ERROR" else "ERROR",
                     'Prorated Insurance (USD)': 0.0,
                     'Prorated Net Reimbursement (USD)': 0.0,
                     'Prorated Freight (USD)': 0.0,
@@ -221,65 +310,94 @@ class Command(BaseCommand):
                     'Capitalized Value (USD)': 0.0
                 })
             else:
-                for item in items:
-                    item_name = item.get('name', '')
-                    cd_usd, st_usd, vat_usd, declaration_no = find_taxes(item_name)
+                item = row['item']
+                item_name = item.get('name', '')
+                item_no = item.get('item_no', 0)
+                cd_usd, st_usd, vat_usd, declaration_no = find_taxes(item_name, item_no)
+                
+                item_amt = row['item_amt']
+                item_weight = row['item_weight']
+                
+                # Check if this is the very last non-empty item for plugging
+                is_last_item = (row is non_empty_items[-1]) if non_empty_items else False
+                
+                if is_last_item:
+                    prorated_insurance = round(total_insurance_net_usd - allocated_insurance, 2)
                     
-                    item_amt = item.get('amount_usd', 0.0)
-                    item_weight = item.get('gross_weight_kg', 0.0)
+                    if net_reimbursement_usd == "ERROR":
+                        prorated_net_reimb = "ERROR"
+                    else:
+                        prorated_net_reimb = round(net_reimbursement_usd - allocated_net_reimb, 2)
+                        
+                    prorated_freight = round(total_freight_net_usd - allocated_freight, 2)
+                    prorated_thc = round(actual_thc_usd - allocated_thc, 2)
+                    prorated_port_charges = round(actual_port_charges_usd - allocated_port_charges, 2)
+                    prorated_clearance_trucking = round(actual_clearance_trucking_usd - allocated_clearance_trucking, 2)
+                else:
+                    value_ratio = (item_amt / grand_total_val) if grand_total_val > 0 else 0.0
+                    weight_ratio = (item_weight / grand_total_weight) if grand_total_weight > 0 else 0.0
                     
-                    # Ratios
-                    value_ratio = (item_amt / total_val) if total_val > 0 else 0.0
-                    weight_ratio = (item_weight / total_weight) if total_weight > 0 else 0.0
+                    prorated_insurance = round(total_insurance_net_usd * value_ratio, 2)
+                    allocated_insurance += prorated_insurance
                     
-                    # Value-based allocations
-                    prorated_insurance = total_insurance_usd * value_ratio
-                    prorated_net_reimb = net_reimbursement_usd * value_ratio
+                    if net_reimbursement_usd == "ERROR":
+                        prorated_net_reimb = "ERROR"
+                    else:
+                        prorated_net_reimb = round(net_reimbursement_usd * value_ratio, 2)
+                        allocated_net_reimb += prorated_net_reimb
+                        
+                    prorated_freight = round(total_freight_net_usd * weight_ratio, 2)
+                    allocated_freight += prorated_freight
                     
-                    # Weight-based allocations
-                    prorated_freight = total_freight_usd * weight_ratio
-                    prorated_thc = actual_thc_usd * weight_ratio
-                    prorated_port_charges = actual_port_charges_usd * weight_ratio
-                    prorated_clearance_trucking = actual_clearance_trucking_usd * weight_ratio
+                    prorated_thc = round(actual_thc_usd * weight_ratio, 2)
+                    allocated_thc += prorated_thc
                     
-                    # Final Capitalized Value
-                    # Includes: Base Price + Prorated Value-Based Costs + Prorated Weight-Based Costs + Exact Taxes (Including VAT as requested)
+                    prorated_port_charges = round(actual_port_charges_usd * weight_ratio, 2)
+                    allocated_port_charges += prorated_port_charges
+                    
+                    prorated_clearance_trucking = round(actual_clearance_trucking_usd * weight_ratio, 2)
+                    allocated_clearance_trucking += prorated_clearance_trucking
+                
+                # Final Capitalized Value
+                if prorated_net_reimb == "ERROR":
+                    capitalized_value = "ERROR"
+                else:
                     capitalized_value = (item_amt + prorated_insurance + prorated_net_reimb + 
                                          prorated_freight + prorated_thc + prorated_port_charges + prorated_clearance_trucking + 
                                          cd_usd + st_usd + vat_usd)
-                                         
-                    all_items.append({
-                        'Source File': filename,
-                        'Invoice Number': inv_number,
-                        'Date': date,
-                        'Total Invoice Value': total_val,
-                        'Total Invoice Weight': total_weight,
-                        'Item Name': item_name,
-                        'CDC': item.get('cdc', ''),
-                        'Quantity': item.get('qty', 0),
-                        'Unit': item.get('unit', ''),
-                        'Unit Price': item.get('unit_purchase_price', 0.0),
-                        'Amount (USD)': item_amt,
-                        'Item Gross Weight (kg)': item_weight,
-                        'Customs Declaration Number': declaration_no,
-                        'Custom Duty (USD)': round(cd_usd, 2),
-                        'Special Tax (USD)': round(st_usd, 2),
-                        'Value Added Tax (USD)': round(vat_usd, 2),
-                        'Auxiliary Invoice Numbers': aux_inv_str,
-                        'Total Freight (USD)': round(total_freight_usd, 2),
-                        'Total Insurance (USD)': round(total_insurance_usd, 2),
-                        'Total Terminal Handling Charge (USD)': round(actual_thc_usd, 2),
-                        'Total Port Charges (USD)': round(actual_port_charges_usd, 2),
-                        'Total Clearance & Trucking (USD)': round(actual_clearance_trucking_usd, 2),
-                        'Net Reimbursement (USD)': round(net_reimbursement_usd, 2),
-                        'Prorated Insurance (USD)': round(prorated_insurance, 2),
-                        'Prorated Net Reimbursement (USD)': round(prorated_net_reimb, 2),
-                        'Prorated Freight (USD)': round(prorated_freight, 2),
-                        'Prorated THC (USD)': round(prorated_thc, 2),
-                        'Prorated Port Charges (USD)': round(prorated_port_charges, 2),
-                        'Prorated Clearance & Trucking (USD)': round(prorated_clearance_trucking, 2),
-                        'Capitalized Value (USD)': round(capitalized_value, 2)
-                    })
+                                     
+                all_items.append({
+                    'Source File': row['filename'],
+                    'Invoice Number': row['inv_number'],
+                    'Date': row['date'],
+                    'Total Invoice Value': row['total_val'],
+                    'Total Invoice Weight': row['total_weight'],
+                    'Item Name': item_name,
+                    'CDC': item.get('cdc', ''),
+                    'Quantity': item.get('qty', 0),
+                    'Unit': item.get('unit', ''),
+                    'Unit Price': item.get('unit_purchase_price', 0.0),
+                    'Amount (USD)': item_amt,
+                    'Item Gross Weight (kg)': item_weight,
+                    'Customs Declaration Number': declaration_no,
+                    'Custom Duty (USD)': round(cd_usd, 2),
+                    'Special Tax (USD)': round(st_usd, 2),
+                    'Value Added Tax (USD)': round(vat_usd, 2),
+                    'Auxiliary Invoice Numbers': aux_inv_str,
+                    'Total Freight (USD)': round(total_freight_net_usd, 2),
+                    'Total Insurance (USD)': round(total_insurance_net_usd, 2),
+                    'Total Terminal Handling Charge (USD)': round(actual_thc_usd, 2),
+                    'Total Port Charges (USD)': round(actual_port_charges_usd, 2),
+                    'Total Clearance & Trucking (USD)': round(actual_clearance_trucking_usd, 2),
+                    'Net Reimbursement (USD)': round(net_reimbursement_usd, 2) if net_reimbursement_usd != "ERROR" else "ERROR",
+                    'Prorated Insurance (USD)': round(prorated_insurance, 2),
+                    'Prorated Net Reimbursement (USD)': round(prorated_net_reimb, 2) if prorated_net_reimb != "ERROR" else "ERROR",
+                    'Prorated Freight (USD)': round(prorated_freight, 2),
+                    'Prorated THC (USD)': round(prorated_thc, 2),
+                    'Prorated Port Charges (USD)': round(prorated_port_charges, 2),
+                    'Prorated Clearance & Trucking (USD)': round(prorated_clearance_trucking, 2),
+                    'Capitalized Value (USD)': round(capitalized_value, 2) if capitalized_value != "ERROR" else "ERROR"
+                })
 
         if not found_invoices:
             self.stdout.write(self.style.WARNING(f"No commercial invoices found in {pdf_dir}."))

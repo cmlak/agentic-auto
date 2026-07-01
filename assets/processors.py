@@ -12,25 +12,33 @@ class AssetItem(BaseModel):
     unit_purchase_price: float = Field(description="Unit purchase price of the item in USD")
     amount_usd: float = Field(description="Total amount for the item in USD", default=0.0)
     gross_weight_kg: float = Field(description="Gross weight of the item in kg, if available", default=0.0)
+    reasoning: str = Field(description="Chain of thought: explain how you identified this item and its amount", default="")
 
 class CommercialInvoiceData(BaseModel):
     invoice_number: str = Field(description="Commercial invoice number", default="")
     date: str = Field(description="Date of the invoice", default="")
     total_value: float = Field(description="Total value of the commercial invoice", default=0.0)
     total_gross_weight: float = Field(description="Total gross weight in kg, if available", default=0.0)
+    reasoning: str = Field(description="Chain of thought: explain how you found the invoice number and total value", default="")
     items: list[AssetItem] = Field(description="List of items extracted from the commercial invoice")
 
 class CustomsItem(BaseModel):
     item_no: int = Field(description="The '32 Item No' printed on the declaration", default=0)
     name: str = Field(description="Commercial description of the item")
-    reasoning_for_taxes: str = Field(description="Step-by-step reasoning looking at '47 CALCUL OF TAXES' for this specific item. Explicitly identify the 'Amount' for COP, SOP, and VOP before outputting the floats.", default="")
+    customs_value_riel: float = Field(description="The '46 Customs Value' in Riel", default=0.0)
+    
+    step_1_locate_taxes: str = Field(description="Step 1: Locate the '47 CALCUL OF TAXES' section for this specific item.", default="")
+    step_2_extract_tax_base: str = Field(description="Step 2: Identify the Tax Base for COP, SOP, and VOP. Compare with Customs Value.", default="")
+    step_3_extract_amount: str = Field(description="Step 3: Extract the explicit Amount for COP, SOP, and VOP.", default="")
+    
     customs_duty_riel: float = Field(description="Customs duty (COP) amount in Riel", default=0.0)
     special_tax_riel: float = Field(description="Special Tax (SOP) amount in Riel", default=0.0)
     vat_riel: float = Field(description="Value Added Tax (VOP) amount in Riel", default=0.0)
 
 class CustomsDeclarationData(BaseModel):
     customs_declaration_number: str = Field(description="Customs declaration number (e.g., I 79523)", default="")
-    exchange_rate: float = Field(description="Exchange rate found on the declaration form (e.g., Exch. rate)", default=0.0)
+    exchange_rate: float = Field(description="Exchange rate found on the declaration form (e.g., Exch. rate, Box 23)", default=0.0)
+    reasoning: str = Field(description="Chain of thought: explain how you found the declaration number and exchange rate", default="")
     items: list[CustomsItem] = Field(description="List of items extracted from the customs declaration")
 
 class AuxiliaryCostsData(BaseModel):
@@ -57,7 +65,7 @@ class ReimbursementData(BaseModel):
 class DocAgent:
     def __init__(self, api_key: str):
         print("\n" + "="*50)
-        print("🚀 INITIALIZING DOC AGENT")
+        print("INITIALIZING DOC AGENT")
         print("="*50)
         self.client = genai.Client(api_key=api_key)
         self.model_name = 'gemini-2.5-flash'
@@ -68,23 +76,27 @@ class DocAgent:
         You are an expert data extractor. Extract the key values from the attached commercial invoice and packing list.
         Extract the invoice number, date, total value, total gross weight (usually found on the packing list, look for 'G.W. (KGS)'), and the line items.
         For each line item, extract the item number (if available), name, CDC, quantity, unit, unit purchase price, amount, and gross weight (match the items from the invoice to the packing list to find their G.W. (KGS)).
-        Make sure to return the exact structure requested in the JSON schema.
+        Make sure to return the exact structure requested in the JSON schema. Provide your step-by-step reasoning where requested.
         """
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             response_schema=CommercialInvoiceData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 
     def extract_customs_declaration(self, file_bytes: bytes, mime_type: str = "application/pdf") -> dict:
         document_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
@@ -95,8 +107,11 @@ class DocAgent:
         For each line item (which has a '32 Item No' and '31 DESCRIPTION OF GOODS' e.g. 'Commercial Description'), extract:
         - item_no: The number found in box 32 'Item No'.
         - name: The commercial description of the goods.
-        Look closely at the '47 CALCUL OF TAXES' section which contains the taxes for each item.
-        - reasoning_for_taxes: Step-by-step explanation. Write out exactly what you see in the '47 CALCUL OF TAXES' grid for this specific item number. List the rows for COP, SOP, and VOP.
+        - customs_value_riel: The number found in box '46 Customs Value'.
+        Look closely at the '47 CALCUL OF TAXES' section which contains the taxes for each item. Follow the chain of thought instructions carefully.
+        - step_1_locate_taxes: Step-by-step explanation. Write out exactly what you see in the '47 CALCUL OF TAXES' grid for this specific item number. List the rows for COP, SOP, and VOP.
+        - step_2_extract_tax_base: Note the Tax Base for COP, SOP, and VOP. The base for COP should equal the '46 Customs Value'.
+        - step_3_extract_amount: Note the Amount for COP, SOP, and VOP. 
         - customs_duty_riel: The amount in the 'Amount' column for Type 'COP'. If none, use 0.0.
         - special_tax_riel: The amount in the 'Amount' column for Type 'SOP'. If none, use 0.0.
         - vat_riel: The amount in the 'Amount' column for Type 'VOP'. If none, use 0.0.
@@ -107,16 +122,20 @@ class DocAgent:
             response_schema=CustomsDeclarationData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 
     def extract_auxiliary_costs(self, file_bytes: bytes, mime_type: str = "application/pdf", filename: str = "") -> dict:
         document_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
@@ -154,16 +173,20 @@ class DocAgent:
             response_schema=AuxiliaryCostsData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 
     def extract_reimbursement(self, file_bytes: bytes, mime_type: str = "application/pdf") -> dict:
         document_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
@@ -182,16 +205,20 @@ class DocAgent:
             response_schema=ReimbursementData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 
 class CustomAgentAssetItem(BaseModel):
     item_no: int = Field(description="Item number or line number if available", default=0)
@@ -227,7 +254,7 @@ class CustomAgentCustomsDeclarationData(BaseModel):
 class CustomAgent:
     def __init__(self, api_key: str):
         print("\n" + "="*50)
-        print("🚀 INITIALIZING CUSTOM AGENT")
+        print("INITIALIZING CUSTOM AGENT")
         print("="*50)
         self.client = genai.Client(api_key=api_key)
         self.model_name = 'gemini-2.5-flash'
@@ -245,16 +272,20 @@ class CustomAgent:
             response_schema=CustomAgentCommercialInvoiceData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 
     def extract_customs_declaration(self, file_bytes: bytes, mime_type: str = "application/pdf") -> dict:
         document_part = types.Part.from_bytes(data=file_bytes, mime_type=mime_type)
@@ -280,14 +311,18 @@ class CustomAgent:
             response_schema=CustomAgentCustomsDeclarationData,
             temperature=0.0
         )
-        try:
-            response = self.client.models.generate_content(
-                model=self.model_name,
-                contents=[prompt, document_part],
-                config=config
-            )
-            return json.loads(response.text)
-        except Exception as e:
-            print(f"Extraction Error: {e}")
-            return {}
+        for attempt in range(3):
+            try:
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=[prompt, document_part],
+                    config=config
+                )
+                return json.loads(response.text)
+            except Exception as e:
+                print(f"Extraction Error (Attempt {attempt + 1}/3): {e}")
+                if attempt == 2:
+                    return {}
+                import time
+                time.sleep(2)
 

@@ -10,6 +10,7 @@ from django.core.paginator import Paginator
 from .models import Account, AccountMappingRule, JournalEntry, JournalLine, DashboardSnapshot, AgentNotification
 from .filters import ReportFilter, BalanceSheetFilter
 from django.db.models.functions import ExtractMonth, ExtractYear
+from django.utils import timezone
 import datetime
 from tablib import Dataset 
 from .resources import AccountResource, TrialBalanceResource, ProfitAndLossResource, BalanceSheetResource, GeneralLedgerSummaryResource, AccountLedgerDetailResource
@@ -1046,14 +1047,26 @@ def main_dashboard_view(request):
     # Fetch the most recent snapshot pre-calculated by the Cloud Scheduler / Cloud Run Job
     latest_snapshot = DashboardSnapshot.objects.first()
     
-    # Fetch the top 5 recent agent insights (only open alerts requiring action)
-    active_insights = AgentNotification.objects.filter(is_resolved=False).order_by('-created_at')[:5]
+    # Fetch the top 5 recent agent insights (only open alerts requiring action, last 3 days)
+    three_days_ago = timezone.now() - datetime.timedelta(days=3)
+    base_filter = AgentNotification.objects.filter(is_resolved=False, created_at__gte=three_days_ago)
+    
+    active_insights = base_filter.order_by('-created_at')[:5]
     
     # Calculate how many are actually requiring action
-    action_required_count = AgentNotification.objects.filter(is_resolved=False).count()
+    action_required_count = base_filter.count()
     
     return render(request, 'account/dashboard.html', {
         'snapshot': latest_snapshot,
         'active_insights': active_insights,
         'action_required_count': action_required_count
     })
+
+@login_required
+def delete_notification_view(request, insight_id):
+    if request.method == 'POST':
+        insight = get_object_or_404(AgentNotification, id=insight_id)
+        insight.is_resolved = True
+        insight.save()
+        messages.success(request, "Notification dismissed from dashboard.")
+    return redirect('account:dashboard')

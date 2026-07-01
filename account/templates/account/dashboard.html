@@ -111,15 +111,23 @@
                                 
                                 <p class="text-dark mb-3" style="white-space: pre-line;">{{ insight.message|safe }}</p>
                                 
-                                {% if insight.action_url %}
-                                <a href="{{ insight.action_url }}" class="btn btn-sm fw-bold 
-                                    {% if insight.severity == 'CRITICAL' %}btn-outline-danger
-                                    {% elif insight.severity == 'WARNING' %}btn-outline-warning
-                                    {% elif insight.severity == 'SUCCESS' %}btn-outline-success
-                                    {% else %}btn-outline-info{% endif %}">
-                                    {{ insight.action_label|default:"Take Action" }} <i class="bi bi-arrow-right-short"></i>
-                                </a>
-                                {% endif %}
+                                <div class="d-flex gap-2 align-items-center mt-2">
+                                    {% if insight.action_url %}
+                                    <a href="{{ insight.action_url }}" class="btn btn-sm fw-bold 
+                                        {% if insight.severity == 'CRITICAL' %}btn-outline-danger
+                                        {% elif insight.severity == 'WARNING' %}btn-outline-warning
+                                        {% elif insight.severity == 'SUCCESS' %}btn-outline-success
+                                        {% else %}btn-outline-info{% endif %}">
+                                        {{ insight.action_label|default:"Take Action" }} <i class="bi bi-arrow-right-short"></i>
+                                    </a>
+                                    {% endif %}
+                                    <form action="{% url 'account:delete_notification' insight.id %}" method="post" class="m-0 p-0">
+                                        {% csrf_token %}
+                                        <button type="submit" class="btn btn-sm btn-outline-secondary fw-bold" onclick="return confirm('Are you sure you want to delete this notification?');">
+                                            <i class="bi bi-trash"></i> Dismiss
+                                        </button>
+                                    </form>
+                                </div>
                             </div>
                         {% empty %}
                             <div class="p-5 text-center text-muted">

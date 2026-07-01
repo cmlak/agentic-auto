@@ -618,17 +618,17 @@ class BalancikaExportForm(forms.Form):
         widget=forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
         label="End Date"
     )
-    purchase_id = forms.IntegerField(
+    purchase_id = forms.CharField(
         required=False,
-        label="Purchase ID",
-        help_text="Optional: Export specific purchase invoice",
-        widget=forms.NumberInput(attrs={'class': 'form-control'})
+        label="Purchase IDs",
+        help_text="Optional: Export specific purchase invoices (comma-separated)",
+        widget=forms.TextInput(attrs={'class': 'form-control'})
     )
-    bank_id = forms.IntegerField(
+    bank_id = forms.CharField(
         required=False,
-        label="Bank ID",
-        help_text="Optional: Export specific bank charge",
-        widget=forms.NumberInput(attrs={'class': 'form-control'})
+        label="Bank IDs",
+        help_text="Optional: Export specific bank charges (comma-separated)",
+        widget=forms.TextInput(attrs={'class': 'form-control'})
     )
     entry_no_start = forms.IntegerField(
         initial=1,

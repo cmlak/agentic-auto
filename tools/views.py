@@ -1411,10 +1411,19 @@ def export_balancika_view(request):
             purchases = []
             bank_charges = []
 
-            if purchase_id:
-                purchases = list(Purchase.objects.filter(purchase_filters & Q(id=purchase_id)).order_by('id'))
-            elif bank_id:
-                bank_charges = list(Bank.objects.filter(bank_filters & Q(id=bank_id)).order_by('id'))
+            def parse_ids(id_str):
+                if not id_str:
+                    return []
+                return [int(x.strip()) for x in id_str.split(',') if x.strip().isdigit()]
+
+            parsed_purchase_ids = parse_ids(purchase_id)
+            parsed_bank_ids = parse_ids(bank_id)
+
+            if parsed_purchase_ids or parsed_bank_ids:
+                if parsed_purchase_ids:
+                    purchases = list(Purchase.objects.filter(purchase_filters & Q(id__in=parsed_purchase_ids)).order_by('id'))
+                if parsed_bank_ids:
+                    bank_charges = list(Bank.objects.filter(bank_filters & Q(id__in=parsed_bank_ids)).order_by('id'))
             else:
                 purchases = list(Purchase.objects.filter(purchase_filters).order_by('id'))
                 

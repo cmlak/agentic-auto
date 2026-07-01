@@ -3,6 +3,7 @@ import pandas as pd
 from django.core.management.base import BaseCommand
 from django.conf import settings
 from assets.processors import DocAgent
+from assets.models import Capitalization, AssetBatch
 
 class Command(BaseCommand):
     help = 'Runs doc_agent to extract data from commercial invoices and export to Excel.'
@@ -87,8 +88,10 @@ class Command(BaseCommand):
                             for item in data['items']:
                                 customs_data_list.append({
                                     'declaration_number': declaration_number,
+                                    'exchange_rate': exchange_rate,
                                     'item_no': item.get('item_no', 0),
                                     'name': item.get('name', ''),
+                                    'customs_value_riel': item.get('customs_value_riel', 0.0),
                                     'customs_duty_usd': item.get('customs_duty_riel', 0.0) / exchange_rate,
                                     'special_tax_usd': item.get('special_tax_riel', 0.0) / exchange_rate,
                                     'vat_usd': item.get('vat_riel', 0.0) / exchange_rate
@@ -174,13 +177,13 @@ class Command(BaseCommand):
             net_reimbursement_usd = max(0.0, total_reimb_amount_usd - (reimb_thc_usd + reimb_port_charges_usd))
 
         def find_taxes(item_name, item_no=0):
-            if not item_name and item_no <= 0: return 0.0, 0.0, 0.0, ""
+            if not item_name and item_no <= 0: return None
             
             # First, attempt an exact match by item_no if it is provided
             if item_no > 0:
                 for cd in customs_data_list:
                     if cd.get('item_no') == item_no:
-                        return cd['customs_duty_usd'], cd['special_tax_usd'], cd['vat_usd'], cd.get('declaration_number', '')
+                        return cd
             
             import re
             # Extract alphanumeric tokens, ignoring small unhelpful words if needed
@@ -188,7 +191,7 @@ class Command(BaseCommand):
                 return set(re.findall(r'\b[a-z0-9]+\b', text.lower()))
             
             item_tokens = get_tokens(item_name)
-            if not item_tokens: return 0.0, 0.0, 0.0, ""
+            if not item_tokens: return None
             
             best_match = None
             highest_score = 0.0
@@ -200,7 +203,7 @@ class Command(BaseCommand):
                 
                 # Full substring is still a guaranteed match
                 if cd_name.lower().strip() in item_name.lower() or item_name.lower().strip() in cd_name.lower():
-                    return cd['customs_duty_usd'], cd['special_tax_usd'], cd['vat_usd'], cd.get('declaration_number', '')
+                    return cd
                 
                 # Calculate token intersection ratio (how many tokens match relative to the shorter string)
                 intersection = item_tokens.intersection(cd_tokens)
@@ -217,9 +220,9 @@ class Command(BaseCommand):
             
             # If the token similarity is above ~40% (e.g. 3 out of 7 words match), consider it a success
             if highest_score >= 0.4 and best_match:
-                return best_match['customs_duty_usd'], best_match['special_tax_usd'], best_match['vat_usd'], best_match.get('declaration_number', '')
+                return best_match
                 
-            return 0.0, 0.0, 0.0, ""
+            return None
 
         # First, flatten all items to calculate global totals for proration and plugging
         all_flattened_items = []
@@ -291,6 +294,8 @@ class Command(BaseCommand):
                     'Amount (USD)': 0.0,
                     'Item Gross Weight (kg)': 0.0,
                     'Customs Declaration Number': '',
+                    '46 Customs Value (Riel)': 0.0,
+                    '46 Customs Value (USD)': 0.0,
                     'Custom Duty (USD)': 0.0,
                     'Special Tax (USD)': 0.0,
                     'Value Added Tax (USD)': 0.0,
@@ -313,7 +318,22 @@ class Command(BaseCommand):
                 item = row['item']
                 item_name = item.get('name', '')
                 item_no = item.get('item_no', 0)
-                cd_usd, st_usd, vat_usd, declaration_no = find_taxes(item_name, item_no)
+                matched_cd = find_taxes(item_name, item_no)
+                if matched_cd:
+                    cd_usd = matched_cd.get('customs_duty_usd', 0.0)
+                    st_usd = matched_cd.get('special_tax_usd', 0.0)
+                    vat_usd = matched_cd.get('vat_usd', 0.0)
+                    declaration_no = matched_cd.get('declaration_number', '')
+                    customs_value_riel = matched_cd.get('customs_value_riel', 0.0)
+                    exchange_rate = matched_cd.get('exchange_rate', 1.0)
+                    customs_value_usd = customs_value_riel / exchange_rate if exchange_rate > 0 else 0.0
+                else:
+                    cd_usd = 0.0
+                    st_usd = 0.0
+                    vat_usd = 0.0
+                    declaration_no = ""
+                    customs_value_riel = 0.0
+                    customs_value_usd = 0.0
                 
                 item_amt = row['item_amt']
                 item_weight = row['item_weight']
@@ -364,7 +384,7 @@ class Command(BaseCommand):
                 else:
                     capitalized_value = (item_amt + prorated_insurance + prorated_net_reimb + 
                                          prorated_freight + prorated_thc + prorated_port_charges + prorated_clearance_trucking + 
-                                         cd_usd + st_usd + vat_usd)
+                                         cd_usd + st_usd)
                                      
                 all_items.append({
                     'Source File': row['filename'],
@@ -380,6 +400,8 @@ class Command(BaseCommand):
                     'Amount (USD)': item_amt,
                     'Item Gross Weight (kg)': item_weight,
                     'Customs Declaration Number': declaration_no,
+                    '46 Customs Value (Riel)': customs_value_riel,
+                    '46 Customs Value (USD)': round(customs_value_usd, 2),
                     'Custom Duty (USD)': round(cd_usd, 2),
                     'Special Tax (USD)': round(st_usd, 2),
                     'Value Added Tax (USD)': round(vat_usd, 2),
@@ -411,5 +433,116 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS(f"Successfully exported {len(all_items)} rows to {output_path}"))
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"Failed to save Excel file: {e}"))
+                
+            # Create Database Models
+            from datetime import datetime
+            from django.db import connection
+            
+            # Switch to the correct tenant schema for database operations
+            connection.set_schema('CCKT')
+            
+            created_batches = 0
+            created_caps = 0
+            
+            for index, row in enumerate(all_items):
+                if row.get('Item Name') == '':
+                    continue # Skip empty placeholder rows
+                    
+                inv_no_str = str(row.get('Invoice Number', ''))
+                
+                # Try to parse date
+                date_obj = None
+                date_str = str(row.get('Date', ''))
+                if date_str and date_str != 'nan':
+                    try:
+                        date_obj = datetime.strptime(date_str, "%Y-%m-%d").date()
+                    except ValueError:
+                        try:
+                            # Try other common formats if needed, or leave None
+                            from dateutil import parser
+                            date_obj = parser.parse(date_str).date()
+                        except:
+                            pass
+                            
+                # Generate unique batch ID
+                batch_id = f"{inv_no_str}-Item{index+1}"
+                
+                # 1. Create AssetBatch
+                ab, created = AssetBatch.objects.get_or_create(
+                    batch_id=batch_id,
+                    defaults={
+                        'source_file': str(row.get('Source File', '')),
+                        'invoice_number': inv_no_str,
+                        'date': date_obj,
+                        'total_invoice_value': float(row.get('Total Invoice Value') or 0.0),
+                        'total_invoice_weight': float(row.get('Total Invoice Weight') or 0.0),
+                        'item_name': str(row.get('Item Name', '')),
+                        'cdc': str(row.get('CDC', '')),
+                        'quantity': float(row.get('Quantity') or 0.0),
+                        'unit': str(row.get('Unit', '')),
+                        'unit_price': float(row.get('Unit Price') or 0.0),
+                        'amount_usd': float(row.get('Amount (USD)') or 0.0),
+                        'item_gross_weight_kg': float(row.get('Item Gross Weight (kg)') or 0.0),
+                        'customs_declaration_number': str(row.get('Customs Declaration Number', '')),
+                        'custom_duty_usd': float(row.get('Custom Duty (USD)') or 0.0),
+                        'special_tax_usd': float(row.get('Special Tax (USD)') or 0.0),
+                        'value_added_tax_usd': float(row.get('Value Added Tax (USD)') or 0.0),
+                        'auxiliary_invoice_numbers': str(row.get('Auxiliary Invoice Numbers', '')),
+                        'total_freight_usd': float(row.get('Total Freight (USD)') or 0.0),
+                        'total_insurance_usd': float(row.get('Total Insurance (USD)') or 0.0),
+                        'total_thc_usd': float(row.get('Total Terminal Handling Charge (USD)') or 0.0),
+                        'total_port_charges_usd': float(row.get('Total Port Charges (USD)') or 0.0),
+                        'total_clearance_trucking_usd': float(row.get('Total Clearance & Trucking (USD)') or 0.0),
+                        'net_reimbursement_usd': float(row.get('Net Reimbursement (USD)') if row.get('Net Reimbursement (USD)') != 'ERROR' else 0.0),
+                        'prorated_insurance_usd': float(row.get('Prorated Insurance (USD)') or 0.0),
+                        'prorated_net_reimb_usd': float(row.get('Prorated Net Reimbursement (USD)') if row.get('Prorated Net Reimbursement (USD)') != 'ERROR' else 0.0),
+                        'prorated_freight_usd': float(row.get('Prorated Freight (USD)') or 0.0),
+                        'prorated_thc_usd': float(row.get('Prorated THC (USD)') or 0.0),
+                        'prorated_port_charges_usd': float(row.get('Prorated Port Charges (USD)') or 0.0),
+                        'prorated_clearance_trucking_usd': float(row.get('Prorated Clearance & Trucking (USD)') or 0.0),
+                        'capitalized_value_usd': float(row.get('Capitalized Value (USD)') if row.get('Capitalized Value (USD)') != 'ERROR' else 0.0),
+                    }
+                )
+                
+                if created:
+                    created_batches += 1
+                else:
+                    # Update existing batch if it already exists
+                    pass
+                
+                # Clean up old capitalizations for this batch_id to prevent duplicates on re-run
+                Capitalization.objects.filter(batch=batch_id).delete()
+                
+                # Helper to create Capitalization records
+                def create_cap(desc_suffix, cap_basis, total_val, inv_no=None):
+                    if total_val and total_val > 0:
+                        Capitalization.objects.create(
+                            batch=batch_id,
+                            date=date_obj,
+                            description=f"{str(row.get('Item Name', ''))} - {desc_suffix}",
+                            capitalization=cap_basis,
+                            total_usd=total_val,
+                            invoice_no=inv_no
+                        )
+                        return 1
+                    return 0
+                
+                aux_invs = str(row.get('Auxiliary Invoice Numbers', ''))
+                if len(aux_invs) > 90:
+                    aux_invs = aux_invs[:85] + "..."
+                    
+                decl_no = str(row.get('Customs Declaration Number', ''))
+                
+                created_caps += create_cap("Vendor Price", "Vendor Price", float(row.get('Amount (USD)') or 0.0), inv_no_str)
+                created_caps += create_cap("Customs Duty (COP)", "Customs Duty (COP)", float(row.get('Custom Duty (USD)') or 0.0), decl_no)
+                created_caps += create_cap("Special Tax (SOP)", "Special Tax (SOP)", float(row.get('Special Tax (USD)') or 0.0), decl_no)
+                created_caps += create_cap("Prorated Freight", "Prorated Freight", float(row.get('Prorated Freight (USD)') or 0.0), aux_invs)
+                created_caps += create_cap("Prorated Insurance", "Prorated Insurance", float(row.get('Prorated Insurance (USD)') or 0.0), aux_invs)
+                created_caps += create_cap("Prorated THC/DO", "Prorated THC/DO", float(row.get('Prorated THC (USD)') or 0.0), aux_invs)
+                created_caps += create_cap("Prorated Port Charges", "Prorated Port Charges", float(row.get('Prorated Port Charges (USD)') or 0.0), aux_invs)
+                created_caps += create_cap("Prorated Clearance & Trucking", "Prorated Clearance & Trucking", float(row.get('Prorated Clearance & Trucking (USD)') or 0.0), aux_invs)
+                created_caps += create_cap("Prorated Net Reimbursement", "Prorated Net Reimbursement", float(row.get('Prorated Net Reimbursement (USD)') if row.get('Prorated Net Reimbursement (USD)') != 'ERROR' else 0.0), aux_invs)
+                
+            self.stdout.write(self.style.SUCCESS(f"Successfully created/updated {created_batches} AssetBatch records and {created_caps} Capitalization entries in CCKT schema."))
         else:
             self.stdout.write(self.style.WARNING("No items extracted from documents."))

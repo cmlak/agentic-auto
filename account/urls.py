@@ -23,4 +23,5 @@ urlpatterns = [
 
     # Dashboard
     path('dashboard/', views.main_dashboard_view, name='dashboard'),
+    path('dashboard/notification/<int:insight_id>/delete/', views.delete_notification_view, name='delete_notification'),
 ]
